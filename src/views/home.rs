@@ -305,7 +305,6 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
         );
         if changed.changed() {
             app.cfg.java.memory_mb = memory as u32;
-            app.cfg.java.auto_memory = false;
             app.save_config();
         }
         ui.add_space(2.0);

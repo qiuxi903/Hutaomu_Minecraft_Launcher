@@ -32,7 +32,6 @@ pub struct JavaSettings {
     pub auto: bool,
     pub path: Option<PathBuf>,
     pub memory_mb: u32,
-    pub auto_memory: bool,
     pub jvm_args: String,
 }
 
@@ -43,7 +42,6 @@ pub struct LaunchSettings {
     pub width: u32,
     pub height: u32,
     pub extra_args: String,
-    pub close_on_launch: bool,
     /// 版本隔离：每个版本使用独立的存档/模组目录
     pub isolation: bool,
     pub show_game_log: bool,
@@ -130,7 +128,6 @@ impl Default for JavaSettings {
             auto: true,
             path: None,
             memory_mb: default_memory(),
-            auto_memory: true,
             jvm_args: String::new(),
         }
     }
@@ -143,7 +140,6 @@ impl Default for LaunchSettings {
             width: 1280,
             height: 720,
             extra_args: String::new(),
-            close_on_launch: false,
             isolation: true,
             show_game_log: true,
         }
