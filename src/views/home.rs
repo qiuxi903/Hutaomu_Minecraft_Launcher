@@ -8,6 +8,7 @@ use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Ve
 
 use crate::app::{App, Page};
 use crate::core::news::NewsItem;
+use crate::core::paths;
 use crate::icons;
 use crate::ui::{self, widgets, ButtonOpts};
 use crate::views;
@@ -37,6 +38,8 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(right_width);
             skin_card(app, ui);
+            ui.add_space(14.0);
+            stats_card(app, ui);
             ui.add_space(14.0);
             shortcuts_card(app, ui);
         });
@@ -154,6 +157,7 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
             // 启动按钮
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let running = app.game.is_some();
+                let has_version = app.selected_version_id().is_some();
                 let label = if running { "游戏运行中" } else { "启动游戏" };
                 let clicked = ui::button(
                     ui,
@@ -163,7 +167,7 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                         .width(186.0)
                         .height(56.0)
                         .font_size(16.5)
-                        .enabled(!running),
+                        .enabled(!running && has_version),
                 )
                 .clicked();
                 if clicked {
@@ -495,5 +499,51 @@ fn shortcuts_card(app: &mut App, ui: &mut Ui) {
             let _ = crate::core::paths::ensure_dir(&crate::core::paths::logs_dir());
             crate::core::paths::reveal(&crate::core::paths::logs_dir());
         }
+    });
+}
+
+// ------------------------------------------------------------------ 概览统计
+
+fn stats_card(app: &mut App, ui: &mut Ui) {
+    let p = app.palette;
+    let total_size: u64 = app.local_versions.iter().map(|v| v.size).sum();
+    let last_launch = app
+        .cfg
+        .version_stats
+        .values()
+        .map(|s| s.last_launch)
+        .max()
+        .unwrap_or(0);
+
+    ui::card(ui, &p, |ui| {
+        ui.label(
+            egui::RichText::new("概览")
+                .font(ui::font(14.5))
+                .color(p.text)
+                .strong(),
+        );
+        ui.add_space(8.0);
+        widgets::key_value(ui, &p, "已安装版本", &format!("{} 个", app.local_versions.len()));
+        ui.add_space(4.0);
+        widgets::key_value(ui, &p, "版本占用", &paths::format_size(total_size));
+        ui.add_space(4.0);
+        widgets::key_value(ui, &p, "账号", &format!("{} 个", app.accounts.accounts.len()));
+        ui.add_space(4.0);
+        widgets::key_value(
+            ui,
+            &p,
+            "上次启动",
+            &if last_launch > 0 {
+                chrono::DateTime::from_timestamp(last_launch, 0)
+                    .map(|t| {
+                        t.with_timezone(&chrono::Local)
+                            .format("%m-%d %H:%M")
+                            .to_string()
+                    })
+                    .unwrap_or_else(|| "—".into())
+            } else {
+                "还没有启动过".to_string()
+            },
+        );
     });
 }

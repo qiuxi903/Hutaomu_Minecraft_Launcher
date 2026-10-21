@@ -1,6 +1,6 @@
 [package]
 name = "htmcl"
-version = "0.1.0-beta.3"
+version = "0.1.0-beta.4"
 edition = "2021"
 rust-version = "1.82"
 description = "Hutaomu Minecraft Launcher - 胡桃木 Minecraft 启动器"

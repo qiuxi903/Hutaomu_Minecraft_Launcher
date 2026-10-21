@@ -1118,14 +1118,20 @@ impl Toast {
 
 pub const TOAST_LIFETIME: f64 = 3.8;
 
-pub fn toast_layer(ctx: &egui::Context, p: &Palette, toasts: &mut Vec<Toast>, now: f64) {
+pub fn toast_layer(
+    ctx: &egui::Context,
+    p: &Palette,
+    toasts: &mut Vec<Toast>,
+    now: f64,
+    bottom_offset: f32,
+) {
     toasts.retain(|t| now - t.created < TOAST_LIFETIME);
     if toasts.is_empty() {
         return;
     }
     egui::Area::new(Id::new("htmcl_toasts"))
         .order(egui::Order::Tooltip)
-        .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -20.0))
+        .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -(20.0 + bottom_offset)))
         .interactable(false)
         .show(ctx, |ui| {
             ui.with_layout(egui::Layout::bottom_up(egui::Align::RIGHT), |ui| {

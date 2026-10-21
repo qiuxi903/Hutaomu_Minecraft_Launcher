@@ -13,9 +13,9 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 | 版本 | 说明 |
 | --- | --- |
-| [v0.1.0-beta.3](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.3) | 第三个公开测试版（Pre-release），Windows x64 |
+| [v0.1.0-beta.4](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.4) | 第四个公开测试版（Pre-release），Windows x64 |
 
-发行包 `htmcl-v0.1.0-beta.3-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
+发行包 `htmcl-v0.1.0-beta.4-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
 
 从源码构建请见 [构建](#构建)。
 
@@ -40,7 +40,7 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ## 测试版声明
 
-当前版本 **v0.1.0-beta.3** 是项目的第三个公开测试版（Beta）。
+当前版本 **v0.1.0-beta.4** 是项目的第四个公开测试版（Beta）。
 
 - 功能仍在快速迭代，配置文件字段、目录结构与界面布局都可能在下个版本变化；
 - 升级前请备份 `accounts.json` 与游戏目录；

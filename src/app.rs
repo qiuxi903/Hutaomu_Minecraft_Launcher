@@ -77,7 +77,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 13;
+pub const SHOT_SCENES: usize = 14;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -132,7 +132,7 @@ impl App {
                 self.download.content_query = "complementary".into();
                 views::download::run_search(self);
             }
-            _ => {
+            12 => {
                 // 触发一次真实下载，用于检查下载中心面板
                 self.page = Page::Home;
                 if let Some(manifest) = &self.manifest {
@@ -155,6 +155,11 @@ impl App {
                         });
                     }
                 }
+            }
+            _ => {
+                // 提示条位置与动效检查
+                self.page = Page::Home;
+                self.info("这是一条信息提示，用于检查提示条位置");
             }
         }
     }
@@ -461,7 +466,7 @@ impl App {
                     dir,
                     page_index: 0,
                     phase: 0,
-                    next_at: 5.0,
+                    next_at: 8.0,
                 }
             }),
         };
@@ -692,10 +697,29 @@ impl App {
         let url = self.cfg.news.url.clone();
         let timeout = self.cfg.download.timeout_secs;
         self.spawn("获取资讯", false, move |job| {
+            let started = std::time::Instant::now();
             let result = (|| -> anyhow::Result<Vec<NewsItem>> {
                 let dl = Downloader::new(DownloadSource::Official, timeout)?;
-                crate::core::news::fetch(&dl, &source, &url)
+                match crate::core::news::fetch(&dl, &source, &url) {
+                    Ok(items) => Ok(items),
+                    Err(first) => {
+                        // 资讯源偶发失败，重试一次
+                        std::thread::sleep(std::time::Duration::from_millis(600));
+                        crate::core::news::fetch(&dl, &source, &url).map_err(|second| {
+                            log::warn!("资讯首次失败: {first}");
+                            second
+                        })
+                    }
+                }
             })();
+            match &result {
+                Ok(items) => log::info!(
+                    "资讯已更新：{} 条，耗时 {:.2}s",
+                    items.len(),
+                    started.elapsed().as_secs_f32()
+                ),
+                Err(err) => log::warn!("资讯获取失败（{:.2}s）: {err}", started.elapsed().as_secs_f32()),
+            }
             job.send(CoreEvent::News(result.map_err(|e| format!("{e}"))));
             job.done(true, "");
         });
@@ -1930,7 +1954,20 @@ impl eframe::App for App {
         views::home_config::game_config_modal(self, &ctx);
         self.game_log_modal(&ctx);
         self.download_panel(&ctx);
-        widgets::toast_layer(&ctx, &self.palette, &mut self.toasts, now);
+        // 提示条固定在右下角，下载中心展开时自动上移避让
+        let active_tasks = self.tasks.iter().filter(|t| !t.done).count();
+        let panel_offset = if self.download_panel_open && active_tasks > 0 {
+            (80.0 + active_tasks as f32 * 126.0).min(500.0)
+        } else {
+            0.0
+        };
+        widgets::toast_layer(
+            &ctx,
+            &self.palette,
+            &mut self.toasts,
+            now,
+            panel_offset,
+        );
 
         self.run_screenshots(&ctx);
 
@@ -1957,6 +1994,7 @@ fn shot_scene_wait(scene: usize) -> f64 {
         10 => 2.2,
         11 => 9.0,
         12 => 6.0,
+        13 => 1.2,
         _ => 1.8,
     }
 }
@@ -1975,7 +2013,8 @@ fn shot_scene_label(scene: usize) -> &'static str {
         9 => "关于",
         10 => "首页-游戏配置",
         11 => "下载-整合包",
-        _ => "下载中心",
+        12 => "下载中心",
+        _ => "提示条",
     }
 }
 
