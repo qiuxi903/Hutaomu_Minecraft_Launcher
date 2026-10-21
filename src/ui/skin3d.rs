@@ -1,7 +1,7 @@
-//! 轻量 3D 皮肤预览：把 Minecraft 皮肤贴图映射到六个方块上，
+//! 轻量 3D 皮肤预览：把皮肤贴图映射到方块上，支持第二层（帽子 / 外套），
 //! 使用 egui 的 Mesh 做软件变换与深度排序，不依赖任何 3D 引擎。
 
-use egui::{Color32, CornerRadius, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
+use egui::{Color32, Pos2, Rect, Response, Sense, Stroke, Ui, Vec2};
 
 use crate::core::auth::SkinModel;
 use crate::theme::Palette;
@@ -45,15 +45,14 @@ struct Face {
     normal: V3,
 }
 
-fn box_faces(size: V3, uv: UvRect, tex: f32) -> [Face; 6] {
-    let (w, h, d) = (size.x, size.y, size.z);
-    let (x0, x1) = (-w / 2.0, w / 2.0);
-    let (y0, y1) = (-h / 2.0, h / 2.0);
-    let (z0, z1) = (-d / 2.0, d / 2.0);
+/// size 是几何尺寸（可能是放大后的第二层），uv_size 是贴图布局使用的原始尺寸
+fn box_faces(size: V3, uv_size: V3, uv: UvRect, tex: f32) -> [Face; 6] {
+    let (w, h, d) = (uv_size.x, uv_size.y, uv_size.z);
+    let (x0, x1) = (-size.x / 2.0, size.x / 2.0);
+    let (y0, y1) = (-size.y / 2.0, size.y / 2.0);
+    let (z0, z1) = (-size.z / 2.0, size.z / 2.0);
     let (u, v) = (uv.u, uv.v);
-    let _ = (uv.w, uv.h);
 
-    // 每个面的 UV 都取自标准皮肤布局
     let rect_uv = |x: f32, y: f32, rw: f32, rh: f32| {
         [
             Pos2::new(x / tex, (y + rh) / tex),
@@ -133,72 +132,158 @@ fn box_faces(size: V3, uv: UvRect, tex: f32) -> [Face; 6] {
     ]
 }
 
+#[derive(Clone, Copy)]
 struct Part {
     center: V3,
+    /// 几何尺寸
     size: V3,
+    /// 贴图布局尺寸（第二层沿用原始尺寸）
+    uv_size: V3,
     uv: UvRect,
     /// 以顶部为轴的摆动角度（弧度）
     swing: f32,
+    /// 是否为第二层
+    overlay: bool,
 }
 
-fn build_parts(slim: bool, time: f32) -> Vec<Part> {
+fn inflate(size: V3) -> V3 {
+    // Minecraft 第二层向外扩张 0.5 像素
+    V3::new(size.x + 1.0, size.y + 1.0, size.z + 1.0)
+}
+
+fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
     let arm_w = if slim { 3.0 } else { 4.0 };
-    let arm_gap = 0.0;
-    let arm_x = 4.0 + arm_gap + arm_w / 2.0;
+    let arm_x = 4.0 + arm_w / 2.0;
     let idle = (time * 1.6).sin() * 0.06;
 
-    vec![
+    let mut parts = vec![
         // 头
         Part {
             center: V3::new(0.0, 28.0, 0.0),
             size: V3::new(8.0, 8.0, 8.0),
+            uv_size: V3::new(8.0, 8.0, 8.0),
             uv: UvRect { u: 0.0, v: 0.0, w: 8.0, h: 8.0 },
             swing: 0.0,
+            overlay: false,
         },
         // 身体
         Part {
             center: V3::new(0.0, 18.0, 0.0),
             size: V3::new(8.0, 12.0, 4.0),
+            uv_size: V3::new(8.0, 12.0, 4.0),
             uv: UvRect { u: 16.0, v: 16.0, w: 8.0, h: 12.0 },
             swing: 0.0,
+            overlay: false,
         },
         // 右臂（角色右侧，屏幕左侧）
         Part {
             center: V3::new(-arm_x, 18.0, 0.0),
             size: V3::new(arm_w, 12.0, 4.0),
+            uv_size: V3::new(arm_w, 12.0, 4.0),
             uv: UvRect { u: 40.0, v: 16.0, w: arm_w, h: 12.0 },
             swing: idle,
+            overlay: false,
         },
         // 左臂
         Part {
             center: V3::new(arm_x, 18.0, 0.0),
             size: V3::new(arm_w, 12.0, 4.0),
+            uv_size: V3::new(arm_w, 12.0, 4.0),
             uv: UvRect { u: 32.0, v: 48.0, w: arm_w, h: 12.0 },
             swing: -idle,
+            overlay: false,
         },
         // 右腿
         Part {
             center: V3::new(-2.0, 6.0, 0.0),
             size: V3::new(4.0, 12.0, 4.0),
+            uv_size: V3::new(4.0, 12.0, 4.0),
             uv: UvRect { u: 0.0, v: 16.0, w: 4.0, h: 12.0 },
             swing: 0.0,
+            overlay: false,
         },
         // 左腿
         Part {
             center: V3::new(2.0, 6.0, 0.0),
             size: V3::new(4.0, 12.0, 4.0),
+            uv_size: V3::new(4.0, 12.0, 4.0),
             uv: UvRect { u: 16.0, v: 48.0, w: 4.0, h: 12.0 },
             swing: 0.0,
+            overlay: false,
         },
-    ]
+    ];
+
+    if has_overlay {
+        let overlays = [
+            // 帽子层 (32,0)
+            Part {
+                center: V3::new(0.0, 28.0, 0.0),
+                size: inflate(V3::new(8.0, 8.0, 8.0)),
+                uv_size: V3::new(8.0, 8.0, 8.0),
+                uv: UvRect { u: 32.0, v: 0.0, w: 8.0, h: 8.0 },
+                swing: 0.0,
+                overlay: true,
+            },
+            // 外套层 (16,32)
+            Part {
+                center: V3::new(0.0, 18.0, 0.0),
+                size: inflate(V3::new(8.0, 12.0, 4.0)),
+                uv_size: V3::new(8.0, 12.0, 4.0),
+                uv: UvRect { u: 16.0, v: 32.0, w: 8.0, h: 12.0 },
+                swing: 0.0,
+                overlay: true,
+            },
+            // 右臂外层 (40,32)
+            Part {
+                center: V3::new(-arm_x, 18.0, 0.0),
+                size: inflate(V3::new(arm_w, 12.0, 4.0)),
+                uv_size: V3::new(arm_w, 12.0, 4.0),
+                uv: UvRect { u: 40.0, v: 32.0, w: arm_w, h: 12.0 },
+                swing: idle,
+                overlay: true,
+            },
+            // 左臂外层 (48,48)
+            Part {
+                center: V3::new(arm_x, 18.0, 0.0),
+                size: inflate(V3::new(arm_w, 12.0, 4.0)),
+                uv_size: V3::new(arm_w, 12.0, 4.0),
+                uv: UvRect { u: 48.0, v: 48.0, w: arm_w, h: 12.0 },
+                swing: -idle,
+                overlay: true,
+            },
+            // 右腿外层 (0,32)
+            Part {
+                center: V3::new(-2.0, 6.0, 0.0),
+                size: inflate(V3::new(4.0, 12.0, 4.0)),
+                uv_size: V3::new(4.0, 12.0, 4.0),
+                uv: UvRect { u: 0.0, v: 32.0, w: 4.0, h: 12.0 },
+                swing: 0.0,
+                overlay: true,
+            },
+            // 左腿外层 (0,48)
+            Part {
+                center: V3::new(2.0, 6.0, 0.0),
+                size: inflate(V3::new(4.0, 12.0, 4.0)),
+                uv_size: V3::new(4.0, 12.0, 4.0),
+                uv: UvRect { u: 0.0, v: 48.0, w: 4.0, h: 12.0 },
+                swing: 0.0,
+                overlay: true,
+            },
+        ];
+        parts.extend_from_slice(&overlays);
+    }
+
+    parts
 }
 
 /// 绘制皮肤预览。返回的 response 支持拖拽旋转。
+#[allow(clippy::too_many_arguments)]
 pub fn skin_preview(
     ui: &mut Ui,
     p: &Palette,
     texture: Option<&egui::TextureHandle>,
     model: SkinModel,
+    has_overlay: bool,
     yaw: &mut f32,
     height: f32,
     animate: bool,
@@ -214,16 +299,15 @@ pub fn skin_preview(
         *yaw += response.drag_delta().x * 0.012;
     }
     if animate {
-        let time = ui.input(|i| i.time) as f32;
         if !response.dragged() {
             *yaw += 0.0035;
         }
-        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
-        let _ = time;
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
     }
 
     // 地面阴影
-    let shadow_center = Pos2::new(rect.center().x, rect.top() + height * 0.9);
+    let shadow_center = Pos2::new(rect.center().x, rect.top() + height * 0.92);
     let shadow_points: Vec<Pos2> = (0..=36)
         .map(|i| {
             let a = i as f32 / 36.0 * std::f32::consts::TAU;
@@ -251,10 +335,9 @@ pub fn skin_preview(
     };
 
     let time = ui.input(|i| i.time) as f32;
-    let parts = build_parts(model == SkinModel::Slim, if animate { time } else { 0.0 });
+    let parts = build_parts(model == SkinModel::Slim, if animate { time } else { 0.0 }, has_overlay);
 
     // 模型总高 32 个皮肤像素（脚底 y=0，头顶 y=32），垂直居中放置
-    const MODEL_HEIGHT: f32 = 32.0;
     const MODEL_CENTER_Y: f32 = 16.0;
     let scale = height * 0.80 / 34.0;
     let center = Pos2::new(rect.center().x, rect.top() + height * 0.52);
@@ -264,9 +347,7 @@ pub fn skin_preview(
     let mut faces: Vec<(f32, egui::Mesh)> = Vec::new();
 
     for part in &parts {
-        let faces_local = box_faces(part.size, part.uv, 64.0);
-        for face in faces_local {
-            // 摆动：绕方块顶部（局部 y = +h/2）旋转
+        for face in box_faces(part.size, part.uv_size, part.uv, 64.0) {
             let mut corners = face.corners;
             let mut normal = face.normal;
             if part.swing.abs() > 0.0001 {
@@ -284,7 +365,6 @@ pub fn skin_preview(
                 world[i] = corner.add(part.center).rot_y(yaw_angle).rot_x(pitch);
             }
             let n = normal.rot_y(yaw_angle).rot_x(pitch);
-            // 背面剔除
             if n.z <= 0.01 {
                 continue;
             }
@@ -309,13 +389,12 @@ pub fn skin_preview(
         }
     }
 
-    // 远的先画
+    // 远的先画；第二层略靠外，会自然排在基础层之后
     faces.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     for (_, mesh) in faces {
         painter.add(egui::Shape::mesh(mesh));
     }
 
-    // 边框与提示
     painter.rect_stroke(
         bg,
         p.corner(0),
@@ -336,59 +415,47 @@ pub fn skin_preview(
 }
 
 /// 纯展示用的小尺寸 3D 头像（只画头部）
-pub fn head_preview(
-    ui: &mut Ui,
-    texture: Option<&egui::TextureHandle>,
-    yaw: f32,
-    size: f32,
-) {
+pub fn head_preview(ui: &mut Ui, texture: Option<&egui::TextureHandle>, yaw: f32, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let Some(texture) = texture else { return };
     let painter = ui.painter().clone();
-    let parts = [Part {
+    let head = Part {
         center: V3::new(0.0, 0.0, 0.0),
         size: V3::new(8.0, 8.0, 8.0),
+        uv_size: V3::new(8.0, 8.0, 8.0),
         uv: UvRect { u: 0.0, v: 0.0, w: 8.0, h: 8.0 },
         swing: 0.0,
-    }];
+        overlay: false,
+    };
     let scale = size / 14.0;
     let center = rect.center();
     let pitch = -0.12;
     let mut faces: Vec<(f32, egui::Mesh)> = Vec::new();
-    for part in &parts {
-        for face in box_faces(part.size, part.uv, 64.0) {
-            let world: Vec<V3> = face
-                .corners
-                .iter()
-                .map(|c| c.add(part.center).rot_y(yaw).rot_x(pitch))
-                .collect();
-            let n = face.normal.rot_y(yaw).rot_x(pitch);
-            if n.z <= 0.01 {
-                continue;
-            }
-            let mut mesh = egui::Mesh::with_texture(texture.id());
-            let mut depth = 0.0;
-            for (i, corner) in world.iter().enumerate() {
-                depth += corner.z;
-                mesh.vertices.push(egui::epaint::Vertex {
-                    pos: Pos2::new(center.x + corner.x * scale, center.y - corner.y * scale),
-                    uv: face.uvs[i],
-                    color: Color32::WHITE,
-                });
-            }
-            mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
-            faces.push((depth / 4.0, mesh));
+    for face in box_faces(head.size, head.uv_size, head.uv, 64.0) {
+        let world: Vec<V3> = face
+            .corners
+            .iter()
+            .map(|c| c.add(head.center).rot_y(yaw).rot_x(pitch))
+            .collect();
+        let n = face.normal.rot_y(yaw).rot_x(pitch);
+        if n.z <= 0.01 {
+            continue;
         }
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+        let mut depth = 0.0;
+        for (i, corner) in world.iter().enumerate() {
+            depth += corner.z;
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: Pos2::new(center.x + corner.x * scale, center.y - corner.y * scale),
+                uv: face.uvs[i],
+                color: Color32::WHITE,
+            });
+        }
+        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+        faces.push((depth / 4.0, mesh));
     }
     faces.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     for (_, mesh) in faces {
         painter.add(egui::Shape::mesh(mesh));
     }
-}
-
-/// 简单的 2D 资源包图标底色
-pub fn placeholder_tile(ui: &mut Ui, p: &Palette, size: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(6), p.surface_alt);
 }

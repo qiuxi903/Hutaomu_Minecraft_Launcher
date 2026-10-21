@@ -2,6 +2,7 @@ pub mod about;
 pub mod accounts;
 pub mod download;
 pub mod home;
+pub mod home_config;
 pub mod settings;
 pub mod versions;
 
@@ -127,6 +128,8 @@ pub fn launch_game(app: &mut App) {
         Ok(process) => {
             app.game = Some(process);
             app.game_log_open = app.cfg.launch.show_game_log;
+            app.cfg.record_launch(&version_id);
+            app.save_config();
             app.success(format!("{version_id} 已启动"));
         }
         Err(err) => app.error(format!("启动失败：{err}")),

@@ -77,7 +77,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 8;
+pub const SHOT_SCENES: usize = 9;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -106,7 +106,14 @@ impl App {
             }
             4 => self.page = Page::Versions,
             5 => self.page = Page::Accounts,
-            6 => self.page = Page::Settings,
+            6 => {
+                self.page = Page::Settings;
+                self.settings_ui.tab = 2;
+            }
+            7 => {
+                self.page = Page::Settings;
+                self.settings_ui.tab = 0;
+            }
             _ => self.page = Page::About,
         }
     }
@@ -121,6 +128,13 @@ pub struct TaskItem {
     pub ok: bool,
     pub cancellable: bool,
     pub progress: Option<Arc<DownloadProgress>>,
+    pub bytes_done: u64,
+    pub bytes_total: u64,
+    /// 实时速度（字节/秒）
+    pub speed: f32,
+    pub started: std::time::Instant,
+    last_bytes: u64,
+    last_time: std::time::Instant,
 }
 
 #[derive(Clone)]
@@ -140,6 +154,24 @@ impl Job {
         self.send(CoreEvent::Progress {
             id: self.id,
             fraction,
+            done: 0,
+            total: 0,
+            message: message.into(),
+        });
+    }
+
+    pub fn progress_bytes(
+        &self,
+        fraction: f32,
+        done: u64,
+        total: u64,
+        message: impl Into<String>,
+    ) {
+        self.send(CoreEvent::Progress {
+            id: self.id,
+            fraction,
+            done,
+            total,
             message: message.into(),
         });
     }
@@ -174,6 +206,8 @@ pub enum CoreEvent {
     Progress {
         id: u64,
         fraction: f32,
+        done: u64,
+        total: u64,
         message: String,
     },
     TaskDone {
@@ -223,8 +257,12 @@ pub enum CoreEvent {
 
 pub struct SkinTexture {
     pub texture: egui::TextureHandle,
+    /// 8x8 头部（含帽子叠加层）放大后的头像纹理
+    pub head: egui::TextureHandle,
     pub model: SkinModel,
     pub source: SkinSource,
+    /// 是否为 64x64 皮肤（有第二层）
+    pub has_overlay: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -287,6 +325,8 @@ pub struct App {
     pub authlib_jar: Option<PathBuf>,
     pub dwm_applied: bool,
     pub shot: Option<ShotState>,
+    pub download_panel_open: bool,
+    download_panel_auto: bool,
     pub last_window_size: egui::Vec2,
     image_tx: std::sync::mpsc::Sender<String>,
     image_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>,
@@ -294,6 +334,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        crate::core::paths::migrate_legacy_layout();
         crate::core::log::init();
         let cfg = Config::load();
         crate::core::download::set_use_system_proxy(cfg.download.use_system_proxy);
@@ -362,6 +403,8 @@ impl App {
             first_frame: true,
             authlib_jar: None,
             dwm_applied: false,
+            download_panel_open: false,
+            download_panel_auto: false,
             last_window_size: egui::vec2(1120.0, 720.0),
             image_tx,
             image_rx: image_rx.clone(),
@@ -410,7 +453,20 @@ impl App {
             ok: true,
             cancellable,
             progress: None,
+            bytes_done: 0,
+            bytes_total: 0,
+            speed: 0.0,
+            started: std::time::Instant::now(),
+            last_bytes: 0,
+            last_time: std::time::Instant::now(),
         });
+        if !self.download_panel_open {
+            self.download_panel_auto = true;
+        }
+        if !self.download_panel_open {
+            self.download_panel_auto = true;
+        }
+        self.download_panel_open = true;
         let job = Job {
             tx: self.tx.clone(),
             egui: self.egui_ctx.clone(),
@@ -437,7 +493,14 @@ impl App {
             ok: true,
             cancellable: true,
             progress: Some(progress.clone()),
+            bytes_done: 0,
+            bytes_total: 0,
+            speed: 0.0,
+            started: std::time::Instant::now(),
+            last_bytes: 0,
+            last_time: std::time::Instant::now(),
         });
+        self.download_panel_open = true;
 
         let job = Job {
             tx: self.tx.clone(),
@@ -456,7 +519,12 @@ impl App {
                     {
                         break;
                     }
-                    job.progress(progress.fraction(), progress.message());
+                    job.progress_bytes(
+                        progress.fraction(),
+                        progress.done.load(std::sync::atomic::Ordering::Relaxed),
+                        progress.total.load(std::sync::atomic::Ordering::Relaxed),
+                        progress.message(),
+                    );
                     std::thread::sleep(std::time::Duration::from_millis(180));
                 }
             });
@@ -595,12 +663,13 @@ impl App {
             return;
         }
         self.news_loading = true;
+        let source = self.cfg.news.source.clone();
         let url = self.cfg.news.url.clone();
         let timeout = self.cfg.download.timeout_secs;
         self.spawn("获取资讯", false, move |job| {
             let result = (|| -> anyhow::Result<Vec<NewsItem>> {
                 let dl = Downloader::new(DownloadSource::Official, timeout)?;
-                crate::core::news::fetch(&dl, &url)
+                crate::core::news::fetch(&dl, &source, &url)
             })();
             job.send(CoreEvent::News(result.map_err(|e| format!("{e}"))));
             job.done(true, "");
@@ -757,12 +826,19 @@ impl App {
             image.to_color_image(),
             egui::TextureOptions::NEAREST,
         );
+        let head = self.egui_ctx.load_texture(
+            format!("head:{account_id}"),
+            image.head_icon(64),
+            egui::TextureOptions::NEAREST,
+        );
         self.skin_cache.insert(
             account_id.to_string(),
             SkinTexture {
                 texture,
+                head,
                 model,
                 source,
+                has_overlay: image.height >= 64,
             },
         );
     }
@@ -855,17 +931,40 @@ impl App {
                 CoreEvent::Progress {
                     id,
                     fraction,
+                    done,
+                    total,
                     message,
                 } => {
                     if let Some(task) = self.tasks.iter_mut().find(|t| t.id == id) {
                         task.fraction = fraction;
+                        if done > 0 || total > 0 {
+                            task.bytes_done = done;
+                            task.bytes_total = total;
+                        }
                         if !message.is_empty() {
                             task.message = message;
+                        }
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(task.last_time).as_secs_f32();
+                        if elapsed >= 0.4 && done >= task.last_bytes {
+                            let instant =
+                                (done - task.last_bytes) as f32 / elapsed;
+                            task.speed = if task.speed <= 0.0 {
+                                instant
+                            } else {
+                                task.speed * 0.6 + instant * 0.4
+                            };
+                            task.last_bytes = done;
+                            task.last_time = now;
                         }
                     }
                 }
                 CoreEvent::TaskDone { id, ok, message } => {
                     self.tasks.retain(|t| t.id != id);
+                    if self.tasks.is_empty() && self.download_panel_auto {
+                        self.download_panel_open = false;
+                        self.download_panel_auto = false;
+                    }
                     if ok {
                         if !message.is_empty() {
                             self.success(message);
@@ -1291,7 +1390,7 @@ impl App {
                                                 let _ = ui::avatar(
                                                     ui,
                                                     &self.palette,
-                                                    &skin.texture,
+                                                    &skin.head,
                                                     30.0,
                                                 );
                                             } else {
@@ -1714,7 +1813,6 @@ impl eframe::App for App {
             |ui| {
                 ui.set_width(content_rect.width());
                 ui.add_space(12.0);
-                self.task_bar(ui);
                 self.game_bar(ui);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
@@ -1735,13 +1833,15 @@ impl eframe::App for App {
             },
         );
 
+        views::home_config::game_config_modal(self, &ctx);
         self.game_log_modal(&ctx);
+        self.download_panel(&ctx);
         widgets::toast_layer(&ctx, &self.palette, &mut self.toasts, now);
 
         self.run_screenshots(&ctx);
 
         // 资讯定时刷新
-        if self.cfg.news.enabled && !self.cfg.news.url.trim().is_empty() {
+        if self.cfg.news.enabled {
             let interval = (self.cfg.news.refresh_minutes.max(5) as u64) * 60;
             if let Some(at) = self.news_fetched_at {
                 if at.elapsed().as_secs() > interval && !self.news_loading {
@@ -1757,6 +1857,7 @@ fn shot_scene_wait(scene: usize) -> f64 {
     match scene {
         2 => 4.0,
         3 => 9.0,
+        4 => 2.6,
         _ => 1.8,
     }
 }
@@ -1769,7 +1870,8 @@ fn shot_scene_label(scene: usize) -> &'static str {
         3 => "下载-Mod",
         4 => "版本管理",
         5 => "账号",
-        6 => "设置",
+        6 => "设置-游戏",
+        7 => "设置-外观",
         _ => "关于",
     }
 }

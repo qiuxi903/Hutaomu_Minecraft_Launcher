@@ -35,6 +35,39 @@ fn hide_console(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console(_cmd: &mut Command) {}
 
+/// 并行探测多个候选路径，显著缩短搜索时间
+pub fn probe_many(candidates: Vec<PathBuf>) -> Vec<JavaInfo> {
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    let queue = std::sync::Arc::new(std::sync::Mutex::new(candidates));
+    let results = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let threads = num_cpus::get().clamp(2, 8).min(8);
+
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            let queue = queue.clone();
+            let results = results.clone();
+            scope.spawn(move || loop {
+                let path = {
+                    let mut guard = queue.lock().unwrap();
+                    guard.pop()
+                };
+                let Some(path) = path else { break };
+                if let Some(info) = probe(&path) {
+                    if let Ok(mut list) = results.lock() {
+                        list.push(info);
+                    }
+                }
+            });
+        }
+    });
+
+    let mut list = results.lock().map(|l| l.clone()).unwrap_or_default();
+    sort_javas(&mut list);
+    list
+}
+
 /// 运行 `java -version` 并解析结果，失败返回 None
 pub fn probe(path: &Path) -> Option<JavaInfo> {
     if !path.is_file() {
@@ -269,12 +302,10 @@ pub fn brief_search() -> Vec<JavaInfo> {
             push_unique(&mut candidates, exe);
             continue;
         }
-        scan_children(&root, &mut candidates, 3);
+        scan_children(&root, &mut candidates, 2);
     }
 
-    let mut result: Vec<JavaInfo> = candidates.iter().filter_map(|p| probe(p)).collect();
-    sort_javas(&mut result);
-    result
+    probe_many(candidates)
 }
 
 fn registry_java_homes() -> Vec<PathBuf> {
@@ -354,13 +385,10 @@ pub fn full_search(cancel: &AtomicBool, mut progress: impl FnMut(String)) -> Vec
     }
 
     progress("正在校验 Java 版本 ...".into());
-    let mut result: Vec<JavaInfo> = candidates
-        .iter()
-        .filter(|_p| !cancel.load(Ordering::Relaxed))
-        .filter_map(|p| probe(p))
-        .collect();
-    sort_javas(&mut result);
-    result
+    if cancel.load(Ordering::Relaxed) {
+        return Vec::new();
+    }
+    probe_many(candidates)
 }
 
 fn available_drives() -> Vec<PathBuf> {

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use base64::Engine;
 use serde::Deserialize;
 
@@ -26,14 +26,13 @@ struct YggdrasilProfile {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, rename_all = "camelCase")]
 struct YggdrasilResponse {
     access_token: Option<String>,
     client_token: Option<String>,
     selected_profile: Option<YggdrasilProfile>,
     available_profiles: Option<Vec<YggdrasilProfile>>,
     error: Option<String>,
-    #[serde(rename = "errorMessage")]
     error_message: Option<String>,
 }
 
@@ -76,12 +75,10 @@ pub fn login(
         "agent": { "name": "Minecraft", "version": 1 },
         "requestUser": true
     });
-    let resp: YggdrasilResponse = dl
-        .post_json(&format!("{server}/authserver/authenticate"), &body)
-        .map_err(|e| anyhow!("登录失败: {e}"))?;
+    let resp = post_yggdrasil(dl, &format!("{server}/authserver/authenticate"), &body)?;
 
-    if let Some(err) = resp.error {
-        let message = resp.error_message.unwrap_or(err);
+    if let Some(err) = resp.error.clone() {
+        let message = resp.error_message.clone().unwrap_or(err);
         return Err(anyhow!("{}", translate_error(&message)));
     }
 
@@ -120,12 +117,10 @@ pub fn refresh(
         "clientToken": client_token,
         "requestUser": true
     });
-    let resp: YggdrasilResponse = dl
-        .post_json(&format!("{server}/authserver/refresh"), &body)
-        .map_err(|e| anyhow!("刷新登录状态失败: {e}"))?;
+    let resp = post_yggdrasil(dl, &format!("{server}/authserver/refresh"), &body)?;
 
-    if let Some(err) = resp.error {
-        return Err(anyhow!("{}", resp.error_message.unwrap_or(err)));
+    if let Some(err) = resp.error.clone() {
+        return Err(anyhow!("{}", resp.error_message.clone().unwrap_or(err)));
     }
 
     let access_token = resp
@@ -165,16 +160,57 @@ pub fn validate(
         .is_ok()
 }
 
-fn translate_error(message: &str) -> String {
-    match message {
-        "Invalid credentials. Invalid username or password." => {
-            "用户名或密码错误".to_string()
-        }
-        "Invalid credentials." => "账号或密码错误".to_string(),
-        "Forbidden operation for token." => "登录状态已失效，请重新登录".to_string(),
-        "Token has expired." => "登录已过期，请重新登录".to_string(),
-        other => other.to_string(),
+/// Yggdrasil 在 4xx 时也会返回 JSON 错误体，这里统一解析
+fn post_yggdrasil(
+    dl: &Downloader,
+    url: &str,
+    body: &serde_json::Value,
+) -> Result<YggdrasilResponse> {
+    let resp = dl
+        .client_for_auth(url)
+        .post(url)
+        .json(body)
+        .send()
+        .with_context(|| format!("连接失败: {url}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+
+    let parsed: YggdrasilResponse = serde_json::from_str(&text).unwrap_or_default();
+    if parsed.error.is_some() {
+        return Ok(parsed);
     }
+    if !status.is_success() {
+        return Err(anyhow!(
+            "皮肤站返回 HTTP {}：{}",
+            status.as_u16(),
+            crate::core::download::truncate(&text, 160)
+        ));
+    }
+    // 成功响应也必须能解析出 accessToken，否则视为接口不兼容
+    if parsed.access_token.is_none() {
+        return Err(anyhow!(
+            "皮肤站返回的数据无法识别：{}",
+            crate::core::download::truncate(&text, 160)
+        ));
+    }
+    Ok(parsed)
+}
+
+fn translate_error(message: &str) -> String {
+    let lower = message.to_lowercase();
+    if lower.contains("invalid credentials") {
+        return "用户名或密码错误".to_string();
+    }
+    if lower.contains("is not found") || lower.contains("not found") {
+        return "皮肤站上没有这个账号".to_string();
+    }
+    if lower.contains("token has expired") {
+        return "登录已过期，请重新登录".to_string();
+    }
+    if lower.contains("forbidden operation for token") {
+        return "登录状态已失效，请重新登录".to_string();
+    }
+    message.to_string()
 }
 
 #[derive(Debug, Deserialize)]

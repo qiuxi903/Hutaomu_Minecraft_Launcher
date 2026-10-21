@@ -1016,7 +1016,11 @@ pub fn key_value(ui: &mut Ui, p: &Palette, key: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(key).font(font(13.0)).color(p.text_weak));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(value).font(font(13.0)).color(p.text));
+            // 超长内容（路径等）截断显示，避免与左侧标签重叠
+            ui.add(
+                egui::Label::new(egui::RichText::new(value).font(font(13.0)).color(p.text))
+                    .truncate(),
+            );
         });
     });
 }

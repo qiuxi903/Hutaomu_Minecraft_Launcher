@@ -441,6 +441,11 @@ impl Downloader {
         &self.client
     }
 
+    /// 认证接口使用与普通请求相同的客户端选择逻辑
+    pub fn client_for_auth(&self, url: &str) -> &reqwest::blocking::Client {
+        self.client_for(url)
+    }
+
     /// 根据目标主机选择客户端：镜像站直连，其余走系统代理
     fn client_for(&self, url: &str) -> &reqwest::blocking::Client {
         let host = url

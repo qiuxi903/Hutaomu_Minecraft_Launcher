@@ -9,6 +9,8 @@ use crate::views;
 #[derive(Default)]
 pub struct HomeState {
     pub news_expanded: Option<usize>,
+    /// 「游戏配置」二级弹窗是否打开
+    pub config_open: bool,
 }
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
@@ -184,6 +186,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
     let skin = account_id.as_ref().and_then(|id| app.skin_of(id));
     let model = skin.map(|s| s.model).unwrap_or_default();
     let texture = skin.map(|s| s.texture.clone());
+    let has_overlay = skin.map(|s| s.has_overlay).unwrap_or(false);
 
     ui::card(ui, &p, |ui| {
         ui.horizontal(|ui| {
@@ -205,6 +208,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
             &p,
             texture.as_ref(),
             model,
+            has_overlay,
             yaw,
             268.0,
             app.cfg.ui.animations,
@@ -245,7 +249,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
     });
 }
 
-// ------------------------------------------------------------------ 启动配置
+// ------------------------------------------------------------------ 游戏配置（二级入口）
 
 fn launch_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
@@ -258,93 +262,42 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                     .strong(),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::ghost(ui, &p, "更多设置").clicked() {
-                    app.page = Page::Settings;
+                if ui::button(ui, &p, ButtonOpts::secondary("打开配置").icon("sliders")).clicked() {
+                    app.home_ui.config_open = true;
                 }
             });
         });
-        ui.add_space(12.0);
+        ui.add_space(10.0);
 
-        // 版本选择
+        let version = app
+            .selected_version_id()
+            .and_then(|id| app.local_versions.iter().find(|v| v.id == id).cloned());
+
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("游戏版本")
-                    .font(ui::font(13.0))
+                egui::RichText::new("当前版本")
+                    .font(ui::font(12.5))
                     .color(p.text_weak),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let ids: Vec<String> = app.local_versions.iter().map(|v| v.id.clone()).collect();
-                let current = app
-                    .selected_version_id()
-                    .unwrap_or_else(|| "尚未安装版本".into());
-                if ids.is_empty() {
-                    if ui::button(ui, &p, ButtonOpts::secondary("去下载版本")).clicked() {
-                        app.page = Page::Download;
-                    }
-                } else if let Some(index) =
-                    ui::dropdown(ui, &p, "home_version", &current, &ids, 260.0)
-                {
-                    app.cfg.selected_version = Some(ids[index].clone());
-                    app.save_config();
-                }
-            });
-        });
-        ui.add_space(6.0);
-
-        // 内存
-        let mut memory = app.cfg.java.memory_mb as f32;
-        let changed = ui::slider(
-            ui,
-            &p,
-            "最大内存",
-            &mut memory,
-            512.0,
-            32768.0,
-            256.0,
-            " MB",
-        );
-        if changed.changed() {
-            app.cfg.java.memory_mb = memory as u32;
-            app.save_config();
-        }
-        ui.add_space(2.0);
-
-        // Java
-        let mc_version = app
-            .selected_version()
-            .map(|v| v.mc_version.clone())
-            .unwrap_or_default();
-        let java = app.java_for(&mc_version);
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("Java")
-                    .font(ui::font(13.0))
-                    .color(p.text_weak),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::ghost(ui, &p, "更换").clicked() {
-                    app.page = Page::Settings;
-                }
-                match &java {
-                    Some(java) => {
+                match &version {
+                    Some(v) => {
+                        widgets::badge(ui, &p, &v.mc_version, p.accent);
+                        if let Some(loader) = &v.loader {
+                            widgets::badge(ui, &p, loader, views::loader_color(Some(loader)));
+                        }
                         ui.label(
-                            egui::RichText::new(format!("Java {} · {}", java.version, java.vendor))
-                                .font(ui::font(12.5))
-                                .color(p.text),
-                        );
-                    }
-                    None if app.java_searching => {
-                        ui.label(
-                            egui::RichText::new("正在搜索 Java ...")
-                                .font(ui::font(12.5))
-                                .color(p.text_weak),
+                            egui::RichText::new(&v.id)
+                                .font(ui::font(13.0))
+                                .color(p.text)
+                                .strong(),
                         );
                     }
                     None => {
                         ui.label(
-                            egui::RichText::new("未找到可用的 Java")
+                            egui::RichText::new("尚未安装版本")
                                 .font(ui::font(12.5))
-                                .color(p.danger),
+                                .color(p.text_faint),
                         );
                     }
                 }
@@ -352,41 +305,31 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(4.0);
 
-        // 游戏目录
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("游戏目录")
-                    .font(ui::font(13.0))
-                    .color(p.text_weak),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::ghost(ui, &p, "打开").clicked() {
-                    app.cfg.open_game_dir();
-                }
-                if ui::ghost(ui, &p, "更改").clicked() {
-                    if let Some(dir) = rfd::FileDialog::new()
-                        .set_title("选择游戏目录")
-                        .pick_folder()
-                    {
-                        app.cfg.set_game_dir(dir);
-                        app.save_config();
-                        app.refresh_local_versions();
-                    }
-                }
-                let text = app.cfg.game_dir_display();
-                let short = if text.chars().count() > 46 {
-                    let tail: String = text.chars().skip(text.chars().count() - 44).collect();
-                    format!("…{tail}")
-                } else {
-                    text
-                };
-                ui.label(
-                    egui::RichText::new(short)
-                        .font(ui::font(12.0))
-                        .color(p.text_weak),
-                );
-            });
-        });
+        let version_id = version.as_ref().map(|v| v.id.clone()).unwrap_or_default();
+        let mc_version = version.as_ref().map(|v| v.mc_version.clone()).unwrap_or_default();
+        widgets::key_value(
+            ui,
+            &p,
+            "最大内存",
+            &format!("{} MB", app.cfg.effective_memory(&version_id)),
+        );
+        widgets::key_value(
+            ui,
+            &p,
+            "Java",
+            &match app.java_for(&mc_version) {
+                Some(java) => format!("Java {} · {}", java.version, java.vendor),
+                None if app.java_searching => "正在搜索 ...".into(),
+                None => "未找到可用的 Java".into(),
+            },
+        );
+
+        ui.add_space(10.0);
+        ui.label(
+            egui::RichText::new("版本、内存、Java、目录等通用设置已移到「设置 - 游戏」。")
+                .font(ui::font(11.0))
+                .color(p.text_faint),
+        );
     });
 }
 

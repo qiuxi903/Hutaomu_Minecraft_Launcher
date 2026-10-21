@@ -23,6 +23,16 @@ pub struct Config {
     pub news: NewsSettings,
     pub java_cache: Vec<JavaInfo>,
     pub version_overrides: HashMap<String, VersionOverride>,
+    /// 每个版本的启动统计（启动次数、最后启动时间）
+    pub version_stats: HashMap<String, VersionStat>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VersionStat {
+    pub launches: u32,
+    /// 最后启动的 Unix 时间戳
+    pub last_launch: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +100,8 @@ pub enum BackgroundKind {
 #[serde(default)]
 pub struct NewsSettings {
     pub enabled: bool,
+    /// 内置资讯源 id，或 "custom" 表示使用 url
+    pub source: String,
     pub url: String,
     pub refresh_minutes: u32,
     pub last_fetch: Option<i64>,
@@ -118,6 +130,7 @@ impl Default for Config {
             news: NewsSettings::default(),
             java_cache: Vec::new(),
             version_overrides: HashMap::new(),
+            version_stats: HashMap::new(),
         }
     }
 }
@@ -188,6 +201,7 @@ impl Default for NewsSettings {
     fn default() -> Self {
         Self {
             enabled: true,
+            source: "official_zh".into(),
             url: String::new(),
             refresh_minutes: 60,
             last_fetch: None,
@@ -273,6 +287,16 @@ impl Config {
         } else {
             self.game_dir.clone()
         }
+    }
+
+    pub fn record_launch(&mut self, version: &str) {
+        let entry = self.version_stats.entry(version.to_string()).or_default();
+        entry.launches += 1;
+        entry.last_launch = chrono::Utc::now().timestamp();
+    }
+
+    pub fn stat_of(&self, version: &str) -> VersionStat {
+        self.version_stats.get(version).cloned().unwrap_or_default()
     }
 
     pub fn set_game_dir(&mut self, dir: impl Into<PathBuf>) {

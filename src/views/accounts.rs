@@ -514,7 +514,7 @@ fn account_list(app: &mut App, ui: &mut Ui) {
             } else {
                 app.ensure_skin(&id);
             }
-            let texture = app.skin_of(&id).map(|s| s.texture.clone());
+            let texture = app.skin_of(&id).map(|s| s.head.clone());
 
             let response = ui.scope(|ui| {
                 let frame = egui::Frame::NONE
@@ -619,6 +619,7 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
     let skin = app.skin_of(&id);
     let model = skin.map(|s| s.model).unwrap_or(account.skin_model());
     let texture = skin.map(|s| s.texture.clone());
+    let has_overlay = skin.map(|s| s.has_overlay).unwrap_or(true);
     let source = skin.map(|s| s.source).unwrap_or(SkinSource::Generated);
 
     ui::card(ui, &p, |ui| {
@@ -638,6 +639,7 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                     &p,
                     texture.as_ref(),
                     model,
+                    has_overlay,
                     &mut app.preview_yaw,
                     300.0,
                     app.cfg.ui.animations,

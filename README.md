@@ -13,9 +13,9 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 | 版本 | 说明 |
 | --- | --- |
-| [v0.1.0-beta.1](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.1) | 首个公开测试版（Pre-release），Windows x64 |
+| [v0.1.0-beta.2](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.2) | 第二个公开测试版（Pre-release），Windows x64 |
 
-发行包 `htmcl-v0.1.0-beta.1-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
+发行包 `htmcl-v0.1.0-beta.2-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
 
 从源码构建请见 [构建](#构建)。
 
@@ -40,11 +40,11 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ## 测试版声明
 
-当前版本 **v0.1.0-beta.1** 是项目的第一个公开测试版（Beta）。
+当前版本 **v0.1.0-beta.2** 是项目的第二个公开测试版（Beta）。
 
 - 功能仍在快速迭代，配置文件字段、目录结构与界面布局都可能在下个版本变化；
 - 升级前请备份 `accounts.json` 与游戏目录；
-- 已在真实环境验证：版本下载与安装、原版启动、Fabric 加载器安装与启动、Java 简要搜索、Modrinth 搜索与版本查询、全部界面页面；
+- 已在真实环境验证：版本下载与安装、原版启动、Fabric 加载器安装与启动、Java 简要搜索、Modrinth 搜索与版本查询、三个中文资讯源、皮肤站接口错误处理、全部界面页面；
 - **尚未实机验证**：Forge / NeoForge 安装器流程、微软账号登录、皮肤站登录（这三项需要更完整的网络环境或真实账号）；
 - 遇到问题请提交 [Issue](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/issues)，并附上 `logs/` 下的日志。
 
@@ -58,7 +58,8 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - 版本隔离：每个版本使用独立的 `mods`、`saves`、`config` 目录；
 - 单版本可单独覆盖内存、Java 与 JVM 参数；
 - 启动参数按版本 JSON 的 `arguments` / `minecraftArguments` 模板展开，兼容 1.6 之前的老版本；
-- 游戏进程输出实时写入 `logs/game-*.log`，界面内可查看并强制结束。
+- 游戏进程输出实时写入 `logs/game-*.log`，界面内可查看并强制结束；
+- **下载中心**：右下角悬浮面板显示每个任务的进度、字节数、实时速度、已用时间与当前动作，可随时取消；所有下载与内容安装都会自动弹出。
 
 ### 加载器
 
@@ -80,6 +81,15 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - Mod 的必需前置依赖自动安装（一层，避免递归）；
 - `.mrpack` 整合包：解析 `modrinth.index.json`、按清单下载、写入 `overrides` 与 `client-overrides`。
 
+### 版本管理
+
+- 左侧版本列表，支持按「正式版 / 快照 / 加载器 / 其他」筛选与搜索；
+- 右侧详情分为「概览 / 设置 / 存档 / 截图」四个标签；
+- 概览显示 MC 版本、加载器、继承关系、启动次数、最后启动时间、目录与占用空间；
+- 设置可为单个版本覆盖内存、Java、JVM 参数与独立游戏目录；
+- 存档页列出所有含 `level.dat` 的世界，截图页显示缩略图；
+- 支持设为当前、启动、重命名、复制、删除、打开版本目录与游戏目录。
+
 ### 账号
 
 | 类型 | 说明 |
@@ -91,7 +101,8 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - 皮肤站账号启动时自动下载并挂载 [authlib-injector](https://github.com/yushijinhun/authlib-injector)；
 - 皮肤来源优先级：本地 PNG → 账号皮肤 → 按用户名程序化生成的默认皮肤；
 - 支持经典（4px 手臂）与纤细（3px 手臂）两种模型，可自动识别；
-- 3D 皮肤预览由项目自行实现（立方体模型 + 纹理映射 + 背面剔除 + 深度排序），可拖拽旋转。
+- 3D 皮肤预览由项目自行实现（立方体模型 + 纹理映射 + 背面剔除 + 深度排序），支持第二层（帽子 / 外套），可拖拽旋转；
+- 账号列表与侧边栏头像取自皮肤头部（含帽子层），而非整张皮肤。
 
 ### Java
 
@@ -107,8 +118,9 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - 94 个 24×24 线性 SVG 图标，构建时内嵌进可执行文件，无 emoji；
 - 6 套内置主题 + `themes/` 目录下的自定义主题；
 - 支持静态图片与 GIF 动态背景，可调不透明度与内容遮罩；
+- 首页的「游戏配置」是二级弹窗，通用游戏设置集中在「设置 - 游戏」，按通用 / 内存 / 启动参数 / 游戏目录分类；
 - 主题色、圆角、字体缩放、界面动画均可调整；
-- 首页资讯区可绑定自定义 JSON / RSS 源，未绑定时显示内置使用提示。
+- 内置三个中文资讯源：Minecraft 官方资讯（与 PCL2-CE 同源）、苦力怕论坛 RSS、中文 Minecraft Wiki 最近更改；也可切换为自定义 JSON / RSS 地址。
 
 ## 界面
 
@@ -120,9 +132,13 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 | --- | --- |
 | ![加载器](docs/screenshots/03-loader.png) | ![Mod](docs/screenshots/04-mod.png) |
 
-| 账号与 3D 皮肤 | 设置 |
+| 版本管理 | 账号与 3D 皮肤 |
 | --- | --- |
-| ![账号](docs/screenshots/05-accounts.png) | ![设置](docs/screenshots/06-settings.png) |
+| ![版本管理](docs/screenshots/05-versions.png) | ![账号](docs/screenshots/06-accounts.png) |
+
+| 设置 - 游戏 | 设置 - 外观 |
+| --- | --- |
+| ![设置-游戏](docs/screenshots/07-settings-game.png) | ![设置-外观](docs/screenshots/08-settings-appearance.png) |
 
 ## 技术栈与架构
 
@@ -244,17 +260,20 @@ htmcl.exe --selftest 1.20.1 fabric   # 额外安装 Fabric 后启动
 
 ## 配置文件
 
-所有文件都位于 `htmcl.exe` 同目录：
+启动器数据全部位于 `htmcl.exe` 同目录的 `htmcl/` 文件夹；游戏数据默认在 `.minecraft/`：
 
 ```
 htmcl.exe
-htmcl.json          启动器配置
-accounts.json       账号（含明文令牌）
-themes/             自定义主题
-logs/               启动器与游戏日志
-.htmcl/             缓存：authlib-injector、皮肤、图片、安装器
+htmcl/
+├── htmcl.json      启动器配置
+├── accounts.json   账号（含明文令牌）
+├── themes/         自定义主题
+├── logs/           启动器与游戏日志
+└── cache/          authlib-injector、皮肤、图片、安装器等缓存
 .minecraft/         默认游戏目录（可在设置中修改）
 ```
+
+旧版本（配置直接放在 exe 同目录）首次启动时会自动迁移到 `htmcl/`，不会覆盖已有数据。
 
 ### htmcl.json
 
@@ -395,6 +414,9 @@ logs/               启动器与游戏日志
 | `login.microsoftonline.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 微软登录 |
 | `authlib-injector.yushi.moe` | authlib-injector 最新版本 |
 | 皮肤站 Yggdrasil API | 皮肤站登录与皮肤 |
+| `net-secondary.web.minecraft-services.net` | Minecraft 官方中文资讯 |
+| `klpbbs.com` | 苦力怕论坛 RSS |
+| `zh.minecraft.wiki` | 中文 Minecraft Wiki 最近更改 |
 
 说明：
 
@@ -411,16 +433,19 @@ logs/               启动器与游戏日志
 - Forge / NeoForge 安装器流程、微软登录、皮肤站登录尚未实机验证；
 - 不支持 OptiFine 安装、CurseForge 内容、Mod 更新检查、存档 / 世界下载；
 - 下载中断后不会复用 `.part` 文件，只按 SHA1 跳过已完成文件；
-- 资源 CDN 不稳定时可能出现部分资源缺失，重新安装可补齐。
+- 资源 CDN 不稳定时可能出现部分资源缺失，重新安装可补齐；
+- 版本重命名不会自动修正指向它的子版本（`inheritsFrom`），重命名基础版本后需重新安装相关加载器版本；
+- 资讯源依赖第三方站点可用性，接口变化时需要更新解析逻辑；
+- 下载中心只保留进行中的任务，完成后不保留历史记录。
 
 **路线图**
 
 1. 实机验证 Forge / NeoForge 安装器，补齐失败场景的错误提示；
-2. OptiFine 安装；
-3. CurseForge 内容源；
-4. Mod 更新检查与批量管理；
-5. 整合包版本管理（记录来源，支持更新）；
-6. 下载断点续传。
+2. 版本管理补齐导出整合包、安装 Mod / 资源到指定版本；
+3. OptiFine 安装；
+4. CurseForge 内容源；
+5. Mod 更新检查与批量管理；
+6. 下载断点续传与下载历史。
 
 ## 参与开发
 
@@ -440,6 +465,7 @@ logs/               启动器与游戏日志
 - [PCL2](https://github.com/Hex-Dragon/PCL2)（自定义许可）—— 版本管理与启动流程
 - [HMCL](https://github.com/HMCL-dev/HMCL)（GPL-3.0）—— 加载器安装、Java 搜索与下载源
 - [Bakaxl](https://github.com/Bakaxl)（MIT）—— 主题系统与视觉细节
+- [PCL2-CE](https://github.com/PCL-Community/PCL-CE)（GPL-3.0）—— 版本管理的信息架构与内置资讯源
 
 ## 许可证与声明
 

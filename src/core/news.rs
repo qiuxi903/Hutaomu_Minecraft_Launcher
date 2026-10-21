@@ -19,21 +19,181 @@ pub struct NewsItem {
     pub tag: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct NewsEnvelope {
-    #[serde(default)]
-    items: Vec<NewsItem>,
-    #[serde(default)]
-    data: Vec<NewsItem>,
-    #[serde(default)]
-    list: Vec<NewsItem>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetKind {
+    /// Minecraft 官网中文资讯（与 PCL2-CE 同源）
+    Official,
+    /// 通用 RSS / Atom
+    Rss,
+    /// 中文 Minecraft Wiki 最近更改
+    Wiki,
 }
 
-/// 拉取资讯。支持 JSON（数组或 {items:[]}）与 RSS / Atom。
-pub fn fetch(dl: &Downloader, url: &str) -> Result<Vec<NewsItem>> {
-    if url.trim().is_empty() {
-        return Ok(builtin_tips());
+pub struct NewsPreset {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub url: &'static str,
+    pub kind: PresetKind,
+}
+
+pub const PRESETS: &[NewsPreset] = &[
+    NewsPreset {
+        id: "official_zh",
+        name: "Minecraft 官方资讯",
+        description: "Minecraft 官网中文新闻（与 PCL2-CE 同源）",
+        url: "https://net-secondary.web.minecraft-services.net/api/v1.0/zh-cn/search?pageSize=24&sortType=Recent&category=News&newsOnly=true&page=1",
+        kind: PresetKind::Official,
+    },
+    NewsPreset {
+        id: "klpbbs",
+        name: "苦力怕论坛",
+        description: "国内 Minecraft 社区资讯（RSS）",
+        url: "https://www.klpbbs.com/forum.php?mod=rss",
+        kind: PresetKind::Rss,
+    },
+    NewsPreset {
+        id: "wiki",
+        name: "中文 Minecraft Wiki",
+        description: "Wiki 最近更改，适合追新版本与机制变动",
+        url: "https://zh.minecraft.wiki/api.php?action=query&list=recentchanges&rcprop=title%7Ctimestamp%7Ccomment%7Cids&rclimit=20&format=json",
+        kind: PresetKind::Wiki,
+    },
+];
+
+pub fn preset(id: &str) -> Option<&'static NewsPreset> {
+    PRESETS.iter().find(|p| p.id == id)
+}
+
+/// 拉取资讯。source 为内置源 id 或 "custom"（使用 custom_url 自动识别 JSON / RSS）。
+pub fn fetch(dl: &Downloader, source: &str, custom_url: &str) -> Result<Vec<NewsItem>> {
+    if source == "custom" {
+        if custom_url.trim().is_empty() {
+            return Ok(builtin_tips());
+        }
+        return fetch_custom(dl, custom_url);
     }
+
+    let Some(preset) = preset(source) else {
+        return Ok(builtin_tips());
+    };
+
+    match preset.kind {
+        PresetKind::Official => {
+            let response: OfficialResponse = dl
+                .get_json_direct(preset.url)
+                .with_context(|| "获取 Minecraft 官方资讯失败")?;
+            Ok(normalize(
+                response
+                    .result
+                    .results
+                    .into_iter()
+                    .map(|item| NewsItem {
+                        title: decode_entities(&item.title),
+                        summary: truncate_text(&decode_entities(&strip_tags(&item.description)), 180),
+                        date: unix_date(item.time),
+                        url: item.url,
+                        image: if item.image.is_empty() {
+                            None
+                        } else {
+                            Some(item.image)
+                        },
+                        tag: Some(if item.author.is_empty() {
+                            "官方资讯".into()
+                        } else {
+                            format!("官方 · {}", item.author)
+                        }),
+                    })
+                    .collect(),
+            ))
+        }
+        PresetKind::Rss => {
+            let bytes = dl.get_bytes_direct(preset.url)?;
+            let text = String::from_utf8_lossy(&bytes).to_string();
+            Ok(normalize(parse_feed(&text)))
+        }
+        PresetKind::Wiki => {
+            let response: WikiResponse = dl
+                .get_json_direct(preset.url)
+                .with_context(|| "获取 Minecraft Wiki 最近更改失败")?;
+            Ok(normalize(
+                response
+                    .query
+                    .recentchanges
+                    .into_iter()
+                    .map(|change| NewsItem {
+                        title: change.title,
+                        summary: strip_tags(&change.comment),
+                        date: change.timestamp.chars().take(10).collect(),
+                        url: format!("https://zh.minecraft.wiki/?diff={}", change.revid),
+                        image: None,
+                        tag: Some("Wiki".into()),
+                    })
+                    .collect(),
+            ))
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct OfficialResponse {
+    #[serde(default)]
+    result: OfficialResult,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct OfficialResult {
+    #[serde(default)]
+    results: Vec<OfficialItem>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OfficialItem {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    author: String,
+    #[serde(default)]
+    image: String,
+    #[serde(default)]
+    time: i64,
+}
+
+#[derive(Debug, Deserialize)]
+struct WikiResponse {
+    #[serde(default)]
+    query: WikiQuery,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct WikiQuery {
+    #[serde(default)]
+    recentchanges: Vec<WikiChange>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WikiChange {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    timestamp: String,
+    #[serde(default)]
+    comment: String,
+    #[serde(default)]
+    revid: i64,
+}
+
+fn unix_date(timestamp: i64) -> String {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+        .unwrap_or_default()
+}
+
+fn fetch_custom(dl: &Downloader, url: &str) -> Result<Vec<NewsItem>> {
     let bytes = dl
         .get_bytes_direct(url)
         .with_context(|| format!("获取资讯失败: {url}"))?;
@@ -41,13 +201,13 @@ pub fn fetch(dl: &Downloader, url: &str) -> Result<Vec<NewsItem>> {
     let trimmed = text.trim_start();
 
     if trimmed.starts_with('[') {
-        let items: Vec<NewsItem> = serde_json::from_str(trimmed)
-            .with_context(|| "资讯 JSON 格式不正确，应为对象数组")?;
+        let items: Vec<NewsItem> =
+            serde_json::from_str(trimmed).with_context(|| "资讯 JSON 格式不正确，应为对象数组")?;
         return Ok(normalize(items));
     }
     if trimmed.starts_with('{') {
-        let envelope: NewsEnvelope = serde_json::from_str(trimmed)
-            .with_context(|| "资讯 JSON 格式不正确")?;
+        let envelope: NewsEnvelope =
+            serde_json::from_str(trimmed).with_context(|| "资讯 JSON 格式不正确")?;
         let items = if !envelope.items.is_empty() {
             envelope.items
         } else if !envelope.data.is_empty() {
@@ -66,11 +226,21 @@ pub fn fetch(dl: &Downloader, url: &str) -> Result<Vec<NewsItem>> {
     ))
 }
 
+#[derive(Debug, Deserialize)]
+struct NewsEnvelope {
+    #[serde(default)]
+    items: Vec<NewsItem>,
+    #[serde(default)]
+    data: Vec<NewsItem>,
+    #[serde(default)]
+    list: Vec<NewsItem>,
+}
+
 fn normalize(items: Vec<NewsItem>) -> Vec<NewsItem> {
     items
         .into_iter()
         .filter(|item| !item.title.trim().is_empty())
-        .take(30)
+        .take(40)
         .collect()
 }
 
@@ -106,15 +276,40 @@ fn parse_feed(xml: &str) -> Vec<NewsItem> {
         if !title.trim().is_empty() {
             items.push(NewsItem {
                 title: decode_entities(&strip_tags(&title)),
-                summary: truncate_text(&decode_entities(&strip_tags(&summary)), 160),
-                date: date.trim().to_string(),
+                summary: truncate_text(&decode_entities(&strip_tags(&summary)), 180),
+                date: short_date(&date),
                 url: url.trim().to_string(),
-                image: None,
+                image: extract_attr(block, "enclosure", "url")
+                    .or_else(|| extract_media_url(block)),
                 tag: None,
             });
         }
     }
     items
+}
+
+fn short_date(date: &str) -> String {
+    let trimmed = date.trim();
+    if trimmed.len() >= 16 && trimmed.contains(':') {
+        trimmed.chars().take(16).collect()
+    } else {
+        trimmed.chars().take(10).collect()
+    }
+}
+
+fn extract_media_url(block: &str) -> Option<String> {
+    for needle in ["media:content", "media:thumbnail"] {
+        if let Some(pos) = block.find(needle) {
+            let head = &block[pos..];
+            if let Some(start) = head.find("url=\"") {
+                let rest = &head[start + 5..];
+                if let Some(end) = rest.find('"') {
+                    return Some(rest[..end].to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn extract_tag(block: &str, tag: &str) -> Option<String> {
@@ -155,13 +350,34 @@ fn strip_tags(text: &str) -> String {
 }
 
 fn decode_entities(text: &str) -> String {
-    text.replace("&lt;", "<")
+    let mut out = text
+        .replace("&lt;", "<")
         .replace("&gt;", ">")
         .replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&apos;", "'")
         .replace("&nbsp;", " ")
         .replace("&amp;", "&")
+        .replace("&#8217;", "'")
+        .replace("&#8216;", "'")
+        .replace("&#8220;", "\"")
+        .replace("&#8221;", "\"")
+        .replace("&#8212;", "—")
+        .replace("&#8230;", "…");
+    while let Some(start) = out.find("&#") {
+        let Some(end) = out[start..].find(';') else { break };
+        let entity = &out[start + 2..start + end];
+        let code = if let Some(hex) = entity.strip_prefix('x').or_else(|| entity.strip_prefix('X')) {
+            u32::from_str_radix(hex, 16).ok()
+        } else {
+            entity.parse::<u32>().ok()
+        };
+        match code.and_then(char::from_u32) {
+            Some(ch) => out.replace_range(start..start + end + 1, &ch.to_string()),
+            None => break,
+        }
+    }
+    out
 }
 
 fn truncate_text(text: &str, max: usize) -> String {
@@ -175,7 +391,7 @@ fn truncate_text(text: &str, max: usize) -> String {
     }
 }
 
-/// 未绑定资讯源时展示的使用提示
+/// 未启用资讯或源不可用时展示的使用提示
 pub fn builtin_tips() -> Vec<NewsItem> {
     let tips: [(&str, &str); 6] = [
         (
@@ -200,7 +416,7 @@ pub fn builtin_tips() -> Vec<NewsItem> {
         ),
         (
             "绑定自己的资讯源",
-            "「设置 - 资讯」可以填入自己的 JSON 或 RSS 地址，首页就会显示你关心的内容。",
+            "「设置 - 资讯」可以在内置源之间切换，也可以填入自己的 JSON 或 RSS 地址。",
         ),
     ];
     tips.iter()

@@ -12,6 +12,8 @@ use crate::ui::{self, widgets, ButtonOpts};
 pub struct SettingsState {
     pub java_manual: String,
     pub news_url: String,
+    /// 0 外观 / 1 下载 / 2 游戏 / 3 Java / 4 资讯 / 5 其他
+    pub tab: usize,
 }
 
 const ACCENT_PRESETS: [&str; 8] = [
@@ -20,19 +22,25 @@ const ACCENT_PRESETS: [&str; 8] = [
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    widgets::page_title(ui, &p, "设置", "外观、下载、启动与 Java 环境");
+    widgets::page_title(ui, &p, "设置", "外观、下载、游戏、Java、资讯与文件");
 
-    appearance(app, ui);
+    let tabs = ["外观", "下载", "游戏", "Java", "资讯", "其他"];
+    ui.horizontal(|ui| {
+        let mut tab = app.settings_ui.tab;
+        if ui::segmented(ui, &p, &mut tab, &tabs).clicked() {
+            app.settings_ui.tab = tab;
+        }
+    });
     ui.add_space(14.0);
-    download_section(app, ui);
-    ui.add_space(14.0);
-    launch_section(app, ui);
-    ui.add_space(14.0);
-    java_section(app, ui);
-    ui.add_space(14.0);
-    news_section(app, ui);
-    ui.add_space(14.0);
-    misc_section(app, ui);
+
+    match app.settings_ui.tab {
+        0 => appearance(app, ui),
+        1 => download_section(app, ui),
+        2 => game_section(app, ui),
+        3 => java_section(app, ui),
+        4 => news_section(app, ui),
+        _ => misc_section(app, ui),
+    }
 }
 
 // ------------------------------------------------------------------ 外观
@@ -437,39 +445,12 @@ fn download_section(app: &mut App, ui: &mut Ui) {
 
 // ------------------------------------------------------------------ 启动
 
-fn launch_section(app: &mut App, ui: &mut Ui) {
+fn game_section(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    ui::card(ui, &p, |ui| {
-        widgets::section_title(ui, &p, "游戏与启动");
 
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("游戏目录")
-                    .font(ui::font(13.0))
-                    .color(p.text_weak),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::button(ui, &p, ButtonOpts::secondary("更改")).clicked() {
-                    if let Some(dir) = rfd::FileDialog::new()
-                        .set_title("选择游戏目录")
-                        .pick_folder()
-                    {
-                        app.cfg.set_game_dir(dir);
-                        app.save_config();
-                        app.refresh_local_versions();
-                    }
-                }
-                if ui::button(ui, &p, ButtonOpts::secondary("打开")).clicked() {
-                    app.cfg.open_game_dir();
-                }
-                ui.label(
-                    egui::RichText::new(app.cfg.game_dir_display())
-                        .font(ui::font(12.0))
-                        .color(p.text_weak),
-                );
-            });
-        });
-        ui.add_space(10.0);
+    // ---------------- 通用 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "通用");
 
         let mut isolation = app.cfg.launch.isolation;
         ui.horizontal(|ui| {
@@ -515,8 +496,7 @@ fn launch_section(app: &mut App, ui: &mut Ui) {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     let mut height = app.cfg.launch.height.to_string();
-                    let resp_h = ui::text_field(ui, &p, &mut height, "720", 80.0, false);
-                    if resp_h.changed() {
+                    if ui::text_field(ui, &p, &mut height, "720", 84.0, false).changed() {
                         if let Ok(value) = height.trim().parse::<u32>() {
                             app.cfg.launch.height = value.clamp(240, 4320);
                             app.save_config();
@@ -528,8 +508,7 @@ fn launch_section(app: &mut App, ui: &mut Ui) {
                             .color(p.text_faint),
                     );
                     let mut width = app.cfg.launch.width.to_string();
-                    let resp_w = ui::text_field(ui, &p, &mut width, "1280", 80.0, false);
-                    if resp_w.changed() {
+                    if ui::text_field(ui, &p, &mut width, "1280", 84.0, false).changed() {
                         if let Ok(value) = width.trim().parse::<u32>() {
                             app.cfg.launch.width = value.clamp(320, 7680);
                             app.save_config();
@@ -553,8 +532,37 @@ fn launch_section(app: &mut App, ui: &mut Ui) {
                 }
             });
         });
+    });
+    ui.add_space(14.0);
 
-        ui.add_space(12.0);
+    // ---------------- 内存 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "内存");
+        let mut memory = app.cfg.java.memory_mb as f32;
+        if ui::slider(ui, &p, "最大内存", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
+            app.cfg.java.memory_mb = memory as u32;
+            app.save_config();
+        }
+        let total = crate::core::java::total_memory_mb();
+        ui.label(
+            egui::RichText::new(format!(
+                "物理内存 {:.1} GB。原版建议 2-4 GB，装模组或光影建议 4-8 GB，不建议超过物理内存的一半。",
+                total as f64 / 1024.0
+            ))
+            .font(ui::font(11.5))
+            .color(p.text_faint),
+        );
+        ui.add_space(6.0);
+        if ui::button(ui, &p, ButtonOpts::secondary("按物理内存推荐")).clicked() {
+            app.cfg.java.memory_mb = crate::core::config::default_memory();
+            app.save_config();
+        }
+    });
+    ui.add_space(14.0);
+
+    // ---------------- 启动参数 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "启动参数");
         ui.label(
             egui::RichText::new("额外 JVM 参数")
                 .font(ui::font(12.5))
@@ -562,14 +570,21 @@ fn launch_section(app: &mut App, ui: &mut Ui) {
         );
         ui.add_space(4.0);
         let mut jvm = app.cfg.java.jvm_args.clone();
-        if ui::text_field(ui, &p, &mut jvm, "例如 -XX:+UseG1GC -Dfile.encoding=UTF-8", 520.0, false)
-            .changed()
+        if ui::text_field(
+            ui,
+            &p,
+            &mut jvm,
+            "例如 -XX:+UseG1GC -Dfile.encoding=UTF-8",
+            520.0,
+            false,
+        )
+        .changed()
         {
             app.cfg.java.jvm_args = jvm;
             app.save_config();
         }
-
         ui.add_space(10.0);
+
         ui.label(
             egui::RichText::new("额外游戏参数")
                 .font(ui::font(12.5))
@@ -577,14 +592,79 @@ fn launch_section(app: &mut App, ui: &mut Ui) {
         );
         ui.add_space(4.0);
         let mut extra = app.cfg.launch.extra_args.clone();
-        if ui::text_field(ui, &p, &mut extra, "例如 --server example.com --port 25565", 520.0, false)
-            .changed()
+        if ui::text_field(
+            ui,
+            &p,
+            &mut extra,
+            "例如 --server example.com --port 25565",
+            520.0,
+            false,
+        )
+        .changed()
         {
             app.cfg.launch.extra_args = extra;
             app.save_config();
         }
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("单版本参数可在「版本管理 - 设置」中单独覆盖。")
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+    });
+    ui.add_space(14.0);
+
+    // ---------------- 游戏目录 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "游戏目录");
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("目录位置")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::button(ui, &p, ButtonOpts::secondary("更改")).clicked() {
+                    if let Some(dir) = rfd::FileDialog::new()
+                        .set_title("选择游戏目录")
+                        .pick_folder()
+                    {
+                        app.cfg.set_game_dir(dir);
+                        app.save_config();
+                        app.refresh_local_versions();
+                    }
+                }
+                if ui::button(ui, &p, ButtonOpts::secondary("打开")).clicked() {
+                    app.cfg.open_game_dir();
+                }
+                ui.label(
+                    egui::RichText::new(app.cfg.game_dir_display())
+                        .font(ui::font(12.0))
+                        .color(p.text_weak),
+                );
+            });
+        });
+        ui.add_space(8.0);
+        ui.label(
+            egui::RichText::new(match app.local_versions.len() {
+                0 => "当前目录下还没有已安装的版本".to_string(),
+                n => format!("当前目录下已安装 {n} 个版本"),
+            })
+            .font(ui::font(11.5))
+            .color(p.text_faint),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui::button(ui, &p, ButtonOpts::secondary("查看版本").icon("layers")).clicked() {
+                app.page = crate::app::Page::Versions;
+            }
+            if ui::button(ui, &p, ButtonOpts::secondary("安装新版本").icon("download")).clicked() {
+                app.page = crate::app::Page::Download;
+            }
+        });
     });
 }
+
 
 // ------------------------------------------------------------------ Java
 
@@ -730,31 +810,69 @@ fn news_section(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(10.0);
 
-        ui.label(
-            egui::RichText::new("资讯源地址（JSON 数组或 RSS）")
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
-        ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let mut url = app.cfg.news.url.clone();
-            if ui::text_field(ui, &p, &mut url, "留空则显示内置使用提示", 460.0, false).changed() {
-                app.cfg.news.url = url;
+            ui.label(
+                egui::RichText::new("资讯源")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            let mut ids: Vec<String> = crate::core::news::PRESETS
+                .iter()
+                .map(|preset| preset.id.to_string())
+                .collect();
+            let mut labels: Vec<String> = crate::core::news::PRESETS
+                .iter()
+                .map(|preset| preset.name.to_string())
+                .collect();
+            ids.push("custom".into());
+            labels.push("自定义地址".into());
+            let current_index = ids
+                .iter()
+                .position(|id| id == &app.cfg.news.source)
+                .unwrap_or(0);
+            let current = labels[current_index].clone();
+            if let Some(index) = ui::dropdown(ui, &p, "news_source", &current, &labels, 220.0) {
+                app.cfg.news.source = ids[index].clone();
                 app.save_config();
+                app.load_news();
+            }
+            if let Some(preset) = crate::core::news::preset(&app.cfg.news.source) {
+                ui.label(
+                    egui::RichText::new(preset.description)
+                        .font(ui::font(11.5))
+                        .color(p.text_faint),
+                );
             }
             if ui::button(ui, &p, ButtonOpts::secondary("立即刷新")).clicked() {
                 app.load_news();
             }
         });
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new(
-                "JSON 格式示例：[{\"title\":\"标题\",\"summary\":\"摘要\",\"date\":\"2026-01-01\",\"url\":\"https://…\"}]",
-            )
-            .font(ui::font(11.0))
-            .color(p.text_faint),
-        );
         ui.add_space(10.0);
+
+        if app.cfg.news.source == "custom" {
+            ui.label(
+                egui::RichText::new("资讯源地址（JSON 数组或 RSS / Atom）")
+                    .font(ui::font(12.5))
+                    .color(p.text_weak),
+            );
+            ui.add_space(4.0);
+            let mut url = app.cfg.news.url.clone();
+            if ui::text_field(ui, &p, &mut url, "https://example.com/news.json", 460.0, false)
+                .changed()
+            {
+                app.cfg.news.url = url;
+                app.save_config();
+            }
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "JSON 格式示例：[{\"title\":\"标题\",\"summary\":\"摘要\",\"date\":\"2026-01-01\",\"url\":\"https://…\",\"image\":\"https://…\"}]",
+                )
+                .font(ui::font(11.0))
+                .color(p.text_faint),
+            );
+            ui.add_space(10.0);
+        }
 
         let mut minutes = app.cfg.news.refresh_minutes as f32;
         if ui::slider(ui, &p, "刷新间隔", &mut minutes, 5.0, 360.0, 5.0, " 分钟").changed() {

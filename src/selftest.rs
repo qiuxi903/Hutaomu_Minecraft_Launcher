@@ -10,6 +10,7 @@ use crate::core::minecraft::{install, launch, manifest, version};
 use crate::core::paths;
 
 pub fn run(version_id: &str, loader: Option<&str>) -> anyhow::Result<()> {
+    crate::core::paths::migrate_legacy_layout();
     crate::core::log::init();
     println!("=== htmcl 自检开始（版本 {version_id}）===");
 
@@ -193,6 +194,35 @@ pub fn run(version_id: &str, loader: Option<&str>) -> anyhow::Result<()> {
                     );
                 }
             }
+        }
+    }
+
+    println!("[7/7] 资讯源与皮肤站接口 ...");
+    {
+        let dl2 = crate::core::download::Downloader::new(
+            crate::core::download::DownloadSource::Official,
+            30,
+        )?;
+        for preset in crate::core::news::PRESETS {
+            match crate::core::news::fetch(&dl2, preset.id, "") {
+                Ok(items) => println!(
+                    "      {}：{} 条（首条：{}）",
+                    preset.name,
+                    items.len(),
+                    items.first().map(|i| i.title.clone()).unwrap_or_default()
+                ),
+                Err(err) => println!("      {}：失败 {}", preset.name, err),
+            }
+        }
+        // 用错误的账号密码验证 Yggdrasil 响应解析（应返回友好错误而不是“未返回令牌”）
+        match crate::core::auth::authlib::login(
+            &dl2,
+            crate::core::auth::authlib::DEFAULT_SERVER,
+            "htmcl_selftest_not_exist",
+            "wrong-password",
+        ) {
+            Ok(_) => println!("      皮肤站：意外登录成功"),
+            Err(err) => println!("      皮肤站错误处理：{err}"),
         }
     }
 

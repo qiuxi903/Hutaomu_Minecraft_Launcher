@@ -16,25 +16,30 @@ pub fn exe_dir() -> PathBuf {
         .clone()
 }
 
+/// 启动器数据目录：exe 同目录下的 `htmcl/`
+pub fn launcher_dir() -> PathBuf {
+    exe_dir().join("htmcl")
+}
+
 pub fn config_file() -> PathBuf {
-    exe_dir().join("htmcl.json")
+    launcher_dir().join("htmcl.json")
 }
 
 pub fn accounts_file() -> PathBuf {
-    exe_dir().join("accounts.json")
+    launcher_dir().join("accounts.json")
 }
 
 pub fn themes_dir() -> PathBuf {
-    exe_dir().join("themes")
+    launcher_dir().join("themes")
 }
 
 pub fn logs_dir() -> PathBuf {
-    exe_dir().join("logs")
+    launcher_dir().join("logs")
 }
 
-/// 启动器自身的缓存（图标、下载临时文件、authlib-injector 等）
+/// 启动器自身的缓存（authlib-injector、皮肤、图片、安装器等）
 pub fn cache_dir() -> PathBuf {
-    exe_dir().join(".htmcl")
+    launcher_dir().join("cache")
 }
 
 pub fn default_game_dir() -> PathBuf {
@@ -130,4 +135,61 @@ pub fn validate_player_name(name: &str) -> Result<(), String> {
         return Err("用户名只能包含字母、数字和下划线".into());
     }
     Ok(())
+}
+
+/// 旧版本布局（配置直接放在 exe 同目录）迁移到 `htmcl/` 目录。
+/// 只在目标不存在时移动，避免覆盖新数据。
+pub fn migrate_legacy_layout() {
+    let root = exe_dir();
+    let target = launcher_dir();
+    if root == target {
+        return;
+    }
+    let _ = ensure_dir(&target);
+
+    let files = [
+        ("htmcl.json", target.join("htmcl.json")),
+        ("accounts.json", target.join("accounts.json")),
+        ("htmcl.json.bak", target.join("htmcl.json.bak")),
+    ];
+    for (name, dest) in files {
+        let src = root.join(name);
+        if src.is_file() && !dest.exists() {
+            if std::fs::rename(&src, &dest).is_err() {
+                let _ = std::fs::copy(&src, &dest);
+                let _ = std::fs::remove_file(&src);
+            }
+            log::info!("已迁移 {} -> {}", src.display(), dest.display());
+        }
+    }
+
+    let dirs = [
+        ("themes", target.join("themes")),
+        ("logs", target.join("logs")),
+        (".htmcl", target.join("cache")),
+    ];
+    for (name, dest) in dirs {
+        let src = root.join(name);
+        if src.is_dir() && !dest.exists() {
+            if std::fs::rename(&src, &dest).is_err() {
+                copy_dir(&src, &dest);
+                let _ = std::fs::remove_dir_all(&src);
+            }
+            log::info!("已迁移目录 {} -> {}", src.display(), dest.display());
+        }
+    }
+}
+
+fn copy_dir(src: &std::path::Path, dest: &std::path::Path) {
+    for entry in walkdir::WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let relative = path.strip_prefix(src).unwrap_or(path);
+        let out = dest.join(relative);
+        if entry.file_type().is_dir() {
+            let _ = ensure_dir(&out);
+        } else {
+            let _ = ensure_parent(&out);
+            let _ = std::fs::copy(path, &out);
+        }
+    }
 }
