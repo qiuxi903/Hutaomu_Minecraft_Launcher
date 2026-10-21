@@ -223,12 +223,14 @@ fn version_list(app: &mut App, ui: &mut Ui) {
                                         ui.add_space(2.0);
                                         ui.horizontal(|ui| {
                                             ui.spacing_mut().item_spacing.x = 4.0;
-                                            widgets::badge(
-                                                ui,
-                                                &p,
-                                                &version.mc_version,
-                                                views::version_type_color(&version.version_type),
-                                            );
+                                            if version.mc_version != version.id {
+                                                widgets::badge(
+                                                    ui,
+                                                    &p,
+                                                    &version.mc_version,
+                                                    views::version_type_color(&version.version_type),
+                                                );
+                                            }
                                             if let Some(loader) = &version.loader {
                                                 widgets::badge(
                                                     ui,
@@ -355,6 +357,16 @@ fn version_detail(app: &mut App, ui: &mut Ui) {
     });
 }
 
+fn version_type_label(version_type: &str) -> &'static str {
+    match version_type {
+        "release" => "正式版",
+        "snapshot" => "快照",
+        "old_beta" => "远古 Beta",
+        "old_alpha" => "远古 Alpha",
+        _ => "自定义",
+    }
+}
+
 fn count_files(dir: &Path) -> usize {
     walkdir::WalkDir::new(dir)
         .into_iter()
@@ -389,7 +401,7 @@ fn overview_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
         widgets::key_value(ui, &p, "继承自", &inherits);
         ui.add_space(6.0);
     }
-    widgets::key_value(ui, &p, "版本类型", info.version_type.as_str());
+    widgets::key_value(ui, &p, "版本类型", version_type_label(&info.version_type));
     ui.add_space(6.0);
     widgets::key_value(ui, &p, "启动次数", &format!("{} 次", stat.launches));
     ui.add_space(6.0);

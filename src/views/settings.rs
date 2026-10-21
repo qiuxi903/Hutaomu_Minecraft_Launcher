@@ -20,27 +20,49 @@ const ACCENT_PRESETS: [&str; 8] = [
     "#B0703F", "#A9663A", "#3F8F6B", "#3A6EA5", "#C2607A", "#7A5AA0", "#C0803A", "#4A4A52",
 ];
 
+const CATEGORIES: [(&str, &str); 6] = [
+    ("palette", "外观"),
+    ("download", "下载"),
+    ("cube", "游戏"),
+    ("java", "Java"),
+    ("news", "资讯"),
+    ("sliders", "其他"),
+];
+
 pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     widgets::page_title(ui, &p, "设置", "外观、下载、游戏、Java、资讯与文件");
 
-    let tabs = ["外观", "下载", "游戏", "Java", "资讯", "其他"];
-    ui.horizontal(|ui| {
-        let mut tab = app.settings_ui.tab;
-        if ui::segmented(ui, &p, &mut tab, &tabs).clicked() {
-            app.settings_ui.tab = tab;
-        }
-    });
-    ui.add_space(14.0);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 14.0;
 
-    match app.settings_ui.tab {
-        0 => appearance(app, ui),
-        1 => download_section(app, ui),
-        2 => game_section(app, ui),
-        3 => java_section(app, ui),
-        4 => news_section(app, ui),
-        _ => misc_section(app, ui),
-    }
+        ui.vertical(|ui| {
+            ui.set_width(164.0);
+            ui::card_padded(ui, &p, 8, |ui| {
+                ui.set_width(148.0);
+                for (index, (icon, label)) in CATEGORIES.iter().enumerate() {
+                    let selected = app.settings_ui.tab == index;
+                    if ui::nav_item(ui, &p, icon, label, selected).clicked() {
+                        app.settings_ui.tab = index;
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+        });
+
+        ui.vertical(|ui| {
+            let width = ui.available_width();
+            ui.set_width(width);
+            match app.settings_ui.tab {
+                0 => appearance(app, ui),
+                1 => download_section(app, ui),
+                2 => game_section(app, ui),
+                3 => java_section(app, ui),
+                4 => news_section(app, ui),
+                _ => misc_section(app, ui),
+            }
+        });
+    });
 }
 
 // ------------------------------------------------------------------ 外观

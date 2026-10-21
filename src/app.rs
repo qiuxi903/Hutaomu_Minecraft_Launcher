@@ -77,10 +77,12 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 9;
+pub const SHOT_SCENES: usize = 13;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
+        // 每次切换场景先关掉所有弹窗，避免互相遮挡
+        self.home_ui.config_open = false;
         match scene {
             0 => self.page = Page::Home,
             1 => {
@@ -114,7 +116,46 @@ impl App {
                 self.page = Page::Settings;
                 self.settings_ui.tab = 0;
             }
-            _ => self.page = Page::About,
+            8 => {
+                self.page = Page::Settings;
+                self.settings_ui.tab = 4;
+            }
+            9 => self.page = Page::About,
+            10 => {
+                self.page = Page::Home;
+                self.home_ui.config_open = true;
+            }
+            11 => {
+                self.page = Page::Download;
+                self.download.tab = 5;
+                self.download.content_kind = 3;
+                self.download.content_query = "complementary".into();
+                views::download::run_search(self);
+            }
+            _ => {
+                // 触发一次真实下载，用于检查下载中心面板
+                self.page = Page::Home;
+                if let Some(manifest) = &self.manifest {
+                    if let Some(entry) = manifest
+                        .versions
+                        .iter()
+                        .find(|v| v.id == "1.7.10")
+                        .cloned()
+                    {
+                        let game_dir = self.cfg.game_dir.clone();
+                        let id = entry.id.clone();
+                        self.spawn_download(format!("安装 {id}"), move |dl, progress, _job| {
+                            crate::core::minecraft::install::ensure_version_json(
+                                &dl, &game_dir, &entry,
+                            )?;
+                            crate::core::minecraft::install::install_version(
+                                &dl, &game_dir, &id, &progress,
+                            )?;
+                            Ok(format!("{id} 安装完成"))
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -327,6 +368,9 @@ pub struct App {
     pub shot: Option<ShotState>,
     pub download_panel_open: bool,
     download_panel_auto: bool,
+    /// 页面切换动画：上次切换时间与上次页面
+    page_changed_at: f64,
+    last_page: Page,
     pub last_window_size: egui::Vec2,
     image_tx: std::sync::mpsc::Sender<String>,
     image_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>,
@@ -405,6 +449,8 @@ impl App {
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
+            page_changed_at: 0.0,
+            last_page: Page::Home,
             last_window_size: egui::vec2(1120.0, 720.0),
             image_tx,
             image_rx: image_rx.clone(),
@@ -415,7 +461,7 @@ impl App {
                     dir,
                     page_index: 0,
                     phase: 0,
-                    next_at: 2.5,
+                    next_at: 5.0,
                 }
             }),
         };
@@ -438,35 +484,14 @@ impl App {
         Downloader::new(self.cfg.download.source, self.cfg.download.timeout_secs)
     }
 
+    /// 轻量后台任务：不进入下载中心，用于拉取清单、搜索等短请求
     pub fn spawn<F>(&mut self, title: impl Into<String>, cancellable: bool, f: F) -> u64
     where
         F: FnOnce(Job) + Send + 'static,
     {
+        let _ = (title, cancellable);
         let id = self.next_task_id;
         self.next_task_id += 1;
-        self.tasks.push(TaskItem {
-            id,
-            title: title.into(),
-            fraction: 0.0,
-            message: String::new(),
-            done: false,
-            ok: true,
-            cancellable,
-            progress: None,
-            bytes_done: 0,
-            bytes_total: 0,
-            speed: 0.0,
-            started: std::time::Instant::now(),
-            last_bytes: 0,
-            last_time: std::time::Instant::now(),
-        });
-        if !self.download_panel_open {
-            self.download_panel_auto = true;
-        }
-        if !self.download_panel_open {
-            self.download_panel_auto = true;
-        }
-        self.download_panel_open = true;
         let job = Job {
             tx: self.tx.clone(),
             egui: self.egui_ctx.clone(),
@@ -1101,8 +1126,11 @@ impl App {
                     if path.as_os_str().is_empty() {
                         continue;
                     }
-                    match image::open(&path) {
-                        Ok(img) => {
+                    let decoded = std::fs::read(&path)
+                        .ok()
+                        .and_then(|bytes| image::load_from_memory(&bytes).ok());
+                    match decoded {
+                        Some(img) => {
                             let rgba = img.to_rgba8();
                             let (w, h) = (rgba.width(), rgba.height());
                             let texture = self.egui_ctx.load_texture(
@@ -1115,7 +1143,7 @@ impl App {
                             );
                             self.images.insert(url, texture);
                         }
-                        Err(err) => log::warn!("图片解析失败: {err}"),
+                        None => log::warn!("图片解析失败: {}", path.display()),
                     }
                 }
                 CoreEvent::Installed(version) => {
@@ -1369,53 +1397,108 @@ impl App {
                         self.save_config();
                     }
 
+                    // 下载中心入口
+                    ui.add_space(4.0);
+                    let active = self.tasks.iter().filter(|t| !t.done).count();
+                    let label = if active > 0 {
+                        format!("下载中心 · {active}")
+                    } else {
+                        "下载中心".to_string()
+                    };
+                    let opened = if collapsed {
+                        ui::icon_button(ui, &self.palette, "download", &label).clicked()
+                    } else {
+                        ui::button(
+                            ui,
+                            &self.palette,
+                            ui::ButtonOpts::ghost(&label).icon("download").width(width - 12.0),
+                        )
+                        .clicked()
+                    };
+                    if opened {
+                        self.download_panel_open = true;
+                        self.download_panel_auto = false;
+                    }
+
                     if !collapsed {
                         ui.add_space(6.0);
                         let account_name = self
                             .selected_account()
                             .map(|a| a.name().to_string())
-                            .unwrap_or_else(|| "未选择账号".into());
+                            .unwrap_or_else(|| "添加账号".into());
                         let kind = self
                             .selected_account()
                             .map(|a| a.kind_label())
-                            .unwrap_or("点击添加账号");
+                            .unwrap_or("未登录");
                         let account_id = self.selected_account().map(|a| a.id().to_string());
+                        let head = account_id
+                            .as_ref()
+                            .and_then(|id| self.skin_cache.get(id))
+                            .map(|s| s.head.clone());
+                        let palette = self.palette;
                         let clicked = ui
                             .scope(|ui| {
                                 ui.set_width(width - 12.0);
-                                let response = ui::card_padded(ui, &self.palette, 10, |ui| {
-                                    ui.horizontal(|ui| {
-                                        if let Some(id) = &account_id {
-                                            if let Some(skin) = self.skin_cache.get(id) {
-                                                let _ = ui::avatar(
-                                                    ui,
-                                                    &self.palette,
-                                                    &skin.head,
-                                                    30.0,
-                                                );
-                                            } else {
-                                                ui::icon(ui, "user", 26.0, self.palette.text_faint);
-                                            }
-                                        } else {
-                                            ui::icon(ui, "user", 26.0, self.palette.text_faint);
+                                let (rect, response) = ui.allocate_exact_size(
+                                    Vec2::new(width - 12.0, 46.0),
+                                    Sense::click(),
+                                );
+                                if ui.is_rect_visible(rect) {
+                                    let t = ui.ctx().animate_bool_with_time(
+                                        response.id.with("h"),
+                                        response.hovered(),
+                                        0.12,
+                                    );
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        palette.corner_sm(),
+                                        widgets::lerp_color(palette.surface_alt, palette.surface, t),
+                                    );
+                                    ui.painter().rect_stroke(
+                                        rect,
+                                        palette.corner_sm(),
+                                        egui::Stroke::new(1.0, palette.border),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    let avatar_rect = Rect::from_min_size(
+                                        Pos2::new(rect.left() + 8.0, rect.center().y - 15.0),
+                                        Vec2::splat(30.0),
+                                    );
+                                    match &head {
+                                        Some(head) => {
+                                            ui.painter().image(
+                                                head.id(),
+                                                avatar_rect,
+                                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                                Color32::WHITE,
+                                            );
                                         }
-                                        ui.vertical(|ui| {
-                                            ui.add_space(1.0);
-                                            ui.label(
-                                                egui::RichText::new(&account_name)
-                                                    .font(ui::font(13.0))
-                                                    .color(self.palette.text)
-                                                    .strong(),
+                                        None => {
+                                            icons::paint(
+                                                ui.ctx(),
+                                                ui.painter(),
+                                                "user",
+                                                avatar_rect.shrink(6.0),
+                                                palette.text_faint,
                                             );
-                                            ui.label(
-                                                egui::RichText::new(kind)
-                                                    .font(ui::font(11.0))
-                                                    .color(self.palette.text_faint),
-                                            );
-                                        });
-                                    });
-                                });
-                                response.interact(Sense::click())
+                                        }
+                                    }
+                                    ui.painter().text(
+                                        Pos2::new(avatar_rect.right() + 8.0, rect.center().y - 8.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        &account_name,
+                                        ui::font(12.5),
+                                        palette.text,
+                                    );
+                                    ui.painter().text(
+                                        Pos2::new(avatar_rect.right() + 8.0, rect.center().y + 8.0),
+                                        egui::Align2::LEFT_CENTER,
+                                        kind,
+                                        ui::font(10.5),
+                                        palette.text_faint,
+                                    );
+                                }
+                                response
                             })
                             .inner;
                         if clicked.clicked() {
@@ -1806,12 +1889,23 @@ impl eframe::App for App {
             },
         );
 
+        // 页面切换淡入
+        if self.last_page != self.page {
+            self.last_page = self.page;
+            self.page_changed_at = now;
+        }
+        let page_t = ui::ease_out(((now - self.page_changed_at) / 0.18) as f32);
+        if page_t < 1.0 {
+            ctx.request_repaint();
+        }
+
         root.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(content_rect)
                 .layout(Layout::top_down(Align::Min)),
             |ui| {
                 ui.set_width(content_rect.width());
+                ui.set_opacity(0.25 + 0.75 * page_t);
                 ui.add_space(12.0);
                 self.game_bar(ui);
                 egui::ScrollArea::vertical()
@@ -1858,6 +1952,11 @@ fn shot_scene_wait(scene: usize) -> f64 {
         2 => 4.0,
         3 => 9.0,
         4 => 2.6,
+        6 => 2.4,
+        8 => 2.4,
+        10 => 2.2,
+        11 => 9.0,
+        12 => 6.0,
         _ => 1.8,
     }
 }
@@ -1872,7 +1971,11 @@ fn shot_scene_label(scene: usize) -> &'static str {
         5 => "账号",
         6 => "设置-游戏",
         7 => "设置-外观",
-        _ => "关于",
+        8 => "设置-资讯",
+        9 => "关于",
+        10 => "首页-游戏配置",
+        11 => "下载-整合包",
+        _ => "下载中心",
     }
 }
 

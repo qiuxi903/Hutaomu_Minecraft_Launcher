@@ -29,6 +29,28 @@ pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
+/// 缓出曲线，用于入场动画
+pub fn ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t) * (1.0 - t)
+}
+
+/// 以首次渲染时间为基准计算 0→1 的入场进度；active 为 false 时清除状态
+pub fn enter_progress(ctx: &egui::Context, id: Id, active: bool, duration: f32) -> f32 {
+    if !active {
+        ctx.memory_mut(|m| m.data.remove::<f64>(id));
+        return 0.0;
+    }
+    let now = ctx.input(|i| i.time);
+    let start = ctx
+        .memory(|m| m.data.get_temp::<f64>(id))
+        .unwrap_or_else(|| {
+            ctx.memory_mut(|m| m.data.insert_temp(id, now));
+            now
+        });
+    ease_out(((now - start) as f32 / duration).clamp(0.0, 1.0))
+}
+
 // ---------------------------------------------------------------- 文本工具
 
 pub fn text(ui: &mut Ui, size: f32, color: Color32, content: &str) -> Response {
@@ -306,75 +328,72 @@ pub fn button(ui: &mut Ui, p: &Palette, opts: ButtonOpts<'_>) -> Response {
     let pressed = response.is_pointer_button_down_on() && opts.enabled;
     let radius = p.corner(-2);
 
-    let (bg, fg, border) = match opts.kind {
-        ButtonKind::Primary => {
-            let bg = if !opts.enabled {
-                alpha(p.accent, 90)
-            } else if pressed {
-                p.accent_active
-            } else if hovered {
-                p.accent_hover
-            } else {
-                p.accent
-            };
-            (bg, if opts.enabled { p.on_accent } else { p.on_accent.gamma_multiply(0.6) }, None)
-        }
-        ButtonKind::Secondary => {
-            let bg = if pressed {
-                p.surface_hover
-            } else if hovered {
-                p.surface_hover
-            } else {
-                p.surface
-            };
-            let fg = if opts.enabled { p.text } else { p.text_faint };
-            (bg, fg, Some(p.border_strong))
-        }
-        ButtonKind::Ghost => {
-            let bg = if pressed {
-                p.surface_alt
-            } else if hovered {
-                alpha(p.text, if p.dark { 12 } else { 8 })
-            } else {
-                Color32::TRANSPARENT
-            };
-            let fg = if opts.enabled { p.text_weak } else { p.text_faint };
-            (bg, fg, None)
-        }
-        ButtonKind::Subtle => {
-            let bg = if hovered { p.surface_hover } else { p.surface_alt };
-            (bg, if opts.enabled { p.text } else { p.text_faint }, None)
-        }
-        ButtonKind::Danger => {
-            let bg = if !opts.enabled {
-                alpha(p.danger, 70)
-            } else if pressed {
-                p.danger.gamma_multiply(0.85)
-            } else if hovered {
-                p.danger.gamma_multiply(0.92)
-            } else {
-                p.danger
-            };
-            (bg, Color32::WHITE, None)
-        }
+    // 悬停与按压都做插值，避免颜色突变
+    let hover_t = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("hov"), hovered, 0.10);
+    let press_t = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("prs"), pressed, 0.06);
+
+    let (base, hover_bg, active_bg, fg, border) = match opts.kind {
+        ButtonKind::Primary => (
+            if opts.enabled { p.accent } else { alpha(p.accent, 90) },
+            p.accent_hover,
+            p.accent_active,
+            if opts.enabled { p.on_accent } else { p.on_accent.gamma_multiply(0.6) },
+            None,
+        ),
+        ButtonKind::Secondary => (
+            p.surface,
+            p.surface_hover,
+            p.surface_hover,
+            if opts.enabled { p.text } else { p.text_faint },
+            Some(p.border_strong),
+        ),
+        ButtonKind::Ghost => (
+            Color32::TRANSPARENT,
+            alpha(p.text, if p.dark { 12 } else { 8 }),
+            p.surface_alt,
+            if opts.enabled { p.text_weak } else { p.text_faint },
+            None,
+        ),
+        ButtonKind::Subtle => (
+            p.surface_alt,
+            p.surface_hover,
+            p.surface_hover,
+            if opts.enabled { p.text } else { p.text_faint },
+            None,
+        ),
+        ButtonKind::Danger => (
+            if opts.enabled { p.danger } else { alpha(p.danger, 70) },
+            p.danger.gamma_multiply(0.92),
+            p.danger.gamma_multiply(0.85),
+            Color32::WHITE,
+            None,
+        ),
     };
+
+    let bg = lerp_color(lerp_color(base, hover_bg, hover_t), active_bg, press_t);
+    // 按下时轻微内缩，给出物理反馈
+    let draw_rect = rect.shrink(press_t * 1.0);
 
     let painter = ui.painter();
     if bg.a() > 0 {
-        painter.rect_filled(rect, radius, bg);
+        painter.rect_filled(draw_rect, radius, bg);
     }
     if let Some(border) = border {
-        painter.rect_stroke(rect, radius, Stroke::new(1.0, border), StrokeKind::Inside);
+        painter.rect_stroke(draw_rect, radius, Stroke::new(1.0, border), StrokeKind::Inside);
     }
 
-    let mut x = rect.center().x - content_width / 2.0;
+    let mut x = draw_rect.center().x - content_width / 2.0;
     if let Some(icon_name) = opts.icon {
         icons::paint(
             ui.ctx(),
             painter,
             icon_name,
             Rect::from_min_size(
-                Pos2::new(x, rect.center().y - opts.icon_size / 2.0),
+                Pos2::new(x, draw_rect.center().y - opts.icon_size / 2.0),
                 Vec2::splat(opts.icon_size),
             ),
             fg,
@@ -383,7 +402,7 @@ pub fn button(ui: &mut Ui, p: &Palette, opts: ButtonOpts<'_>) -> Response {
     }
     if let Some(galley) = galley {
         painter.galley(
-            Pos2::new(x, rect.center().y - galley.size().y / 2.0),
+            Pos2::new(x, draw_rect.center().y - galley.size().y / 2.0),
             galley,
             fg,
         );
@@ -443,29 +462,37 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, name: &str, label: &str, selected: boo
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
-        let bg = if selected {
-            p.accent_weak
-        } else if hovered {
-            if p.dark {
-                alpha(Color32::WHITE, 8)
-            } else {
-                alpha(Color32::BLACK, 5)
-            }
+        let hover_t = ui
+            .ctx()
+            .animate_bool_with_time(response.id.with("hov"), hovered, 0.12);
+        let sel_t = ui
+            .ctx()
+            .animate_bool_with_time(response.id.with("sel"), selected, 0.16);
+        let hover_bg = if p.dark {
+            alpha(Color32::WHITE, 8)
         } else {
-            Color32::TRANSPARENT
+            alpha(Color32::BLACK, 5)
         };
+        let mut bg = lerp_color(hover_bg, p.accent_weak, sel_t);
+        let strength = hover_t.max(sel_t);
+        bg = Color32::from_rgba_unmultiplied(
+            bg.r(),
+            bg.g(),
+            bg.b(),
+            (bg.a() as f32 * strength) as u8,
+        );
         if bg.a() > 0 {
             ui.painter().rect_filled(rect, p.corner(-2), bg);
         }
-        if selected {
+        if sel_t > 0.01 {
             let bar = Rect::from_min_max(
-                Pos2::new(rect.left(), rect.center().y - 9.0),
-                Pos2::new(rect.left() + 3.0, rect.center().y + 9.0),
+                Pos2::new(rect.left(), rect.center().y - 9.0 * sel_t),
+                Pos2::new(rect.left() + 3.0, rect.center().y + 9.0 * sel_t),
             );
             ui.painter()
                 .rect_filled(bar, CornerRadius::same(2), p.accent);
         }
-        let color = if selected { p.accent } else { p.text_weak };
+        let color = lerp_color(p.text_weak, p.accent, sel_t);
         icons::paint(
             ui.ctx(),
             ui.painter(),
@@ -481,7 +508,7 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, name: &str, label: &str, selected: boo
             Align2::LEFT_CENTER,
             label,
             font(14.0),
-            if selected { p.text } else { p.text_weak },
+            lerp_color(p.text_weak, p.text, sel_t),
         );
     }
     response
@@ -771,10 +798,15 @@ pub fn dropdown(
     if is_open {
         let max_height = 280.0;
         let mut close = false;
+        let progress = enter_progress(ui.ctx(), popup_id.with("anim"), true, 0.12);
         let area = egui::Area::new(popup_id.with("list"))
             .order(egui::Order::Foreground)
-            .fixed_pos(Pos2::new(rect.left(), rect.bottom() + 4.0))
+            .fixed_pos(Pos2::new(
+                rect.left(),
+                rect.bottom() + 4.0 + (1.0 - progress) * 6.0,
+            ))
             .show(ui.ctx(), |ui| {
+                ui.set_opacity(progress);
                 ui.set_width(width);
                 egui::Frame::NONE
                     .fill(p.surface)
@@ -1117,7 +1149,10 @@ pub fn toast_layer(ctx: &egui::Context, p: &Palette, toasts: &mut Vec<Toast>, no
                     );
                     let width = (galley.size().x + 52.0).max(160.0).min(360.0);
                     let height = galley.size().y + 22.0;
-                    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                    let (slot, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                    // 入场时从右侧滑入
+                    let slide = (elapsed / 0.18).clamp(0.0, 1.0) as f32;
+                    let rect = slot.translate(Vec2::new((1.0 - ease_out(slide)) * 26.0, 0.0));
                     ui.painter().rect_filled(rect, p.corner(-2), p.surface);
                     ui.painter().rect_stroke(
                         rect,
@@ -1155,6 +1190,8 @@ pub fn modal(
     width: f32,
     add: impl FnOnce(&mut Ui),
 ) {
+    let anim_id = Id::new(("htmcl_modal_anim", title));
+    let progress = enter_progress(ctx, anim_id, *open, 0.16);
     if !*open {
         return;
     }
@@ -1166,10 +1203,11 @@ pub fn modal(
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             let (rect, response) = ui.allocate_exact_size(screen.size(), Sense::click());
+            let base = if p.dark { 130.0 } else { 70.0 };
             ui.painter().rect_filled(
                 rect,
                 CornerRadius::ZERO,
-                Color32::from_black_alpha(if p.dark { 130 } else { 70 }),
+                Color32::from_black_alpha((base * progress) as u8),
             );
             if response.clicked() {
                 close = true;
@@ -1178,8 +1216,12 @@ pub fn modal(
 
     egui::Area::new(Id::new("htmcl_modal_card"))
         .order(egui::Order::Foreground)
-        .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+        .anchor(
+            Align2::CENTER_CENTER,
+            Vec2::new(0.0, (1.0 - progress) * 12.0),
+        )
         .show(ctx, |ui| {
+            ui.set_opacity(progress);
             egui::Frame::NONE
                 .fill(p.surface)
                 .stroke(Stroke::new(1.0, p.border))

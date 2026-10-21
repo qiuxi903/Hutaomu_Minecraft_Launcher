@@ -1,7 +1,13 @@
+//! 首页：顶部启动区 + 资讯（主内容）+ 皮肤预览与快捷入口（右栏）。
+//!
+//! 布局参考 PCL2 / HMCL / SJMCL 的通用做法：
+//! 启动是最主要的动作，放在首屏最显眼的位置；资讯占据主内容区；
+//! 皮肤预览与快捷入口作为次要信息放在右栏。
+
 use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::app::{App, Page};
-use crate::core::paths;
+use crate::core::news::NewsItem;
 use crate::icons;
 use crate::ui::{self, widgets, ButtonOpts};
 use crate::views;
@@ -14,167 +20,355 @@ pub struct HomeState {
 }
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
-    hero(app, ui);
+    launch_card(app, ui);
     ui.add_space(14.0);
 
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
+        let total = ui.available_width();
+        let right_width = 286.0;
+        let left_width = (total - right_width - 14.0).max(320.0);
+
         ui.vertical(|ui| {
-            ui.set_width(292.0);
-            skin_card(app, ui);
+            ui.set_width(left_width);
+            news_section(app, ui);
         });
+
         ui.vertical(|ui| {
-            let width = ui.available_width();
-            ui.set_width(width);
-            launch_card(app, ui);
+            ui.set_width(right_width);
+            skin_card(app, ui);
             ui.add_space(14.0);
-            quick_card(app, ui);
+            shortcuts_card(app, ui);
         });
     });
-
-    ui.add_space(14.0);
-    news_section(app, ui);
 }
 
-// ------------------------------------------------------------------ 顶部横幅
+// ------------------------------------------------------------------ 启动区
 
-fn hero(app: &mut App, ui: &mut Ui) {
+fn launch_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let width = ui.available_width();
-    let height = 136.0;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    let painter = ui.painter().clone();
-    painter.rect_filled(rect, p.corner(2), p.surface);
-    painter.rect_stroke(
-        rect,
-        p.corner(2),
-        Stroke::new(1.0, p.border),
-        StrokeKind::Inside,
-    );
-
-    // 右侧水印：柔和光晕 + 立方体，全部裁剪在卡片内部
-    let clipped = painter.with_clip_rect(rect);
-    let glow = Pos2::new(rect.right() - 4.0, rect.center().y);
-    clipped.circle_filled(
-        glow,
-        112.0,
-        widgets::alpha(p.accent, if p.dark { 26 } else { 13 }),
-    );
-    clipped.circle_filled(
-        glow,
-        78.0,
-        widgets::alpha(p.accent, if p.dark { 22 } else { 10 }),
-    );
-    icons::paint(
-        ui.ctx(),
-        &clipped,
-        "cube",
-        Rect::from_center_size(glow, Vec2::splat(118.0)),
-        widgets::alpha(p.accent, if p.dark { 34 } else { 20 }),
-    );
-
-    let account = app.selected_account().cloned();
-    let greeting = match &account {
-        Some(acc) => format!("欢迎回来，{}", acc.name()),
-        None => "欢迎使用胡桃木启动器".to_string(),
-    };
-    painter.text(
-        Pos2::new(rect.left() + 26.0, rect.top() + 36.0),
-        egui::Align2::LEFT_CENTER,
-        greeting,
-        ui::font(22.0),
-        p.text,
-    );
-
     let version_id = app.selected_version_id();
-    let version_info = version_id
+    let version = version_id
         .as_ref()
         .and_then(|id| app.local_versions.iter().find(|v| &v.id == id).cloned());
-
-    let subtitle = match &version_info {
-        Some(v) => match &v.loader {
-            Some(loader) => format!("{} · {} · Minecraft {}", v.id, loader, v.mc_version),
-            None => format!("{} · Minecraft {}", v.id, v.mc_version),
-        },
-        None => "还没有安装游戏版本，先到「下载」页面安装一个吧".to_string(),
-    };
-    painter.text(
-        Pos2::new(rect.left() + 26.0, rect.top() + 62.0),
-        egui::Align2::LEFT_CENTER,
-        subtitle,
-        ui::font(13.0),
-        p.text_weak,
-    );
-
-    // 徽标行
-    let badges_rect = Rect::from_min_size(
-        Pos2::new(rect.left() + 26.0, rect.top() + 82.0),
-        Vec2::new(rect.width() - 300.0, 26.0),
-    );
-    let account_kind = account.as_ref().map(|a| a.kind_label()).unwrap_or("未登录");
-    let java_mc = version_info
+    let account = app.selected_account().cloned();
+    if let Some(account) = &account {
+        app.ensure_skin(account.id());
+    }
+    let head = account
         .as_ref()
-        .map(|v| v.mc_version.clone())
-        .unwrap_or_default();
-    let java_label = match app.java_for(&java_mc) {
-        Some(java) => format!("Java {}", java.major),
-        None if app.java_searching => "Java 搜索中".to_string(),
-        None => "Java 未就绪".to_string(),
-    };
-    let memory_label = format!(
-        "{} MB",
-        app.cfg
-            .effective_memory(version_id.as_deref().unwrap_or(""))
-    );
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(badges_rect)
-            .layout(Layout::left_to_right(Align::Center)),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            widgets::badge(ui, &p, account_kind, p.accent);
-            widgets::badge(ui, &p, &java_label, p.text_weak);
-            widgets::badge(ui, &p, &memory_label, p.text_weak);
-            if let Some(v) = &version_info {
-                widgets::badge(ui, &p, v.version_type_label(), views::version_type_color(&v.version_type));
-            }
-        },
-    );
+        .and_then(|a| app.skin_of(a.id()))
+        .map(|s| s.head.clone());
 
-    // 启动按钮
-    let running = app.game.is_some();
-    let button_rect = Rect::from_min_size(
-        Pos2::new(rect.right() - 214.0, rect.center().y - 26.0),
-        Vec2::new(186.0, 52.0),
-    );
-    let label = if running { "游戏运行中" } else { "启动游戏" };
-    let clicked = ui
-        .scope_builder(
-            egui::UiBuilder::new()
-                .max_rect(button_rect)
-                .layout(Layout::left_to_right(Align::Center)),
-            |ui| {
-                ui::button(
+    ui::card_padded(ui, &p, 18, |ui| {
+        ui.horizontal(|ui| {
+            // 账号
+            ui.vertical(|ui| {
+                ui.set_width(190.0);
+                ui.horizontal(|ui| {
+                    if let Some(head) = &head {
+                        let _ = ui::avatar(ui, &p, head, 40.0);
+                    } else {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(40.0), Sense::hover());
+                        ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
+                        icons::paint(ui.ctx(), ui.painter(), "user", rect.shrink(10.0), p.text_faint);
+                    }
+                    ui.add_space(2.0);
+                    ui.vertical(|ui| {
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new(
+                                account.as_ref().map(|a| a.name()).unwrap_or("未选择账号"),
+                            )
+                            .font(ui::font(14.0))
+                            .color(p.text)
+                            .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                account.as_ref().map(|a| a.kind_label()).unwrap_or("点击添加账号"),
+                            )
+                            .font(ui::font(11.0))
+                            .color(p.text_faint),
+                        );
+                    });
+                });
+            });
+
+            ui.add_space(8.0);
+
+            // 版本选择 + 信息
+            ui.vertical(|ui| {
+                let width = (ui.available_width() - 210.0).clamp(220.0, 340.0);
+                ui.set_width(width);
+                let ids: Vec<String> = app.local_versions.iter().map(|v| v.id.clone()).collect();
+                if ids.is_empty() {
+                    if ui::button(
+                        ui,
+                        &p,
+                        ButtonOpts::secondary("还没有安装版本，去下载")
+                            .icon("download")
+                            .width(width.min(320.0)),
+                    )
+                    .clicked()
+                    {
+                        app.page = Page::Download;
+                    }
+                } else {
+                    let current = version_id.clone().unwrap_or_else(|| ids[0].clone());
+                    if let Some(index) = ui::dropdown(ui, &p, "home_version", &current, &ids, width) {
+                        app.cfg.selected_version = Some(ids[index].clone());
+                        app.save_config();
+                    }
+                }
+                ui.add_space(6.0);
+
+                let mc_version = version
+                    .as_ref()
+                    .map(|v| v.mc_version.clone())
+                    .unwrap_or_default();
+                let java = app.java_for(&mc_version);
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(v) = &version {
+                    parts.push(format!("Minecraft {}", v.mc_version));
+                    if let Some(loader) = &v.loader {
+                        parts.push(loader.clone());
+                    }
+                }
+                parts.push(match &java {
+                    Some(java) => format!("Java {}", java.major),
+                    None if app.java_searching => "Java 搜索中".into(),
+                    None => "Java 未就绪".into(),
+                });
+                parts.push(format!(
+                    "内存 {} MB",
+                    app.cfg.effective_memory(version_id.as_deref().unwrap_or(""))
+                ));
+                ui.label(
+                    egui::RichText::new(parts.join("  ·  "))
+                        .font(ui::font(11.5))
+                        .color(p.text_faint),
+                );
+            });
+
+            // 启动按钮
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let running = app.game.is_some();
+                let label = if running { "游戏运行中" } else { "启动游戏" };
+                let clicked = ui::button(
                     ui,
                     &p,
                     ButtonOpts::primary(label)
                         .icon(if running { "pause" } else { "play" })
                         .width(186.0)
-                        .height(52.0)
-                        .font_size(16.0)
+                        .height(56.0)
+                        .font_size(16.5)
                         .enabled(!running),
                 )
-                .clicked()
-            },
-        )
-        .inner;
+                .clicked();
+                if clicked {
+                    views::launch_game(app);
+                }
+            });
+        });
+    });
+}
 
-    if clicked {
-        views::launch_game(app);
+// ------------------------------------------------------------------ 资讯
+
+fn news_section(app: &mut App, ui: &mut Ui) {
+    let p = app.palette;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("资讯")
+                .font(ui::font(15.0))
+                .color(p.text)
+                .strong(),
+        );
+        if app.news_loading {
+            ui::spinner(ui, &p, 14.0);
+        }
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui::icon_button(ui, &p, "refresh", "刷新资讯").clicked() {
+                app.load_news();
+            }
+            if ui::ghost(ui, &p, "更换资讯源").clicked() {
+                app.page = Page::Settings;
+                app.settings_ui.tab = 4;
+            }
+            if let Some(source) = crate::core::news::preset(&app.cfg.news.source) {
+                ui.label(
+                    egui::RichText::new(source.name)
+                        .font(ui::font(11.0))
+                        .color(p.text_faint),
+                );
+            }
+        });
+    });
+    ui.add_space(10.0);
+
+    if let Some(err) = app.news_error.clone() {
+        ui::inset(ui, &p, |ui| {
+            ui.horizontal(|ui| {
+                ui::icon(ui, "alert", 15.0, p.warning);
+                ui.label(
+                    egui::RichText::new(format!("资讯获取失败：{err}"))
+                        .font(ui::font(12.0))
+                        .color(p.text_weak),
+                );
+            });
+        });
+        ui.add_space(10.0);
+    }
+
+    let items: Vec<NewsItem> = app.news.clone();
+    if items.is_empty() {
+        ui::empty_state(ui, &p, "news", "暂无资讯", "可以在设置里更换资讯源");
+        return;
+    }
+
+    let width = ui.available_width();
+    for item in items.iter().take(12) {
+        news_row(app, ui, item, width);
+        ui.add_space(8.0);
     }
 }
 
-// ------------------------------------------------------------------ 皮肤预览
+fn news_row(app: &mut App, ui: &mut Ui, item: &NewsItem, width: f32) -> egui::Response {
+    let p = app.palette;
+    let height = 104.0;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
+    if !ui.is_rect_visible(rect) {
+        return response;
+    }
+
+    let clickable = !item.url.is_empty();
+    let hovered = response.hovered() && clickable;
+    let t = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("hover"), hovered, 0.12);
+
+    let bg = widgets::lerp_color(p.surface, p.surface_alt, t * 0.75);
+    let border = widgets::lerp_color(p.border, p.accent, t * 0.55);
+    let painter = ui.painter();
+    painter.rect_filled(rect, p.corner(0), bg);
+    painter.rect_stroke(rect, p.corner(0), Stroke::new(1.0, border), StrokeKind::Inside);
+
+    // 缩略图
+    let mut text_left = rect.left() + 16.0;
+    if let Some(url) = &item.image {
+        let thumb = Rect::from_min_size(
+            Pos2::new(rect.left() + 14.0, rect.center().y - 32.0),
+            Vec2::new(112.0, 64.0),
+        );
+        app.ensure_image(url);
+        match app.image(url) {
+            Some(texture) => {
+                painter.image(
+                    texture.id(),
+                    thumb,
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+            None => {
+                painter.rect_filled(thumb, p.corner_sm(), p.surface_alt);
+                icons::paint(ui.ctx(), painter, "image", thumb.shrink(22.0), p.text_faint);
+            }
+        }
+        text_left = thumb.right() + 14.0;
+    }
+
+    let text_right = rect.right() - 16.0;
+    let text_width = (text_right - text_left).max(80.0);
+    // 文本区域裁剪，避免任何情况下越界压到别的元素
+    let text_clip = Rect::from_min_max(
+        Pos2::new(text_left, rect.top() + 8.0),
+        Pos2::new(text_right, rect.bottom() - 26.0),
+    );
+    let text_painter = painter.with_clip_rect(text_clip);
+
+    let title_font = ui::font(14.0);
+    let title = truncate_chars(&item.title, text_width, 14.0, 1);
+    text_painter.text(
+        Pos2::new(text_left, rect.top() + 20.0),
+        egui::Align2::LEFT_CENTER,
+        title,
+        title_font,
+        p.text,
+    );
+
+    if !item.summary.is_empty() {
+        let summary = truncate_chars(&item.summary, text_width, 12.0, 2);
+        let galley = text_painter.layout(summary, ui::font(12.0), p.text_weak, text_width);
+        text_painter.galley(Pos2::new(text_left, rect.top() + 34.0), galley, p.text_weak);
+    }
+
+    // 底部：标签 + 日期 + 打开原文
+    let bottom = rect.bottom() - 16.0;
+    let mut x = text_left;
+    if let Some(tag) = &item.tag {
+        let galley = painter.layout_no_wrap(tag.clone(), ui::font(10.5), p.accent);
+        let tag_rect = Rect::from_min_size(
+            Pos2::new(x, bottom - 8.0),
+            Vec2::new(galley.size().x + 12.0, 16.0),
+        );
+        painter.rect_filled(tag_rect, egui::CornerRadius::same(4), p.accent_weak);
+        painter.galley(
+            Pos2::new(tag_rect.left() + 6.0, tag_rect.center().y - galley.size().y / 2.0),
+            galley,
+            p.accent,
+        );
+        x = tag_rect.right() + 8.0;
+    }
+    if !item.date.is_empty() {
+        painter.text(
+            Pos2::new(x, bottom),
+            egui::Align2::LEFT_CENTER,
+            &item.date,
+            ui::font(10.5),
+            p.text_faint,
+        );
+    }
+    if clickable {
+        painter.text(
+            Pos2::new(rect.right() - 16.0, bottom),
+            egui::Align2::RIGHT_CENTER,
+            "打开原文",
+            ui::font(10.5),
+            widgets::lerp_color(p.text_faint, p.accent, t),
+        );
+        if hovered {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        if response.clicked() {
+            let _ = open::that(&item.url);
+        }
+    }
+
+    response
+}
+
+/// 按可用宽度与行数粗略裁剪文本，超出部分用省略号
+fn truncate_chars(text: &str, max_width: f32, font_size: f32, max_lines: usize) -> String {
+    let cleaned = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let budget = max_width * max_lines as f32;
+    let mut used = 0.0f32;
+    let mut out = String::new();
+    for ch in cleaned.chars() {
+        // 中日韩字符按一个字号宽估算，西文按 0.55 估算
+        let w = if ch.is_ascii() { font_size * 0.55 } else { font_size };
+        if used + w > budget {
+            out.push('…');
+            return out;
+        }
+        used += w;
+        out.push(ch);
+    }
+    out
+}
+
+// ------------------------------------------------------------------ 皮肤
 
 fn skin_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
@@ -202,40 +396,18 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(10.0);
 
-        let yaw = &mut app.preview_yaw;
         ui::skin3d::skin_preview(
             ui,
             &p,
             texture.as_ref(),
             model,
             has_overlay,
-            yaw,
-            268.0,
+            &mut app.preview_yaw,
+            236.0,
             app.cfg.ui.animations,
         );
 
         ui.add_space(12.0);
-        let name = account
-            .as_ref()
-            .map(|a| a.name().to_string())
-            .unwrap_or_else(|| "未选择账号".into());
-        let kind = account
-            .as_ref()
-            .map(|a| a.kind_label())
-            .unwrap_or("请先添加账号");
-        ui.label(
-            egui::RichText::new(name)
-                .font(ui::font(15.0))
-                .color(p.text)
-                .strong(),
-        );
-        ui.add_space(2.0);
-        ui.label(
-            egui::RichText::new(kind)
-                .font(ui::font(12.0))
-                .color(p.text_weak),
-        );
-        ui.add_space(10.0);
         ui.horizontal(|ui| {
             let half = (ui.available_width() - 8.0) / 2.0;
             if ui::button(ui, &p, ButtonOpts::secondary("切换账号").width(half)).clicked() {
@@ -249,261 +421,79 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
     });
 }
 
-// ------------------------------------------------------------------ 游戏配置（二级入口）
+// ------------------------------------------------------------------ 快捷入口
 
-fn launch_card(app: &mut App, ui: &mut Ui) {
-    let p = app.palette;
-    ui::card(ui, &p, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("游戏配置")
-                    .font(ui::font(14.5))
-                    .color(p.text)
-                    .strong(),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::button(ui, &p, ButtonOpts::secondary("打开配置").icon("sliders")).clicked() {
-                    app.home_ui.config_open = true;
-                }
-            });
-        });
-        ui.add_space(10.0);
-
-        let version = app
-            .selected_version_id()
-            .and_then(|id| app.local_versions.iter().find(|v| v.id == id).cloned());
-
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("当前版本")
-                    .font(ui::font(12.5))
-                    .color(p.text_weak),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                match &version {
-                    Some(v) => {
-                        widgets::badge(ui, &p, &v.mc_version, p.accent);
-                        if let Some(loader) = &v.loader {
-                            widgets::badge(ui, &p, loader, views::loader_color(Some(loader)));
-                        }
-                        ui.label(
-                            egui::RichText::new(&v.id)
-                                .font(ui::font(13.0))
-                                .color(p.text)
-                                .strong(),
-                        );
-                    }
-                    None => {
-                        ui.label(
-                            egui::RichText::new("尚未安装版本")
-                                .font(ui::font(12.5))
-                                .color(p.text_faint),
-                        );
-                    }
-                }
-            });
-        });
-        ui.add_space(4.0);
-
-        let version_id = version.as_ref().map(|v| v.id.clone()).unwrap_or_default();
-        let mc_version = version.as_ref().map(|v| v.mc_version.clone()).unwrap_or_default();
-        widgets::key_value(
-            ui,
-            &p,
-            "最大内存",
-            &format!("{} MB", app.cfg.effective_memory(&version_id)),
-        );
-        widgets::key_value(
-            ui,
-            &p,
-            "Java",
-            &match app.java_for(&mc_version) {
-                Some(java) => format!("Java {} · {}", java.version, java.vendor),
-                None if app.java_searching => "正在搜索 ...".into(),
-                None => "未找到可用的 Java".into(),
-            },
-        );
-
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new("版本、内存、Java、目录等通用设置已移到「设置 - 游戏」。")
-                .font(ui::font(11.0))
-                .color(p.text_faint),
-        );
-    });
-}
-
-// ------------------------------------------------------------------ 快捷操作
-
-fn quick_card(app: &mut App, ui: &mut Ui) {
+fn shortcuts_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     ui::card(ui, &p, |ui| {
         ui.label(
-            egui::RichText::new("快捷操作")
+            egui::RichText::new("快捷入口")
                 .font(ui::font(14.5))
                 .color(p.text)
                 .strong(),
         );
-        ui.add_space(10.0);
-        ui.horizontal_wrapped(|ui| {
-            let actions: [(&str, &str, Page); 4] = [
-                ("download", "下载游戏", Page::Download),
-                ("layers", "版本管理", Page::Versions),
-                ("user", "账号管理", Page::Accounts),
-                ("settings", "启动器设置", Page::Settings),
-            ];
-            for (icon, label, page) in actions {
-                if ui::button(
-                    ui,
-                    &p,
-                    ButtonOpts::secondary(label)
-                        .icon(icon)
-                        .height(36.0)
-                        .font_size(13.0),
-                )
-                .clicked()
-                {
-                    app.page = page;
-                }
-            }
-            if ui::button(
-                ui,
-                &p,
-                ButtonOpts::secondary("打开日志")
-                    .icon("terminal")
-                    .height(36.0)
-                    .font_size(13.0),
-            )
-            .clicked()
-            {
-                let _ = paths::ensure_dir(&paths::logs_dir());
-                paths::reveal(&paths::logs_dir());
-            }
-        });
-    });
-}
-
-// ------------------------------------------------------------------ 资讯
-
-fn news_section(app: &mut App, ui: &mut Ui) {
-    let p = app.palette;
-    ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new("资讯")
-                .font(ui::font(14.5))
-                .color(p.text)
-                .strong(),
-        );
-        if app.news_loading {
-            ui::spinner(ui, &p, 14.0);
-        }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui::ghost(ui, &p, "绑定资讯源").clicked() {
-                app.page = Page::Settings;
-            }
-            if ui::icon_button(ui, &p, "refresh", "刷新资讯").clicked() {
-                app.load_news();
-            }
-        });
-    });
-    ui.add_space(8.0);
-
-    if let Some(err) = app.news_error.clone() {
-        ui::inset(ui, &p, |ui| {
-            ui.horizontal(|ui| {
-                ui::icon(ui, "alert", 15.0, p.warning);
-                ui.label(
-                    egui::RichText::new(format!("资讯获取失败：{err}"))
-                        .font(ui::font(12.5))
-                        .color(p.text_weak),
-                );
-            });
-        });
         ui.add_space(8.0);
-    }
 
-    let items: Vec<_> = app.news.clone();
-    if items.is_empty() {
-        ui::empty_state(ui, &p, "news", "暂无资讯", "可以在设置里绑定自己的资讯源");
-        return;
-    }
-
-    let width = ui.available_width();
-    let columns = if width > 1000.0 { 3 } else { 2 };
-    let card_width = (width - 14.0 * (columns as f32 - 1.0)) / columns as f32;
-
-    for chunk in items.chunks(columns) {
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            for item in chunk {
-                ui.vertical(|ui| {
-                    ui.set_width(card_width);
-                    let response = ui::card_padded(ui, &p, 14, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(tag) = &item.tag {
-                                widgets::badge(ui, &p, tag, p.accent);
-                            }
-                            if !item.date.is_empty() {
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    ui.label(
-                                        egui::RichText::new(short_date(&item.date))
-                                            .font(ui::font(11.0))
-                                            .color(p.text_faint),
-                                    );
-                                });
-                            }
-                        });
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(&item.title)
-                                .font(ui::font(14.0))
-                                .color(p.text)
-                                .strong(),
-                        );
-                        if !item.summary.is_empty() {
-                            ui.add_space(5.0);
-                            ui.label(
-                                egui::RichText::new(&item.summary)
-                                    .font(ui::font(12.5))
-                                    .color(p.text_weak),
-                            );
-                        }
-                    });
-                    if !item.url.is_empty() {
-                        let clickable = response.interact(Sense::click());
-                        if clickable.hovered() {
-                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                        }
-                        if clickable.clicked() {
-                            let _ = open::that(&item.url);
-                        }
-                    }
-                });
+        let entries: [(&str, &str, Page); 4] = [
+            ("download", "下载游戏与内容", Page::Download),
+            ("layers", "版本管理", Page::Versions),
+            ("user", "账号管理", Page::Accounts),
+            ("settings", "启动器设置", Page::Settings),
+        ];
+        for (icon, label, page) in entries {
+            let (rect, response) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), Sense::click());
+            if ui.is_rect_visible(rect) {
+                let t = ui
+                    .ctx()
+                    .animate_bool_with_time(response.id.with("h"), response.hovered(), 0.12);
+                if t > 0.0 {
+                    ui.painter().rect_filled(
+                        rect,
+                        p.corner_sm(),
+                        widgets::lerp_color(Color32::TRANSPARENT, p.surface_alt, t),
+                    );
+                }
+                icons::paint(
+                    ui.ctx(),
+                    ui.painter(),
+                    icon,
+                    Rect::from_center_size(
+                        Pos2::new(rect.left() + 18.0, rect.center().y),
+                        Vec2::splat(17.0),
+                    ),
+                    widgets::lerp_color(p.text_weak, p.accent, t),
+                );
+                ui.painter().text(
+                    Pos2::new(rect.left() + 38.0, rect.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    label,
+                    ui::font(13.0),
+                    widgets::lerp_color(p.text_weak, p.text, t),
+                );
+                icons::paint(
+                    ui.ctx(),
+                    ui.painter(),
+                    "chevron-right",
+                    Rect::from_center_size(
+                        Pos2::new(rect.right() - 14.0, rect.center().y),
+                        Vec2::splat(14.0),
+                    ),
+                    widgets::lerp_color(p.text_faint, p.accent, t),
+                );
             }
-        });
-        ui.add_space(14.0);
-    }
-}
-
-fn short_date(date: &str) -> String {
-    let trimmed = date.trim();
-    if trimmed.len() >= 10 && trimmed.as_bytes()[4] == b'-' {
-        trimmed[..10].to_string()
-    } else {
-        trimmed.chars().take(16).collect()
-    }
-}
-
-impl crate::core::minecraft::LocalVersion {
-    pub fn version_type_label(&self) -> &'static str {
-        match self.version_type.as_str() {
-            "release" => "正式版",
-            "snapshot" => "快照",
-            "old_beta" => "远古 Beta",
-            "old_alpha" => "远古 Alpha",
-            _ => "自定义",
+            if response.clicked() {
+                app.page = page;
+            }
+            if response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
         }
-    }
-}
 
-pub fn _unused(_: Color32) {}
+        ui.add_space(4.0);
+        if ui::button(ui, &p, ButtonOpts::ghost("打开日志目录").icon("terminal")).clicked() {
+            let _ = crate::core::paths::ensure_dir(&crate::core::paths::logs_dir());
+            crate::core::paths::reveal(&crate::core::paths::logs_dir());
+        }
+    });
+}

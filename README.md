@@ -13,9 +13,9 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 | 版本 | 说明 |
 | --- | --- |
-| [v0.1.0-beta.2](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.2) | 第二个公开测试版（Pre-release），Windows x64 |
+| [v0.1.0-beta.3](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.3) | 第三个公开测试版（Pre-release），Windows x64 |
 
-发行包 `htmcl-v0.1.0-beta.2-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
+发行包 `htmcl-v0.1.0-beta.3-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
 
 从源码构建请见 [构建](#构建)。
 
@@ -40,7 +40,7 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ## 测试版声明
 
-当前版本 **v0.1.0-beta.2** 是项目的第二个公开测试版（Beta）。
+当前版本 **v0.1.0-beta.3** 是项目的第三个公开测试版（Beta）。
 
 - 功能仍在快速迭代，配置文件字段、目录结构与界面布局都可能在下个版本变化；
 - 升级前请备份 `accounts.json` 与游戏目录；
@@ -118,27 +118,30 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - 94 个 24×24 线性 SVG 图标，构建时内嵌进可执行文件，无 emoji；
 - 6 套内置主题 + `themes/` 目录下的自定义主题；
 - 支持静态图片与 GIF 动态背景，可调不透明度与内容遮罩；
+- 首页按「启动区 + 资讯 + 皮肤预览」组织：启动是最主要的动作放在首屏顶部，资讯作为主内容区，皮肤与快捷入口在右栏；
 - 首页的「游戏配置」是二级弹窗，通用游戏设置集中在「设置 - 游戏」，按通用 / 内存 / 启动参数 / 游戏目录分类；
+- 设置页使用左侧分类导航（外观 / 下载 / 游戏 / Java / 资讯 / 其他）；
+- 界面动效：按钮悬停与按压插值、侧栏选中指示条、页面切换淡入、弹窗与下拉展开动画、提示条滑入、资讯卡片悬停；
 - 主题色、圆角、字体缩放、界面动画均可调整；
 - 内置三个中文资讯源：Minecraft 官方资讯（与 PCL2-CE 同源）、苦力怕论坛 RSS、中文 Minecraft Wiki 最近更改；也可切换为自定义 JSON / RSS 地址。
 
 ## 界面
 
-| 首页 | 下载游戏 |
+| 首页：启动区 + 资讯 | 下载游戏 |
 | --- | --- |
 | ![首页](docs/screenshots/01-home.png) | ![下载游戏](docs/screenshots/02-download.png) |
 
-| 安装加载器 | Mod 搜索 |
+| Mod 搜索 | 版本管理 |
 | --- | --- |
-| ![加载器](docs/screenshots/03-loader.png) | ![Mod](docs/screenshots/04-mod.png) |
+| ![Mod](docs/screenshots/04-mod.png) | ![版本管理](docs/screenshots/05-versions.png) |
 
-| 版本管理 | 账号与 3D 皮肤 |
+| 账号与 3D 皮肤 | 设置（左侧分类） |
 | --- | --- |
-| ![版本管理](docs/screenshots/05-versions.png) | ![账号](docs/screenshots/06-accounts.png) |
+| ![账号](docs/screenshots/06-accounts.png) | ![设置](docs/screenshots/07-settings-game.png) |
 
-| 设置 - 游戏 | 设置 - 外观 |
+| 游戏配置（二级弹窗） | 下载中心 |
 | --- | --- |
-| ![设置-游戏](docs/screenshots/07-settings-game.png) | ![设置-外观](docs/screenshots/08-settings-appearance.png) |
+| ![游戏配置](docs/screenshots/08-home-config.png) | ![下载中心](docs/screenshots/09-download-center.png) |
 
 ## 技术栈与架构
 
