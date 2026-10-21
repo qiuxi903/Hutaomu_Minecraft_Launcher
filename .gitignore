@@ -1,0 +1,22 @@
+# 构建产物
+/target/
+**/*.rs.bk
+
+# 仅本地：AI 协作规则与工作日志
+/AI协作规则.md
+/logs/
+
+# 运行期数据（启动器同目录生成的配置、账号、主题、日志、游戏数据）
+/htmcl.json
+/htmcl.json.bak
+/accounts.json
+/themes/
+/.htmcl/
+/.minecraft/
+/shots*/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+*.swp

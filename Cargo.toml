@@ -1,0 +1,79 @@
+[package]
+name = "htmcl"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.82"
+description = "Hutaomu Minecraft Launcher - 胡桃木 Minecraft 启动器"
+authors = ["邱息 / qiuxi903"]
+license = "AGPL-3.0"
+repository = "https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher"
+readme = "README.md"
+build = "build.rs"
+
+[[bin]]
+name = "htmcl"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.35", default-features = false, features = [
+    "default_fonts",
+    "glow",
+] }
+egui = "0.35"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = [
+    "blocking",
+    "json",
+    "gzip",
+    "native-tls",
+] }
+image = { version = "0.25", default-features = false, features = [
+    "png",
+    "jpeg",
+    "gif",
+    "webp",
+    "bmp",
+] }
+resvg = { version = "0.48", default-features = false, features = ["text"] }
+zip = { version = "9", default-features = false, features = ["deflate", "bzip2", "zstd"] }
+md-5 = "0.11"
+sha1 = "0.11"
+uuid = { version = "1", features = ["v4", "serde"] }
+rfd = "0.17"
+dirs = "7"
+walkdir = "2"
+open = "5"
+anyhow = "1"
+thiserror = "2"
+rand = "0.9"
+base64 = "0.23"
+log = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+percent-encoding = "2"
+num_cpus = "1"
+raw-window-handle = "0.6"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Registry",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = 2
+lto = "thin"
+codegen-units = 4
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 2
