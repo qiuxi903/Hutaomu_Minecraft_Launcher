@@ -52,7 +52,7 @@ const LIBRARIES: [(&str, &str, &str); 18] = [
     ("windows-sys / winresource", "MIT OR Apache-2.0", "Windows 系统接口与可执行文件图标"),
 ];
 
-const DATA_SOURCES: [(&str, &str, &str); 8] = [
+const DATA_SOURCES: [(&str, &str, &str); 10] = [
     ("Mojang API", "https://piston-meta.mojang.com", "游戏版本清单、客户端与依赖库"),
     ("BMCLAPI", "https://bmclapi2.bangbang93.com", "国内镜像加速"),
     ("Fabric Meta", "https://meta.fabricmc.net", "Fabric 加载器版本与描述"),
@@ -60,6 +60,8 @@ const DATA_SOURCES: [(&str, &str, &str); 8] = [
     ("MinecraftForge Maven", "https://maven.minecraftforge.net", "Forge 安装器与依赖"),
     ("NeoForged Maven", "https://maven.neoforged.net", "NeoForge 安装器与依赖"),
     ("Modrinth API", "https://api.modrinth.com", "Mod、光影、资源包与整合包"),
+    ("MC 百科 MCMod", "https://www.mcmod.cn", "Mod 中文名、缩写与页面链接"),
+    ("MC 镜像站翻译", "https://mod.mcimirror.top", "项目简介的中文翻译"),
     ("authlib-injector", "https://authlib-injector.yushi.moe", "皮肤站登录支持"),
 ];
 
@@ -120,7 +122,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         widgets::section_title(ui, &p, "测试版声明");
         ui.label(
             egui::RichText::new(format!(
-                "当前版本 {} 是胡桃木启动器的第一个公开测试版（Beta）。功能仍在快速迭代，配置文件字段、目录结构与界面都可能在下个版本变化；升级前请备份 accounts.json 与游戏目录；遇到问题请到 GitHub Issues 反馈。",
+                "当前版本 {} 是胡桃木启动器的公开测试版（Beta）。功能仍在快速迭代，配置文件字段、目录结构与界面都可能在下个版本变化；升级前请备份 accounts.json 与游戏目录；遇到问题请到 GitHub Issues 反馈。",
                 env!("CARGO_PKG_VERSION")
             ))
             .font(ui::font(12.5))
@@ -129,7 +131,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         ui.add_space(10.0);
         ui.label(
             egui::RichText::new(
-                "已在真实环境验证：版本下载与安装、原版启动、Fabric 加载器安装与启动、Java 简要搜索、Modrinth 搜索与版本查询、界面各页面。尚未实机验证：Forge / NeoForge 安装器流程、微软账号登录、皮肤站登录（需要真实账号）。",
+                "已在真实环境验证：版本下载与安装（含资源文件）、原版启动、Fabric 加载器安装与启动、游戏与加载器一次装好、Java 简要搜索、Modrinth 搜索与版本查询、MCMod 中文名与官网跳转、界面各页面。尚未实机验证：Forge / NeoForge 安装器流程、微软账号登录、皮肤站登录（需要真实账号）。",
             )
             .font(ui::font(12.5))
             .color(p.text_weak),
