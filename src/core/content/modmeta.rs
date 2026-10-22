@@ -1,0 +1,347 @@
+//! 读取本地模组 jar 里的元数据
+//!
+//! 不同加载器的元数据格式不同，这里统一读出「显示名」与「模组 id」：
+//! - Fabric：`fabric.mod.json`
+//! - Quilt：`quilt.mod.json`
+//! - Forge / NeoForge：`META-INF/mods.toml`、`META-INF/neoforge.mods.toml`
+//! - 旧版 Forge：`mcmod.info`
+//!
+//! 拿到 mod id 后可以再去 MCMod 词库里查中文名，
+//! 查不到时退回元数据自带的名称。
+
+use std::io::Read;
+use std::path::Path;
+
+use serde::Deserialize;
+
+/// 从 jar 元数据里读出的模组信息
+#[derive(Debug, Clone, Default)]
+pub struct ModMeta {
+    /// 模组 id，例如 `sodium`
+    pub mod_id: String,
+    /// 元数据里的显示名（可能是英文）
+    pub name: String,
+    /// 简介
+    pub description: String,
+    /// 版本号
+    pub version: String,
+    /// 加载器：fabric / quilt / forge / unknown
+    pub loader: String,
+}
+
+/// 读取一个 jar 的模组元数据
+///
+/// 不是模组、或元数据无法解析时返回 None。
+pub fn read_meta(jar: &Path) -> Option<ModMeta> {
+    let file = std::fs::File::open(jar).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    // Fabric / Quilt
+    if let Some(meta) = read_json_entry(&mut archive, "fabric.mod.json") {
+        return fabric_meta(meta, "fabric");
+    }
+    if let Some(meta) = read_json_entry(&mut archive, "quilt.mod.json") {
+        return fabric_meta(meta, "quilt");
+    }
+    // Forge / NeoForge
+    for name in ["META-INF/mods.toml", "META-INF/neoforge.mods.toml"] {
+        if let Some(text) = read_text_entry(&mut archive, name) {
+            if let Some(meta) = parse_mods_toml(&text) {
+                return Some(meta);
+            }
+        }
+    }
+    // 旧版 Forge
+    if let Some(text) = read_text_entry(&mut archive, "mcmod.info") {
+        if let Some(meta) = parse_mcmod_info(&text) {
+            return Some(meta);
+        }
+    }
+    None
+}
+
+/// 读取 jar 内的文本条目
+fn read_text_entry<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> Option<String> {
+    let mut file = archive.by_name(name).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    Some(text)
+}
+
+/// 读取 jar 内的 JSON 条目
+fn read_json_entry<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> Option<serde_json::Value> {
+    let text = read_text_entry(archive, name)?;
+    serde_json::from_str(&text).ok()
+}
+
+/// fabric.mod.json / quilt.mod.json 的字段
+#[derive(Debug, Deserialize, Default)]
+struct FabricJson {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    description: String,
+}
+
+fn fabric_meta(value: serde_json::Value, loader: &str) -> Option<ModMeta> {
+    let json: FabricJson = serde_json::from_value(value).ok()?;
+    if json.id.is_empty() && json.name.is_empty() {
+        return None;
+    }
+    Some(ModMeta {
+        mod_id: json.id,
+        name: json.name,
+        description: json.description,
+        version: json.version,
+        loader: loader.to_string(),
+    })
+}
+
+/// 旧版 mcmod.info 的字段
+#[derive(Debug, Deserialize, Default)]
+struct McmodInfo {
+    #[serde(default)]
+    #[serde(rename = "modList")]
+    mod_list: Vec<McmodEntry>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct McmodEntry {
+    #[serde(default)]
+    modid: String,
+    #[serde(default)]
+    name: String,
+    /// 少数变体用驼峰的 displayName
+    #[serde(default, rename = "displayName")]
+    displayname: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    version: String,
+}
+
+fn parse_mcmod_info(text: &str) -> Option<ModMeta> {
+    let info: McmodInfo = serde_json::from_str(text).ok()?;
+    let entry = info.mod_list.into_iter().next()?;
+    if entry.modid.is_empty() && entry.name.is_empty() {
+        return None;
+    }
+    let name = if entry.displayname.is_empty() {
+        entry.name
+    } else {
+        entry.displayname
+    };
+    Some(ModMeta {
+        mod_id: entry.modid,
+        name,
+        description: entry.description,
+        version: entry.version,
+        loader: "forge".to_string(),
+    })
+}
+
+/// 解析 `META-INF/mods.toml`
+///
+/// 只需要 `[[mods]]` 段里的 modId / name / version / description，
+/// 不做完整 TOML 解析，遇到多行字符串也能处理。
+fn parse_mods_toml(text: &str) -> Option<ModMeta> {
+    let mut meta = ModMeta {
+        loader: "forge".to_string(),
+        ..Default::default()
+    };
+    let mut in_mods = false;
+    let mut found = false;
+    let mut desc_lines: Vec<String> = Vec::new();
+    let mut in_desc = false;
+
+    for raw in text.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // 段标题
+        if line.starts_with('[') {
+            in_mods = line == "[[mods]]";
+            in_desc = false;
+            continue;
+        }
+        if !in_mods {
+            continue;
+        }
+        // 多行字符串结束
+        if in_desc {
+            if line == "'''" || line == "\"\"\"" {
+                in_desc = false;
+                meta.description = desc_lines.join("\n");
+                desc_lines.clear();
+                continue;
+            }
+            desc_lines.push(line.to_string());
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        let key = key.trim();
+        let value = value.trim();
+        match key {
+            "modId" => {
+                meta.mod_id = unquote(value);
+                found = true;
+            }
+            // Forge 的 mods.toml 用 displayName 作为显示名，少数模组直接写 name
+            "displayName" | "name" => {
+                if meta.name.is_empty() {
+                    meta.name = unquote(value);
+                    found = true;
+                }
+            }
+            "version" => {
+                meta.version = unquote(value);
+            }
+            "description" => {
+                if value.starts_with("'''") || value.starts_with("\"\"\"") {
+                    let body = value.trim_start_matches('\'').trim_start_matches('"');
+                    if body.is_empty() {
+                        // 多行字符串，内容在后面几行
+                        in_desc = true;
+                    } else {
+                        let body = body.trim_end_matches('\'').trim_end_matches('"');
+                        meta.description = body.to_string();
+                    }
+                } else {
+                    meta.description = unquote(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if !desc_lines.is_empty() {
+        meta.description = desc_lines.join("\n");
+    }
+    if found {
+        Some(meta)
+    } else {
+        None
+    }
+}
+
+/// 去掉 TOML 字符串两端的引号
+fn unquote(value: &str) -> String {
+    let trimmed = value.trim();
+    let stripped = trimmed
+        .strip_prefix("'''")
+        .and_then(|s| s.strip_suffix("'''"))
+        .or_else(|| {
+            trimmed
+                .strip_prefix("\"\"\"")
+                .and_then(|s| s.strip_suffix("\"\"\""))
+        })
+        .or_else(|| {
+            trimmed
+                .strip_prefix('"')
+                .and_then(|s| s.strip_suffix('"'))
+        })
+        .or_else(|| {
+            trimmed
+                .strip_prefix('\'')
+                .and_then(|s| s.strip_suffix('\''))
+        });
+    match stripped {
+        Some(text) => text.to_string(),
+        None => trimmed.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_forge_mods_toml() {
+        let toml = r#"
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="sodium"
+version="0.5.13"
+displayName="Sodium"
+description='''
+A powerful rendering engine
+'''
+
+[[dependencies.sodium]]
+    modId="minecraft"
+"#;
+        let meta = parse_mods_toml(toml).expect("应能解析");
+        assert_eq!(meta.mod_id, "sodium");
+        assert_eq!(meta.version, "0.5.13");
+        // Forge 的 mods.toml 用 displayName
+        assert_eq!(meta.name, "Sodium");
+        assert_eq!(meta.description, "A powerful rendering engine");
+        assert_eq!(meta.loader, "forge");
+    }
+
+    #[test]
+    fn parses_mods_toml_with_plain_name() {
+        let toml = r#"
+[[mods]]
+modId="jei"
+name="Just Enough Items"
+version="15.2.0"
+"#;
+        let meta = parse_mods_toml(toml).expect("应能解析");
+        assert_eq!(meta.mod_id, "jei");
+        assert_eq!(meta.name, "Just Enough Items");
+        assert_eq!(meta.version, "15.2.0");
+    }
+
+    #[test]
+    fn parses_mods_toml_without_description() {
+        let toml = r#"
+[[mods]]
+modId="jei"
+name="Just Enough Items"
+version="15.2.0"
+"#;
+        let meta = parse_mods_toml(toml).expect("应能解析");
+        assert_eq!(meta.mod_id, "jei");
+        assert_eq!(meta.name, "Just Enough Items");
+        assert_eq!(meta.version, "15.2.0");
+    }
+
+    #[test]
+    fn parses_mcmod_info() {
+        // 标准格式没有 displayName，用 name
+        let json = r#"{"modList":[{"modid":"jei","name":"JEI物品管理器","version":"4.0"}]}"#;
+        let meta = parse_mcmod_info(json).expect("应能解析");
+        assert_eq!(meta.mod_id, "jei");
+        assert_eq!(meta.name, "JEI物品管理器");
+        assert_eq!(meta.version, "4.0");
+
+        // 带驼峰 displayName 的变体优先用它
+        let json2 = r#"{"modList":[{"modid":"jei","name":"JEI物品管理器","displayName":"物品管理器"}]}"#;
+        let meta2 = parse_mcmod_info(json2).expect("应能解析");
+        assert_eq!(meta2.name, "物品管理器");
+    }
+
+    #[test]
+    fn unquote_strips_quotes() {
+        assert_eq!(unquote("\"abc\""), "abc");
+        assert_eq!(unquote("'abc'"), "abc");
+        assert_eq!(unquote("abc"), "abc");
+    }
+}

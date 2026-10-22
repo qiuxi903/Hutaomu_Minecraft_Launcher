@@ -77,6 +77,98 @@ impl ContentKind {
     }
 }
 
+/// Modrinth 分类的中文名
+///
+/// 参考 PCL2 / HMCL / SJMCL 的做法，把平台自带的英文分类显示成中文，
+/// 避免界面上出现 technology、optimization 这类英文标签。
+pub fn category_label(category: &str) -> String {
+    let zh = match category {
+        // 加载器
+        "fabric" => "Fabric",
+        "forge" => "Forge",
+        "quilt" => "Quilt",
+        "neoforge" => "NeoForge",
+        "liteloader" => "LiteLoader",
+        "rift" => "Rift",
+        "modloader" => "ModLoader",
+        // Mod 分类
+        "technology" => "科技",
+        "gameplay" => "玩法",
+        "library" => "功能库",
+        "decoration" => "装饰",
+        "optimization" => "优化",
+        "stylized" => "卡通",
+        "realistic" => "写实",
+        "worldgen" => "地形",
+        "utility" => "工具",
+        "game-mechanics" => "机制",
+        "adventure" => "冒险",
+        "combat" => "战斗",
+        "magic" => "魔法",
+        "misc" => "综合",
+        "social" => "社交",
+        "storage" => "存储",
+        "visual" => "视觉",
+        "audio" => "音效",
+        "tweaks" => "调整",
+        "data-gen" => "数据生成",
+        "lightweight" => "轻量",
+        "multiplayer" => "多人",
+        "survival" => "生存",
+        "family" => "家庭",
+        "kitchen" => "厨房",
+        "horror" => "恐怖",
+        "seasonal" => "节日",
+        "comedy" => "搞笑",
+        "puzzle" => "解谜",
+        "sports" => "体育",
+        "education" => "教育",
+        "roleplay" => "角色扮演",
+        // 光影
+        "core" => "核心",
+        "shadows" => "阴影",
+        "water" => "水面",
+        "lighting" => "光照",
+        "reflections" => "反射",
+        "bloom" => "辉光",
+        "ctm" => "连接纹理",
+        "fog" => "雾气",
+        "particles" => "粒子",
+        "post-processing" => "后处理",
+        "atmosphere" => "大气",
+        "colored-lighting" => "彩色光照",
+        "lightmap" => "光照贴图",
+        "volumetrics" => "体积光",
+        "visual-effects" => "视觉特效",
+        "screen-effects" => "屏幕特效",
+        "cursed" => "实验性",
+        "updating" => "更新中",
+        "experimental" => "实验性",
+        "legacy" => "旧版",
+        // 资源包
+        "16x" => "16×",
+        "32x" => "32×",
+        "64x" => "64×",
+        "128x" => "128×",
+        "256x" => "256×",
+        "512x" => "512×",
+        "fantasy" => "奇幻",
+        "minimal" => "极简",
+        "cute" => "可爱",
+        "blocks" => "方块",
+        "decorative" => "装饰",
+        "menu" => "菜单",
+        "panorama" => "全景图",
+        "animals" => "动物",
+        "mobs" => "生物",
+        "medieval" => "中世纪",
+        "modern" => "现代",
+        "vanilla" => "原版",
+        _ => return category.to_string(),
+    };
+    zh.to_string()
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchResponse {
     #[serde(default)]
@@ -303,6 +395,31 @@ pub fn project(dl: &Downloader, id: &str) -> Result<Project> {
     dl.get_json_direct(&format!("{API}/project/{id}"))
 }
 
+/// 按 slug 查找项目，不存在时返回 None
+///
+/// 用于把本地文件名反查成 Modrinth 项目，从而给出官网链接。
+pub fn find_by_slug(dl: &Downloader, slug: &str) -> Result<Option<Project>> {
+    if slug.trim().is_empty() {
+        return Ok(None);
+    }
+    let url = format!("{API}/project/{}", encode(slug));
+    match dl.client_for_auth(&url).get(&url).send() {
+        Ok(resp) => {
+            if resp.status() == reqwest::StatusCode::NOT_FOUND {
+                return Ok(None);
+            }
+            if !resp.status().is_success() {
+                return Err(anyhow::anyhow!("HTTP {}", resp.status()));
+            }
+            let bytes = resp.bytes().context("读取响应失败")?;
+            let project = serde_json::from_slice::<Project>(&bytes)
+                .context("解析项目信息失败")?;
+            Ok(Some(project))
+        }
+        Err(err) => Err(anyhow::anyhow!("请求失败: {err}")),
+    }
+}
+
 pub fn versions(
     dl: &Downloader,
     project_id: &str,
@@ -497,5 +614,21 @@ pub fn format_downloads(count: u64) -> String {
         format!("{:.1}K", count as f64 / 1_000.0)
     } else {
         count.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn category_label_translates_known_categories() {
+        assert_eq!(category_label("technology"), "科技");
+        assert_eq!(category_label("optimization"), "优化");
+        assert_eq!(category_label("atmosphere"), "大气");
+        // 加载器名保持原样
+        assert_eq!(category_label("fabric"), "Fabric");
+        // 未收录的分类原样返回
+        assert_eq!(category_label("some-new-tag"), "some-new-tag");
     }
 }
