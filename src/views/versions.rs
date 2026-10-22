@@ -1,11 +1,14 @@
-//! 版本管理：左侧版本列表 + 右侧详情（概览 / 设置 / 存档 / 截图）。
+//! 版本管理：一级是所有版本列表，点进去进入该版本的二级页面。
+//!
+//! 二级页面左侧是导航（概览 / 设置 / 存档 / 截图 / 模组），右侧是内容。
+//! 二级页面里的设置只对当前版本生效，会覆盖全局设置。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use egui::{Align, Layout, Pos2, Rect, Sense, Ui, Vec2};
 
-use crate::app::{App, Page};
+use crate::app::{App, CoreEvent, Page};
 use crate::core::minecraft::version;
 use crate::core::paths;
 use crate::icons;
@@ -16,13 +19,22 @@ pub struct VersionsState {
     pub search: String,
     /// 0 全部 / 1 正式版 / 2 快照 / 3 加载器 / 4 其他
     pub filter: usize,
-    pub selected: Option<String>,
-    /// 0 概览 / 1 设置 / 2 存档 / 3 截图
-    pub tab: usize,
+    /// 排序：0 最近修改 / 1 名称 / 2 占用空间
+    pub sort: usize,
+    /// 当前打开的版本详情，None 表示停留在一级列表
+    pub detail: Option<String>,
+    /// 详情页左侧导航选中项
+    pub section: usize,
+    /// 本地文件名 → Modrinth 项目 slug（后台反查得到，用于跳转官网）
+    pub content_slugs: HashMap<String, String>,
+    /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
+    pub content_lookup_section: Option<usize>,
     pub detail_memory: f32,
     pub detail_java: usize,
     pub detail_jvm: String,
     pub detail_dir: String,
+    /// 该版本是否启用版本隔离
+    pub detail_isolation: bool,
     pub confirm_delete: Option<String>,
     pub rename_target: Option<String>,
     pub rename_value: String,
@@ -35,12 +47,16 @@ impl Default for VersionsState {
         Self {
             search: String::new(),
             filter: 0,
-            selected: None,
-            tab: 0,
+            sort: 0,
+            detail: None,
+            section: 0,
+            content_slugs: HashMap::new(),
+            content_lookup_section: None,
             detail_memory: 4096.0,
             detail_java: 0,
             detail_jvm: String::new(),
             detail_dir: String::new(),
+            detail_isolation: true,
             confirm_delete: None,
             rename_target: None,
             rename_value: String::new(),
@@ -51,19 +67,39 @@ impl Default for VersionsState {
 }
 
 const FILTERS: [&str; 5] = ["全部", "正式版", "快照", "加载器", "其他"];
-const TABS: [&str; 4] = ["概览", "设置", "存档", "截图"];
+const SORTS: [&str; 3] = ["最近修改", "名称", "占用空间"];
+/// 详情页左侧导航
+const SECTIONS: [(&str, &str); 7] = [
+    ("info", "概览"),
+    ("sliders", "设置"),
+    ("world", "存档"),
+    ("image", "截图"),
+    ("mod", "模组"),
+    ("shader", "光影"),
+    ("resourcepack", "资源包"),
+];
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
+    if app.versions_ui.detail.is_some() {
+        detail_page(app, ui);
+    } else {
+        list_page(app, ui);
+    }
+
+    delete_modal(app, ui);
+    rename_modal(app, ui);
+}
+
+// ------------------------------------------------------------------ 一级：版本列表
+
+fn list_page(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     widgets::page_title(
         ui,
         &p,
         "版本管理",
-        "查看版本信息、单独配置启动参数，管理存档与截图",
+        "查看已安装的版本，点进去可以单独配置启动参数、管理存档与模组",
     );
-
-    toolbar(app, ui);
-    ui.add_space(12.0);
 
     if app.local_versions.is_empty() {
         ui::empty_state(
@@ -76,27 +112,16 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         return;
     }
 
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
-        ui.vertical(|ui| {
-            ui.set_width(320.0);
-            version_list(app, ui);
-        });
-        ui.vertical(|ui| {
-            let width = ui.available_width();
-            ui.set_width(width);
-            version_detail(app, ui);
-        });
-    });
-
-    delete_modal(app, ui);
-    rename_modal(app, ui);
+    toolbar(app, ui);
+    ui.add_space(14.0);
+    version_grid(app, ui);
 }
 
-// ------------------------------------------------------------------ 工具栏
-
+/// 一级页面的工具栏
 fn toolbar(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
+    let total_size: u64 = app.local_versions.iter().map(|v| v.size).sum();
+
     ui.horizontal(|ui| {
         let mut search = app.versions_ui.search.clone();
         if ui::search_field(ui, &p, &mut search, "搜索版本", 240.0).changed() {
@@ -109,12 +134,12 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
             if ui::button(ui, &p, ButtonOpts::secondary("打开游戏目录").icon("folder")).clicked() {
                 app.cfg.open_game_dir();
             }
-            if ui::button(ui, &p, ButtonOpts::secondary("下载新版本").icon("download")).clicked() {
+            if ui::button(ui, &p, ButtonOpts::primary("下载新版本").icon("download")).clicked() {
                 app.page = Page::Download;
             }
         });
     });
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     ui.horizontal(|ui| {
         let mut filter = app.versions_ui.filter;
         if ui::segmented(ui, &p, &mut filter, &FILTERS).clicked() {
@@ -122,21 +147,35 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
-                egui::RichText::new(format!("共 {} 个版本", app.local_versions.len()))
-                    .font(ui::font(11.5))
-                    .color(p.text_faint),
+                egui::RichText::new(format!(
+                    "共 {} 个版本 · 占用 {}",
+                    app.local_versions.len(),
+                    paths::format_size(total_size)
+                ))
+                .font(ui::font(11.5))
+                .color(p.text_faint),
             );
         });
     });
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("排序")
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        let mut sort = app.versions_ui.sort;
+        if ui::segmented(ui, &p, &mut sort, &SORTS).clicked() {
+            app.versions_ui.sort = sort;
+        }
+    });
 }
 
-// ------------------------------------------------------------------ 左侧列表
-
-fn version_list(app: &mut App, ui: &mut Ui) {
-    let p = app.palette;
+/// 按筛选与排序整理出的版本列表
+fn filtered_versions(app: &App) -> Vec<crate::core::minecraft::LocalVersion> {
     let keyword = app.versions_ui.search.trim().to_lowercase();
     let filter = app.versions_ui.filter;
-    let versions: Vec<_> = app
+    let mut versions: Vec<crate::core::minecraft::LocalVersion> = app
         .local_versions
         .iter()
         .filter(|v| match filter {
@@ -150,149 +189,207 @@ fn version_list(app: &mut App, ui: &mut Ui) {
         .cloned()
         .collect();
 
-    if app.versions_ui.selected.is_none() {
-        app.versions_ui.selected = app
-            .cfg
-            .selected_version
-            .clone()
-            .or_else(|| versions.first().map(|v| v.id.clone()));
+    match app.versions_ui.sort {
+        1 => versions.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase())),
+        2 => versions.sort_by(|a, b| b.size.cmp(&a.size)),
+        _ => versions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified)),
     }
-
-    ui::card_padded(ui, &p, 8, |ui| {
-        ui.set_width(304.0);
-        if versions.is_empty() {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| {
-                ui.label(
-                    egui::RichText::new("没有匹配的版本")
-                        .font(ui::font(12.5))
-                        .color(p.text_weak),
-                );
-            });
-            ui.add_space(20.0);
-            return;
-        }
-
-        egui::ScrollArea::vertical()
-            .max_height(560.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.set_width(296.0);
-                let mut select: Option<String> = None;
-                for version in &versions {
-                    let selected = app.versions_ui.selected.as_deref() == Some(version.id.as_str());
-                    let is_current = app.cfg.selected_version.as_deref() == Some(version.id.as_str());
-                    let response = ui.scope(|ui| {
-                        egui::Frame::NONE
-                            .fill(if selected { p.accent_weak } else { p.surface })
-                            .stroke(egui::Stroke::new(
-                                1.0,
-                                if selected { p.accent } else { p.border },
-                            ))
-                            .corner_radius(p.corner_sm())
-                            .inner_margin(egui::Margin::symmetric(10, 8))
-                            .show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    let (rect, _) =
-                                        ui.allocate_exact_size(Vec2::splat(34.0), Sense::hover());
-                                    ui.painter().rect_filled(
-                                        rect,
-                                        p.corner_sm(),
-                                        if selected { p.surface } else { p.surface_alt },
-                                    );
-                                    icons::paint(
-                                        ui.ctx(),
-                                        ui.painter(),
-                                        if version.loader.is_some() { "layers" } else { "cube" },
-                                        rect.shrink(8.0),
-                                        if selected { p.accent } else { p.text_weak },
-                                    );
-                                    ui.add_space(2.0);
-                                    ui.vertical(|ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(&version.id)
-                                                    .font(ui::font(13.0))
-                                                    .color(p.text)
-                                                    .strong(),
-                                            );
-                                            if is_current {
-                                                widgets::badge(ui, &p, "当前", p.accent);
-                                            }
-                                        });
-                                        ui.add_space(2.0);
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 4.0;
-                                            if version.mc_version != version.id {
-                                                widgets::badge(
-                                                    ui,
-                                                    &p,
-                                                    &version.mc_version,
-                                                    views::version_type_color(&version.version_type),
-                                                );
-                                            }
-                                            if let Some(loader) = &version.loader {
-                                                widgets::badge(
-                                                    ui,
-                                                    &p,
-                                                    loader,
-                                                    views::loader_color(Some(loader)),
-                                                );
-                                            }
-                                            ui.label(
-                                                egui::RichText::new(paths::format_size(version.size))
-                                                    .font(ui::font(10.5))
-                                                    .color(p.text_faint),
-                                            );
-                                        });
-                                    });
-                                });
-                            })
-                            .response
-                    })
-                    .inner;
-                    let clickable = response.interact(Sense::click());
-                    if clickable.hovered() {
-                        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                    }
-                    if clickable.clicked() {
-                        select = Some(version.id.clone());
-                    }
-                    ui.add_space(6.0);
-                }
-                if let Some(id) = select {
-                    load_detail(app, &id);
-                    app.versions_ui.selected = Some(id);
-                }
-            });
-    });
+    versions
 }
 
-// ------------------------------------------------------------------ 右侧详情
-
-fn version_detail(app: &mut App, ui: &mut Ui) {
+/// 版本卡片网格
+fn version_grid(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let Some(id) = app.versions_ui.selected.clone() else {
-        ui::card(ui, &p, |ui| {
-            ui::empty_state(ui, &p, "layers", "选择一个版本", "右侧会显示版本详情与操作");
+    let versions = filtered_versions(app);
+
+    if versions.is_empty() {
+        ui::empty_state(ui, &p, "search", "没有匹配的版本", "换个关键词或筛选条件试试");
+        return;
+    }
+
+    let width = ui.available_width();
+    let columns = if width > 1080.0 {
+        4
+    } else if width > 800.0 {
+        3
+    } else if width > 520.0 {
+        2
+    } else {
+        1
+    };
+    let card_width = (width - 14.0 * (columns as f32 - 1.0)) / columns as f32;
+
+    const CARD_HEIGHT: f32 = 88.0;
+    const CARD_PADDING: f32 = 12.0;
+    const ICON_SIZE: f32 = 26.0;
+
+    let mut open: Option<String> = None;
+    for chunk in versions.chunks(columns) {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 14.0;
+            for info in chunk {
+                let is_current = app.cfg.selected_version.as_deref() == Some(info.id.as_str());
+                let response = version_card(ui, &p, info, card_width, is_current);
+                let clickable = response.interact(Sense::click());
+                if clickable.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if clickable.clicked() {
+                    open = Some(info.id.clone());
+                }
+            }
         });
+        ui.add_space(14.0);
+    }
+
+    if let Some(id) = open {
+        open_detail(app, &id);
+    }
+}
+
+/// 单个版本卡片
+///
+/// 整张卡片用 painter 绘制：egui 的 Label 即使设了 truncate，测量宽度仍是原文，
+/// 版本号一长就会把整行布局撑开，所以这里自己截断文本。
+fn version_card(
+    ui: &mut Ui,
+    p: &crate::theme::Palette,
+    info: &crate::core::minecraft::LocalVersion,
+    card_width: f32,
+    is_current: bool,
+) -> egui::Response {
+    const CARD_HEIGHT: f32 = 88.0;
+    const PAD: f32 = 12.0;
+    const ICON_SIZE: f32 = 26.0;
+
+    let (rect, response) = ui.allocate_exact_size(
+        Vec2::new(card_width, CARD_HEIGHT),
+        Sense::click(),
+    );
+    ui.painter().rect_filled(rect, p.corner_sm(), p.surface);
+    ui.painter().rect_stroke(
+        rect,
+        p.corner_sm(),
+        egui::Stroke::new(1.0, if is_current { p.accent } else { p.border }),
+        egui::StrokeKind::Inside,
+    );
+
+    // 图标
+    let icon_rect = Rect::from_min_size(rect.min + Vec2::new(PAD, PAD), Vec2::splat(ICON_SIZE));
+    ui.painter()
+        .rect_filled(icon_rect, p.corner_sm(), p.surface_alt);
+    icons::paint(
+        ui.ctx(),
+        ui.painter(),
+        if info.loader.is_some() { "layers" } else { "cube" },
+        icon_rect.shrink(6.0),
+        p.text_weak,
+    );
+
+    // 标题：自行截断，保证不超出卡片
+    let text_x = icon_rect.right() + 8.0;
+    let avail = (rect.right() - PAD - text_x).max(40.0);
+    let title = widgets::ellipsize(&info.id, avail, 13.0);
+    ui.painter().text(
+        Pos2::new(text_x, icon_rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        ui::font(13.0),
+        p.text,
+    );
+
+    // 副信息：MC 版本 · 加载器 · 当前状态
+    let mut meta: Vec<String> = Vec::new();
+    if info.mc_version != info.id {
+        meta.push(info.mc_version.clone());
+    }
+    match &info.loader {
+        Some(loader) => meta.push(loader.clone()),
+        None => meta.push("原版".to_string()),
+    }
+    if is_current {
+        meta.push("当前使用".to_string());
+    }
+    let meta_y = icon_rect.bottom() + 15.0;
+    ui.painter().text(
+        Pos2::new(text_x, meta_y),
+        egui::Align2::LEFT_CENTER,
+        widgets::ellipsize(&meta.join(" · "), avail, 11.0),
+        ui::font(11.0),
+        p.text_weak,
+    );
+
+    // 底部：占用与时间（坐标相对卡片，不能用屏幕坐标）
+    let bottom = format!(
+        "{} · {}",
+        paths::format_size(info.size),
+        info.last_modified
+            .map(|t| {
+                let dt: chrono::DateTime<chrono::Local> = t.into();
+                dt.format("%m-%d %H:%M").to_string()
+            })
+            .unwrap_or_else(|| "未知时间".into())
+    );
+    ui.painter().text(
+        Pos2::new(rect.left() + PAD, rect.bottom() - PAD),
+        egui::Align2::LEFT_BOTTOM,
+        bottom,
+        ui::font(10.5),
+        p.text_faint,
+    );
+
+    response
+}
+
+// ------------------------------------------------------------------ 二级：版本详情
+
+/// 打开某个版本的详情页
+pub(crate) fn open_detail(app: &mut App, id: &str) {
+    app.versions_ui.detail = Some(id.to_string());
+    app.versions_ui.section = 0;
+    load_detail(app, id);
+}
+
+fn detail_page(app: &mut App, ui: &mut Ui) {
+    let p = app.palette;
+    let Some(id) = app.versions_ui.detail.clone() else {
         return;
     };
     let Some(info) = app.local_versions.iter().find(|v| v.id == id).cloned() else {
-        app.versions_ui.selected = None;
+        // 版本已被删除，回到列表
+        app.versions_ui.detail = None;
         return;
     };
     if app.versions_ui.loaded_for.as_deref() != Some(id.as_str()) {
         load_detail(app, &id);
     }
 
+    // ---------- 顶部：返回 + 版本信息 + 操作 ----------
+    ui.horizontal(|ui| {
+        if ui::button(ui, &p, ButtonOpts::ghost("返回版本列表").icon("arrow-left")).clicked() {
+            app.versions_ui.detail = None;
+            return;
+        }
+    });
+    ui.add_space(8.0);
+
     ui::card(ui, &p, |ui| {
         ui.horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
+            ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
+            icons::paint(
+                ui.ctx(),
+                ui.painter(),
+                if info.loader.is_some() { "layers" } else { "cube" },
+                rect.shrink(10.0),
+                p.text_weak,
+            );
+            ui.add_space(4.0);
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(&info.id)
-                            .font(ui::font(19.0))
+                            .font(ui::font(18.0))
                             .color(p.text)
                             .strong(),
                     );
@@ -310,17 +407,13 @@ fn version_detail(app: &mut App, ui: &mut Ui) {
                     }
                 });
                 ui.add_space(3.0);
+                let game_dir = app.cfg.effective_game_dir(&info.id);
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} · {} 个文件 · {}",
+                        "{} · {} 个文件 · 游戏目录 {}",
                         paths::format_size(info.size),
                         count_files(&version::version_dir(&app.cfg.game_dir, &info.id)),
-                        info.last_modified
-                            .map(|t| {
-                                let dt: chrono::DateTime<chrono::Local> = t.into();
-                                dt.format("%Y-%m-%d %H:%M").to_string()
-                            })
-                            .unwrap_or_else(|| "未知时间".into())
+                        game_dir.display()
                     ))
                     .font(ui::font(11.5))
                     .color(p.text_faint),
@@ -338,22 +431,43 @@ fn version_detail(app: &mut App, ui: &mut Ui) {
                         app.save_config();
                     }
                 }
+                if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
+                    views::open_version_dir(app, &info.id);
+                }
             });
         });
-        ui.add_space(12.0);
+    });
+    ui.add_space(12.0);
 
-        let mut tab = app.versions_ui.tab;
-        if ui::segmented(ui, &p, &mut tab, &TABS).clicked() {
-            app.versions_ui.tab = tab;
-        }
-        ui.add_space(12.0);
-
-        match app.versions_ui.tab {
-            0 => overview_tab(app, ui, &info),
-            1 => settings_tab(app, ui, &info),
-            2 => saves_tab(app, ui, &info),
-            _ => screenshots_tab(app, ui, &info),
-        }
+    // ---------- 左侧导航 + 右侧内容 ----------
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.vertical(|ui| {
+            ui.set_width(150.0);
+            ui::card_padded(ui, &p, 8, |ui| {
+                ui.set_width(134.0);
+                for (index, (icon, label)) in SECTIONS.iter().enumerate() {
+                    let selected = app.versions_ui.section == index;
+                    if ui::nav_item(ui, &p, icon, label, selected).clicked() {
+                        app.versions_ui.section = index;
+                    }
+                    ui.add_space(2.0);
+                }
+            });
+        });
+        ui.vertical(|ui| {
+            let width = ui.available_width();
+            ui.set_width(width);
+            match app.versions_ui.section {
+                0 => overview_tab(app, ui, &info),
+                1 => settings_tab(app, ui, &info),
+                2 => saves_tab(app, ui, &info),
+                3 => screenshots_tab(app, ui, &info),
+                4 => content_tab(app, ui, &info, ContentKind::Mod, 4),
+                5 => content_tab(app, ui, &info, ContentKind::Shader, 5),
+                _ => content_tab(app, ui, &info, ContentKind::ResourcePack, 6),
+            }
+        });
     });
 }
 
@@ -460,6 +574,8 @@ fn load_detail(app: &mut App, id: &str) {
         .as_ref()
         .and_then(|path| app.javas.iter().position(|j| &j.path == path))
         .unwrap_or(0);
+    // 隔离开关默认跟随全局（全局默认开启）
+    app.versions_ui.detail_isolation = app.cfg.isolation_for(id);
     app.versions_ui.loaded_for = Some(id.to_string());
 }
 
@@ -472,6 +588,38 @@ fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
             .color(p.text_weak),
     );
     ui.add_space(14.0);
+
+    // ---- 版本隔离 ----
+    let mut isolation = app.versions_ui.detail_isolation;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("版本隔离")
+                .font(ui::font(13.0))
+                .color(p.text_weak),
+        );
+        ui.label(
+            egui::RichText::new("每个版本使用独立的模组、存档与配置目录")
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui::toggle(ui, &p, &mut isolation).changed() {
+                app.versions_ui.detail_isolation = isolation;
+            }
+        });
+    });
+    ui.add_space(4.0);
+    let isolated_dir = version::version_dir(&app.cfg.game_dir, &info.id);
+    ui.label(
+        egui::RichText::new(if isolation {
+            format!("该版本的游戏目录：{}", isolated_dir.display())
+        } else {
+            "该版本与其它版本共用游戏目录".to_string()
+        })
+        .font(ui::font(11.5))
+        .color(p.text_faint),
+    );
+    ui.add_space(16.0);
 
     let mut memory = app.versions_ui.detail_memory;
     if ui::slider(ui, &p, "最大内存", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
@@ -568,6 +716,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
                 } else {
                     Some(PathBuf::from(dir_value))
                 },
+                isolation: Some(app.versions_ui.detail_isolation),
             };
             app.cfg.version_overrides.insert(info.id.clone(), override_new);
             app.save_config();
@@ -783,6 +932,455 @@ fn load_thumbnail(app: &mut App, path: &Path) -> Option<egui::TextureHandle> {
     Some(texture)
 }
 
+// ------------------------------------------------------------------ 内容列表
+
+/// 本地内容类型：模组 / 光影 / 资源包
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContentKind {
+    Mod,
+    Shader,
+    ResourcePack,
+}
+
+impl ContentKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Mod => "模组",
+            Self::Shader => "光影",
+            Self::ResourcePack => "资源包",
+        }
+    }
+
+    fn icon(self) -> &'static str {
+        match self {
+            Self::Mod => "mod",
+            Self::Shader => "shader",
+            Self::ResourcePack => "resourcepack",
+        }
+    }
+
+    /// 相对游戏目录的位置
+    fn sub_dir(self) -> &'static str {
+        match self {
+            Self::Mod => "mods",
+            Self::Shader => "shaderpacks",
+            Self::ResourcePack => "resourcepacks",
+        }
+    }
+
+    fn all() -> [ContentKind; 3] {
+        [Self::Mod, Self::Shader, Self::ResourcePack]
+    }
+
+    /// 对应「下载」页里的标签页下标
+    fn download_tab(self) -> usize {
+        match self {
+            Self::Mod => 2,
+            Self::Shader => 3,
+            Self::ResourcePack => 4,
+        }
+    }
+}
+
+/// 本地内容的一个条目
+struct LocalContent {
+    file_name: String,
+    path: PathBuf,
+    size: u64,
+    modified: Option<std::time::SystemTime>,
+    /// 展示名（优先中文名）
+    display: String,
+    /// 副标题：版本 / 加载器
+    subtitle: String,
+    /// 对应的 MCMod 条目（有则可跳转到 MC 百科页面）
+    mcmod: Option<crate::core::content::mcmod::Entry>,
+    /// 对应的 Modrinth slug（有则可跳转到 Modrinth 页面）
+    modrinth_slug: Option<String>,
+}
+
+/// 列出某个实例下的内容
+fn list_contents(app: &App, kind: ContentKind, game_dir: &Path) -> Vec<LocalContent> {
+    let dir = game_dir.join(kind.sub_dir());
+    let mut items: Vec<LocalContent> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return items;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "jar" && ext != "zip" {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+
+        // 模组解析 jar 元数据取名字；光影与资源包一般没有元数据
+        let meta = if kind == ContentKind::Mod {
+            crate::core::content::modmeta::read_meta(&path)
+        } else {
+            None
+        };
+
+        // 依次尝试：MCMod 中文名 → 元数据名 → 文件名
+        let mut display = String::new();
+        let mut subtitle = String::new();
+        let mut mcmod = None;
+        let mut modrinth_slug = None;
+        if let Some(meta) = &meta {
+            // mod id 常常与 Modrinth slug 一致，先按 slug 查
+            let entry = app
+                .mcmod_db
+                .lookup_modrinth(&meta.mod_id)
+                .or_else(|| app.mcmod_db.lookup_english(&meta.name))
+                .cloned();
+            if let Some(entry) = &entry {
+                display = entry.display_with_abbr();
+                if !entry.subname.is_empty() && entry.subname != display {
+                    subtitle = entry.subname.clone();
+                }
+                if !entry.modrinth_slug.is_empty() {
+                    modrinth_slug = Some(entry.modrinth_slug.clone());
+                }
+            } else if !meta.name.is_empty() {
+                display = meta.name.clone();
+            }
+            if !meta.version.is_empty() {
+                if subtitle.is_empty() {
+                    subtitle = format!("{} · {}", meta.loader, meta.version);
+                } else {
+                    subtitle = format!("{} · {}", subtitle, meta.version);
+                }
+            }
+            mcmod = entry;
+        }
+        if display.is_empty() {
+            // 没有元数据时，去掉版本号后缀当显示名
+            display = strip_version_suffix(&file_name);
+        }
+
+        items.push(LocalContent {
+            file_name,
+            path,
+            size,
+            modified,
+            display,
+            subtitle,
+            mcmod,
+            modrinth_slug,
+        });
+    }
+    items.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
+    items
+}
+
+/// 去掉文件名末尾的版本号后缀，得到一个好认的名字
+fn strip_version_suffix(file_name: &str) -> String {
+    let stem = file_name
+        .strip_suffix(".jar")
+        .or_else(|| file_name.strip_suffix(".zip"))
+        .unwrap_or(file_name);
+    // 形如 `sodium-fabric-0.5.13` → `sodium-fabric`
+    let mut parts: Vec<&str> = stem.rsplit('-').collect();
+    while parts.len() > 1 {
+        let last = parts[0];
+        let looks_like_version = last.is_empty()
+            || last
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false);
+        if !looks_like_version {
+            break;
+        }
+        parts.remove(0);
+    }
+    parts.reverse();
+    parts.join("-")
+}
+
+/// 文件名里属于加载器名、应当剔除的段
+const LOADER_TOKENS: [&str; 7] = [
+    "fabric",
+    "forge",
+    "neoforge",
+    "quilt",
+    "liteloader",
+    "rift",
+    "optifine",
+];
+
+/// 文件名里属于项目名一部分、不能剔除的段（如资源包分辨率 32x）
+const KEEP_TOKENS: [&str; 6] = ["16x", "32x", "64x", "128x", "256x", "512x"];
+
+/// 从文件名里猜出项目名（去掉版本号、加载器后缀等噪声）
+///
+/// `sodium-fabric-0.5.13+mc1.20.1.jar` → `sodium`
+/// `VanillaTweaks-neoforge-1.20.2-1.5.72.jar` → `VanillaTweaks`
+/// `Faithful 32x - 26.3.zip` → `Faithful 32x`
+fn guess_project_name(file_name: &str) -> String {
+    let stem = file_name
+        .strip_suffix(".jar")
+        .or_else(|| file_name.strip_suffix(".zip"))
+        .unwrap_or(file_name);
+    let mut words: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for ch in stem.chars() {
+        if ch == '-' || ch == '_' || ch == ' ' {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+        } else {
+            current.push(ch);
+        }
+    }
+    if !current.is_empty() {
+        words.push(current);
+    }
+    // 从右往左剔除版本号与加载器段
+    while words.len() > 1 {
+        let last = words.last().unwrap().to_lowercase();
+        // 分辨率属于项目名的一部分，保留
+        if KEEP_TOKENS.contains(&last.as_str()) {
+            break;
+        }
+        let starts_with_digit = last
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or(false);
+        let is_loader = LOADER_TOKENS.contains(&last.as_str());
+        let is_plus = last.starts_with('+') || last.contains("+mc");
+        if starts_with_digit || is_loader || is_plus {
+            words.pop();
+        } else {
+            break;
+        }
+    }
+    words.join(" ")
+}
+
+/// 由项目名猜出可能的 Modrinth slug
+///
+/// 例如 `VanillaTweaks` → `vanillatweaks` 与 `vanilla-tweaks` 两个候选。
+fn slug_candidates(name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let plain = name.trim().to_lowercase().replace(' ', "-");
+    if !plain.is_empty() {
+        out.push(plain.clone());
+    }
+    // 驼峰拆分成连字符：VanillaTweaks → vanilla-tweaks
+    let mut kebab = String::new();
+    let mut prev_lower = false;
+    for ch in name.chars() {
+        if ch.is_ascii_uppercase() && prev_lower {
+            kebab.push('-');
+        }
+        kebab.push(ch.to_ascii_lowercase());
+        prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+    }
+    let kebab = kebab.replace(' ', "-");
+    if !kebab.is_empty() && !out.contains(&kebab) {
+        out.push(kebab);
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_version_suffix_from_file_name() {
+        assert_eq!(strip_version_suffix("sodium-fabric-0.5.13.jar"), "sodium-fabric");
+        assert_eq!(strip_version_suffix("iris-neoforge-1.11.7.jar"), "iris-neoforge");
+        assert_eq!(strip_version_suffix("Faithful 32x - 26.3.zip"), "Faithful 32x - 26.3");
+        // 没有版本号时原样返回
+        assert_eq!(strip_version_suffix("beautiful-world.jar"), "beautiful-world");
+    }
+
+    #[test]
+    fn guesses_project_name_from_file_name() {
+        // 加载器与版本号都要剔除
+        assert_eq!(guess_project_name("sodium-fabric-0.5.13+mc1.20.1.jar"), "sodium");
+        assert_eq!(
+            guess_project_name("VanillaTweaks-neoforge-1.20.2-1.5.72.jar"),
+            "VanillaTweaks"
+        );
+        assert_eq!(guess_project_name("iris-neoforge-1.11.7+mc26.3.jar"), "iris");
+        // 资源包分辨率属于项目名，不能被当成版本号弹掉
+        assert_eq!(guess_project_name("Faithful 32x - 26.3.zip"), "Faithful 32x");
+    }
+
+    #[test]
+    fn derives_slug_candidates() {
+        assert_eq!(slug_candidates("sodium"), vec!["sodium"]);
+        // 驼峰要能拆成连字符
+        let candidates = slug_candidates("VanillaTweaks");
+        assert!(candidates.contains(&"vanillatweaks".to_string()));
+        assert!(candidates.contains(&"vanilla-tweaks".to_string()));
+        // 空格转连字符
+        assert!(slug_candidates("Faithful 32x").contains(&"faithful-32x".to_string()));
+    }
+}
+
+/// 内容区：模组 / 光影 / 资源包
+fn content_tab(
+    app: &mut App,
+    ui: &mut Ui,
+    info: &crate::core::minecraft::LocalVersion,
+    kind: ContentKind,
+    section: usize,
+) {
+    let p = app.palette;
+    let game_dir = app.cfg.effective_game_dir(&info.id);
+
+    let dir = game_dir.join(kind.sub_dir());
+    let items = list_contents(app, kind, &game_dir);
+
+    // 光影与资源包没有内置词条，用文件名反查 Modrinth 项目
+    if kind != ContentKind::Mod && app.versions_ui.content_lookup_section != Some(section) {
+        app.versions_ui.content_lookup_section = Some(section);
+        let names: Vec<String> = items.iter().map(|i| i.file_name.clone()).collect();
+        lookup_content_slugs(app, names);
+    }
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{} 个{}", items.len(), kind.label()))
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
+                let _ = paths::ensure_dir(&dir);
+                paths::reveal(&dir);
+            }
+            let download_label = format!("去下载{}", kind.label());
+            if ui::button(ui, &p, ButtonOpts::secondary(&download_label).icon("download")).clicked() {
+                // 跳到下载页并定位到对应标签
+                app.download.tab = kind.download_tab();
+                app.download.content_loaded_tab = None;
+                app.page = Page::Download;
+            }
+        });
+    });
+    ui.add_space(10.0);
+
+    if items.is_empty() {
+        let tip = match kind {
+            ContentKind::Mod => "到「下载」页搜索模组，默认会装到当前实例",
+            ContentKind::Shader => "把光影包放进这个目录即可生效",
+            ContentKind::ResourcePack => "把资源包放进这个目录即可生效",
+        };
+        ui::empty_state(ui, &p, kind.icon(), &format!("还没有{}", kind.label()), tip);
+        return;
+    }
+
+    for item in &items {
+        // 在线页面：模组用 MCMod 词库里的 slug，光影与资源包用后台反查的结果
+        let modrinth_slug = item
+            .modrinth_slug
+            .clone()
+            .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
+
+        ui::card_flat(ui, &p, |ui| {
+            ui.horizontal(|ui| {
+                icons::paint(
+                    ui.ctx(),
+                    ui.painter(),
+                    kind.icon(),
+                    Rect::from_center_size(
+                        Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
+                        Vec2::splat(18.0),
+                    ),
+                    p.text_weak,
+                );
+                ui.add_space(28.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(&item.display)
+                            .font(ui::font(13.0))
+                            .color(p.text)
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}{} · {}",
+                            if item.subtitle.is_empty() {
+                                String::new()
+                            } else {
+                                format!("{} · ", item.subtitle)
+                            },
+                            item.file_name,
+                            paths::format_size(item.size)
+                        ))
+                        .font(ui::font(11.0))
+                        .color(p.text_faint),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if let Some(slug) = &modrinth_slug {
+                        if ui::ghost(ui, &p, "打开 Modrinth").clicked() {
+                            let _ = open::that(format!("https://modrinth.com/{}", slug));
+                        }
+                    }
+                    if let Some(entry) = &item.mcmod {
+                        if ui::ghost(ui, &p, "打开 MCMod").clicked() {
+                            let _ = open::that(entry.url());
+                        }
+                    }
+                    if ui::ghost(ui, &p, "打开位置").clicked() {
+                        paths::reveal(&item.path);
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+    }
+}
+
+/// 后台用文件名反查 Modrinth 项目，结果回来后再显示官网链接
+fn lookup_content_slugs(app: &mut App, names: Vec<String>) {
+    if names.is_empty() {
+        return;
+    }
+    let source = app.cfg.download.source;
+    let timeout = app.cfg.download.timeout_secs;
+    app.spawn("查找项目页面", false, move |job| {
+        let result = (|| -> anyhow::Result<std::collections::HashMap<String, String>> {
+            let dl = crate::core::download::Downloader::new(source, timeout.max(20))?;
+            let mut found = std::collections::HashMap::new();
+            for name in &names {
+                let guess = guess_project_name(name);
+                for candidate in slug_candidates(&guess) {
+                    if let Ok(Some(project)) =
+                        crate::core::content::modrinth::find_by_slug(&dl, &candidate)
+                    {
+                        found.insert(name.clone(), project.slug.clone());
+                        break;
+                    }
+                }
+            }
+            Ok(found)
+        })();
+        if let Ok(map) = result {
+            job.send(CoreEvent::ContentSlugs(map));
+        }
+        job.done(true, "");
+    });
+}
+
 // ------------------------------------------------------------------ 重命名 / 复制 / 删除
 
 fn rename_modal(app: &mut App, ui: &mut Ui) {
@@ -823,7 +1421,7 @@ fn rename_modal(app: &mut App, ui: &mut Ui) {
         let new_id = app.versions_ui.rename_value.trim().to_string();
         match rename_version(app, &old_id, &new_id) {
             Ok(()) => {
-                app.versions_ui.selected = Some(new_id.clone());
+                app.versions_ui.detail = Some(new_id.clone());
                 app.success(format!("已重命名为 {new_id}"));
             }
             Err(err) => app.error(format!("重命名失败：{err}")),
@@ -921,7 +1519,7 @@ fn copy_version(app: &mut App, id: &str) {
     match result {
         Ok(()) => {
             app.refresh_local_versions();
-            app.versions_ui.selected = Some(new_id.clone());
+            app.versions_ui.detail = Some(new_id.clone());
             app.success(format!("已复制为 {new_id}"));
         }
         Err(err) => app.error(format!("复制失败：{err}")),
@@ -985,7 +1583,7 @@ fn delete_modal(app: &mut App, ui: &mut Ui) {
                 app.cfg.version_overrides.remove(&id);
                 app.cfg.version_stats.remove(&id);
                 app.save_config();
-                app.versions_ui.selected = None;
+                app.versions_ui.detail = None;
                 app.refresh_local_versions();
             }
             Err(err) => app.error(format!("删除失败：{err}")),
