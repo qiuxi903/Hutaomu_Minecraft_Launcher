@@ -2,7 +2,7 @@
 
 Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器。单文件分发，配置、账号、主题与游戏数据全部位于启动器同目录；不写注册表，不使用 WebView，界面由 egui 直接在 GPU 上渲染。
 
-[![Status](https://img.shields.io/badge/status-beta-orange.svg)](#测试版声明)
+[![Status](https://img.shields.io/badge/status-开发中-orange.svg)](#开发状态)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.82%2B-orange.svg)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20x64-lightgrey.svg)](#构建)
@@ -11,12 +11,7 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ## 下载
 
-| 版本 | 说明 |
-| --- | --- |
-| [v0.1.0-beta.5](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.5) | 第五个公开测试版（Pre-release），Windows x64 |
-| [v0.1.0-beta.4](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.4) | 第四个公开测试版（Pre-release），Windows x64 |
-
-发行包 `htmcl-v0.1.0-beta.5-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
+**暂未提供发行包。** 项目仍在开发中，正式版发布后会在这里提供下载入口。
 
 从源码构建请见 [构建](#构建)。
 
@@ -24,7 +19,7 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ## 目录
 
-- [测试版声明](#测试版声明)
+- [开发状态](#开发状态)
 - [功能](#功能)
 - [界面](#界面)
 - [技术栈与架构](#技术栈与架构)
@@ -39,12 +34,12 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ---
 
-## 测试版声明
+## 开发状态
 
-当前版本 **v0.1.0-beta.5** 是项目的第五个公开测试版（Beta）。
+项目处于开发阶段，**尚未发布正式版**，Release 页面暂时为空。
 
-- 功能仍在快速迭代，配置文件字段、目录结构与界面布局都可能在下个版本变化；
-- 升级前请备份 `accounts.json` 与游戏目录；
+- 功能仍在快速迭代，配置文件字段、目录结构与界面布局都可能变化；
+- 当前源码版本为 **v0.1.0-beta.5**，正式版发布前请备份 `accounts.json` 与游戏目录；
 - 已在真实环境验证：版本下载与安装（含资源文件）、原版启动、Fabric 加载器安装与启动、
   游戏与加载器一次装好、Java 简要搜索、Modrinth 搜索与版本查询、
   MCMod 中文名与官网跳转、三个中文资讯源、皮肤站接口错误处理、全部界面页面；
