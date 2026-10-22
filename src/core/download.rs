@@ -1,7 +1,8 @@
+use std::collections::HashSet;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -22,7 +23,8 @@ pub enum DownloadSource {
 
 impl Default for DownloadSource {
     fn default() -> Self {
-        Self::Official
+        // 默认走国内镜像（BMCLAPI），直连即可，下载更快
+        Self::Bmclapi
     }
 }
 
@@ -167,6 +169,26 @@ impl DownloadProgress {
         self.done.fetch_add(bytes, Ordering::Relaxed);
     }
 
+    /// 回滚已计入的字节。下载失败或需要从头重下时调用，避免进度虚高。
+    pub fn sub_done(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let mut current = self.done.load(Ordering::Relaxed);
+        loop {
+            let next = current.saturating_sub(bytes);
+            match self.done.compare_exchange_weak(
+                current,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+    }
+
     pub fn fraction(&self) -> f32 {
         let total = self.total.load(Ordering::Relaxed);
         let done = self.done.load(Ordering::Relaxed);
@@ -220,7 +242,80 @@ impl FileTask {
     }
 }
 
+/// 永久性失败（404、403 等），重试没有意义，直接放弃
+#[derive(Debug)]
+struct PermanentError(String);
+
+impl std::fmt::Display for PermanentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PermanentError {}
+
+/// 判断状态码是否为「重试也没用」的类型
+fn is_permanent_status(status: reqwest::StatusCode) -> bool {
+    if status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        return false;
+    }
+    status.is_client_error()
+}
+
 static USE_SYSTEM_PROXY: AtomicBool = AtomicBool::new(true);
+
+/// 目标文件占用表：游戏本体与加载器并行下载时，避免两个任务同时写同一个文件。
+static FILE_LOCKS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+static FILE_CV: OnceLock<Condvar> = OnceLock::new();
+
+fn file_locks() -> &'static Mutex<HashSet<PathBuf>> {
+    FILE_LOCKS.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn file_cv() -> &'static Condvar {
+    FILE_CV.get_or_init(|| Condvar::new())
+}
+
+/// 目标文件的占用凭证，释放时唤醒等待中的任务。
+pub struct FileLock {
+    path: PathBuf,
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        if let Ok(mut set) = file_locks().lock() {
+            set.remove(&self.path);
+        }
+        file_cv().notify_all();
+    }
+}
+
+/// 下载中的分片路径：在原文件名后加 .part
+///
+/// 不替换扩展名，避免同目录下 a.jar 与 a.zip 生成同一个分片文件。
+fn part_path(dest: &Path) -> PathBuf {
+    let name = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "download.part".to_string());
+    dest.with_file_name(format!("{name}.part"))
+}
+
+/// 等待目标文件空闲后占用它。同一文件不会被两个任务同时写入。
+pub fn acquire_file(path: &Path) -> FileLock {
+    let mut set = file_locks().lock().unwrap_or_else(|e| e.into_inner());
+    while set.contains(path) {
+        set = file_cv()
+            .wait(set)
+            .unwrap_or_else(|e| e.into_inner());
+    }
+    set.insert(path.to_path_buf());
+    FileLock {
+        path: path.to_path_buf(),
+    }
+}
 
 /// 是否使用系统代理（默认开启）。部分 CDN 直连会被拒绝，需要走系统代理。
 pub fn set_use_system_proxy(enabled: bool) {
@@ -381,7 +476,7 @@ impl Downloader {
     }
 
     pub fn default_client() -> Result<Self> {
-        Self::new(DownloadSource::Official, 60)
+        Self::new(DownloadSource::default(), 60)
     }
 
     pub fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
@@ -536,7 +631,7 @@ impl Downloader {
             .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))
     }
 
-    /// 下载单个文件，支持进度、取消、SHA1 校验与重试
+    /// 下载单个文件，支持进度、取消、SHA1 校验、断点续传与重试
     pub fn download(
         &self,
         task: &FileTask,
@@ -545,17 +640,15 @@ impl Downloader {
         if progress.is_cancelled() {
             return Err(anyhow!("已取消"));
         }
-        if task.dest.is_file() {
-            let ok = match &task.sha1 {
-                Some(expected) => file_sha1(&task.dest)
-                    .map(|actual| actual.eq_ignore_ascii_case(expected))
-                    .unwrap_or(false),
-                None => true,
-            };
-            if ok {
-                progress.add_done(task.size);
-                return Ok(());
-            }
+
+        // 同一目标文件串行化：并行任务等待前一个写完后再校验，避免互相覆盖
+        let _lock = acquire_file(&task.dest);
+
+        // 拿到锁后重新判断：可能前一个任务刚刚下载完成
+        if task.dest.is_file() && self.verify_existing(task)? {
+            progress.add_done(task.size);
+            progress.files_done.fetch_add(1, Ordering::Relaxed);
+            return Ok(());
         }
 
         paths::ensure_parent(&task.dest)?;
@@ -566,21 +659,30 @@ impl Downloader {
             candidates.push(task.url.clone());
         }
 
+        // 记录本次调用实际计入的字节，失败时精确回滚
+        let mut added = 0u64;
         let mut last_err = None;
         for url in &candidates {
             for attempt in 0..3 {
                 if progress.is_cancelled() {
+                    progress.sub_done(added);
                     return Err(anyhow!("已取消"));
                 }
                 if attempt > 0 {
                     std::thread::sleep(Duration::from_millis(400 * attempt));
                 }
-                match self.download_once(url, task, progress) {
+                match self.download_once(url, task, progress, &mut added) {
                     Ok(()) => {
                         progress.files_done.fetch_add(1, Ordering::Relaxed);
                         return Ok(());
                     }
                     Err(err) => {
+                        // 永久性错误不再重试
+                        if err.downcast_ref::<PermanentError>().is_some() {
+                            log::warn!("下载失败（不再重试）{url}: {err}");
+                            last_err = Some(err);
+                            break;
+                        }
                         log::warn!("下载失败（第 {} 次）{url}: {err}", attempt + 1);
                         last_err = Some(err);
                     }
@@ -588,35 +690,114 @@ impl Downloader {
             }
         }
 
+        // 失败：把本次计入的字节全部退回，进度条不会虚高
+        progress.sub_done(added);
         Err(last_err.unwrap_or_else(|| anyhow!("下载失败: {}", task.url)))
     }
 
+    /// 已存在的文件是否可用（有校验值时必须匹配）
+    fn verify_existing(&self, task: &FileTask) -> Result<bool> {
+        match &task.sha1 {
+            Some(expected) => Ok(file_sha1(&task.dest)
+                .map(|actual| actual.eq_ignore_ascii_case(expected))
+                .unwrap_or(false)),
+            None => Ok(true),
+        }
+    }
+
+    /// 单次下载尝试：支持 HTTP Range 断点续传
     fn download_once(
         &self,
         url: &str,
         task: &FileTask,
         progress: &DownloadProgress,
+        added: &mut u64,
     ) -> Result<()> {
-        let mut resp = self
-            .client_for(url)
-            .get(url)
-            .send()
-            .with_context(|| format!("连接失败: {url}"))?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("HTTP {} ({url})", resp.status()));
+        let tmp = part_path(&task.dest);
+        paths::ensure_parent(&tmp)?;
+
+        // 已有的分片长度即续传起点
+        let mut resume_from = std::fs::metadata(&tmp).map(|m| m.len()).unwrap_or(0);
+        if task.size > 0 && resume_from > task.size {
+            // 分片比预期还大，说明源已经变了，丢弃重来
+            resume_from = 0;
+            let _ = std::fs::remove_file(&tmp);
         }
 
-        let tmp = task.dest.with_extension("part");
-        paths::ensure_parent(&tmp)?;
-        let mut file = std::fs::File::create(&tmp)?;
+        let mut req = self.client_for(url).get(url);
+        if resume_from > 0 {
+            req = req.header("Range", format!("bytes={resume_from}-"));
+        }
+        let mut resp = req
+            .send()
+            .with_context(|| format!("连接失败: {url}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            if is_permanent_status(status) {
+                // 404 之类的错误换源重试也没意义，直接放弃
+                return Err(anyhow!(PermanentError(format!(
+                    "HTTP {} ({url})",
+                    status
+                ))));
+            }
+            return Err(anyhow!("HTTP {} ({url})", status));
+        }
+
+        // 服务器没有返回 206，说明不支持续传，只能从头重下
+        let mut append = false;
+        if resume_from > 0 {
+            // 有些服务器会回 206 却仍然发送整个文件，这时追加会写坏文件
+            let sent_whole_file = resp
+                .content_length()
+                .map(|len| task.size > 0 && len == task.size)
+                .unwrap_or(false);
+            if status == reqwest::StatusCode::PARTIAL_CONTENT && !sent_whole_file {
+                append = true;
+                // 上次会话留下的分片没有计入过进度，这里补上
+                // （本次调用内已计入的部分不再重复计算）
+                let uncounted = resume_from.saturating_sub(*added);
+                if uncounted > 0 {
+                    progress.add_done(uncounted);
+                    *added += uncounted;
+                }
+            } else {
+                log::debug!("{url} 未按范围返回，重新下载");
+                // 分片作废，把本次调用已计入的字节退回
+                progress.sub_done(*added);
+                *added = 0;
+                resume_from = 0;
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+
         let mut hasher = Sha1::new();
+        let mut file = if append {
+            // 续传：先把已下载部分计入哈希，再接着往下写
+            let mut existing = std::fs::File::open(&tmp)?;
+            let mut buf = vec![0u8; 64 * 1024];
+            loop {
+                let read = existing.read(&mut buf)?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buf[..read]);
+            }
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&tmp)
+                .with_context(|| format!("写入分片失败: {}", tmp.display()))?
+        } else {
+            std::fs::File::create(&tmp)
+                .with_context(|| format!("写入分片失败: {}", tmp.display()))?
+        };
+
         let mut buf = vec![0u8; 64 * 1024];
-        let mut written = 0u64;
+        let mut written = resume_from;
 
         loop {
             if progress.is_cancelled() {
                 drop(file);
-                let _ = std::fs::remove_file(&tmp);
+                // 保留分片，下次可以接着下
                 return Err(anyhow!("已取消"));
             }
             let read = resp.read(&mut buf)?;
@@ -627,6 +808,7 @@ impl Downloader {
             file.write_all(&buf[..read])?;
             written += read as u64;
             progress.add_done(read as u64);
+            *added += read as u64;
         }
         file.flush()?;
         drop(file);
@@ -660,8 +842,56 @@ impl Downloader {
         progress: &Arc<DownloadProgress>,
         abort_after: usize,
     ) -> Vec<FileTask> {
+        let mut pending = tasks;
+        let mut failed: Vec<FileTask> = Vec::new();
+        let mut permanent: Vec<FileTask> = Vec::new();
+
+        for round in 0..3 {
+            if pending.is_empty() {
+                break;
+            }
+            if round > 0 {
+                if progress.is_cancelled() {
+                    break;
+                }
+                progress.set_message(format!(
+                    "正在重试 {} 个失败文件（第 {} 轮）...",
+                    pending.len(),
+                    round
+                ));
+                std::thread::sleep(Duration::from_millis(500 * round as u64));
+            }
+
+            let (round_failed, round_permanent, aborted) =
+                self.run_pool(pending, threads, progress, abort_after);
+            failed = round_failed;
+            permanent = round_permanent;
+            if aborted {
+                // 熔断说明是系统性问题（网络/源不可用），不再重试
+                break;
+            }
+            if failed.is_empty() && permanent.is_empty() {
+                return Vec::new();
+            }
+            pending = failed.clone();
+        }
+
+        // 永久性失败（404 之类）不再重试，但也要如实报告
+        failed.extend(permanent);
+        failed
+    }
+
+    /// 把任务分给多个线程执行，返回失败列表与是否触发熔断
+    fn run_pool(
+        &self,
+        tasks: Vec<FileTask>,
+        threads: usize,
+        progress: &Arc<DownloadProgress>,
+        abort_after: usize,
+    ) -> (Vec<FileTask>, Vec<FileTask>, bool) {
         let queue = Arc::new(Mutex::new(tasks));
-        let failed: Arc<Mutex<Vec<(FileTask, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        // (任务, 是否为永久性失败)
+        let failed: Arc<Mutex<Vec<(FileTask, bool)>>> = Arc::new(Mutex::new(Vec::new()));
         let threads = threads.clamp(1, 32);
         let abort = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::new();
@@ -682,9 +912,10 @@ impl Downloader {
                 };
                 let Some(task) = task else { break };
                 if let Err(err) = downloader.download(&task, &progress) {
+                    let permanent = err.downcast_ref::<PermanentError>().is_some();
                     let too_many = {
                         let mut list = failed.lock().unwrap();
-                        list.push((task, format!("{err}")));
+                        list.push((task, permanent));
                         list.len() >= abort_after
                     };
                     if too_many {
@@ -698,29 +929,24 @@ impl Downloader {
             let _ = handle.join();
         }
 
-        // 第二轮：重试失败项。若失败数量已触发熔断，说明是系统性问题（网络/源不可用），
-        // 直接返回失败列表，避免无意义的重试拖慢整体流程。
-        let mut still_failed: Vec<FileTask> = Vec::new();
-        let retry_list: Vec<FileTask> = {
-            let mut list = failed.lock().unwrap();
-            list.drain(..).map(|(task, _)| task).collect()
-        };
-        if abort.load(Ordering::Relaxed) {
-            still_failed = retry_list;
-            return still_failed;
-        }
-        if !retry_list.is_empty() && !progress.is_cancelled() {
-            progress.set_message(format!("正在重试 {} 个失败文件 ...", retry_list.len()));
-            for task in retry_list {
-                if progress.is_cancelled() {
-                    break;
-                }
-                if self.download(&task, progress).is_err() {
-                    still_failed.push(task);
-                }
+        let aborted = abort.load(Ordering::Relaxed);
+        let mut retryable: Vec<FileTask> = Vec::new();
+        let mut permanent: Vec<FileTask> = Vec::new();
+        for (task, is_permanent) in failed.lock().unwrap().iter() {
+            if *is_permanent {
+                permanent.push(task.clone());
+            } else {
+                retryable.push(task.clone());
             }
         }
-        still_failed
+
+        if aborted {
+            // 熔断后队列里没来得及处理的任务也要计入失败，否则会被静默丢弃
+            let remaining = queue.lock().unwrap().drain(..).collect::<Vec<_>>();
+            retryable.extend(remaining);
+        }
+
+        (retryable, permanent, aborted)
     }
 
     /// 严格模式：任何文件失败都返回错误
@@ -730,6 +956,7 @@ impl Downloader {
         threads: usize,
         progress: &Arc<DownloadProgress>,
     ) -> Result<()> {
+        progress.files_total.store(tasks.len() as u64, Ordering::Relaxed);
         let failed = self.download_batch_inner(tasks, threads, progress, 24);
         if !failed.is_empty() {
             let mut message = format!("{} 个文件下载失败，请检查网络或更换下载源。", failed.len());
@@ -750,6 +977,7 @@ impl Downloader {
         threads: usize,
         progress: &Arc<DownloadProgress>,
     ) -> Vec<FileTask> {
+        progress.files_total.store(tasks.len() as u64, Ordering::Relaxed);
         self.download_batch_inner(tasks, threads, progress, 200)
     }
 }
@@ -791,5 +1019,118 @@ pub fn truncate(text: &str, max: usize) -> String {
         let mut out: String = trimmed.chars().take(max).collect();
         out.push('…');
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sub_done_never_underflows() {
+        let p = DownloadProgress::new();
+        p.add_done(100);
+        p.sub_done(500);
+        assert_eq!(p.done.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn part_path_keeps_original_extension() {
+        assert_eq!(
+            part_path(Path::new("a/b/foo.jar")),
+            PathBuf::from("a/b/foo.jar.part")
+        );
+        assert_eq!(
+            part_path(Path::new("a/b/foo.zip")),
+            PathBuf::from("a/b/foo.zip.part")
+        );
+    }
+
+    /// 启动一个支持 Range 的本地文件服务器
+    fn spawn_range_server(body: &'static [u8]) -> String {
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = match stream {
+                    Ok(s) => s,
+                    Err(_) => break,
+                };
+                let mut buf = [0u8; 2048];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                let start = req
+                    .lines()
+                    .find_map(|l| {
+                        let lower = l.to_lowercase();
+                        if !lower.starts_with("range:") {
+                            return None;
+                        }
+                        l.split(':')
+                            .nth(1)
+                            .and_then(|r| r.trim().trim_end_matches('-').parse::<usize>().ok())
+                    })
+                    .unwrap_or(0);
+                let chunk = &body[start.min(body.len())..];
+                let head = format!(
+                    "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\n\r\n",
+                    chunk.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(chunk);
+                let _ = stream.flush();
+            }
+        });
+        format!("http://{addr}/file.bin")
+    }
+
+    /// 断点续传：只下载缺失的部分，并把已存在的分片计入进度
+    #[test]
+    fn download_resumes_from_partial_file() {
+        let body: &'static [u8] = b"0123456789ABCDEF";
+        let url = spawn_range_server(body);
+        let dl = Downloader::build(DownloadSource::Official, 10, false).unwrap();
+
+        let dir = std::env::temp_dir().join("htmcl_resume_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("file.bin");
+
+        // 模拟上次中断：留下半个分片
+        std::fs::write(part_path(&dest), &body[..8]).unwrap();
+
+        let progress = DownloadProgress::new();
+        progress.add_total(body.len() as u64);
+        let task = FileTask::new(url, dest.clone()).with_size(body.len() as u64);
+        dl.download(&task, &progress).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        // 8 字节续传 + 8 字节新下载 = 完整长度，进度应为 100%
+        assert_eq!(progress.done.load(Ordering::Relaxed), 16);
+        assert_eq!(progress.fraction(), 1.0);
+        // 分片文件在成功后应被清理
+        assert!(!part_path(&dest).exists());
+    }
+
+    /// 完整文件已存在时不应重复下载
+    #[test]
+    fn download_skips_existing_file() {
+        let body: &'static [u8] = b"0123456789ABCDEF";
+        let url = spawn_range_server(body);
+        let dl = Downloader::build(DownloadSource::Official, 10, false).unwrap();
+
+        let dir = std::env::temp_dir().join("htmcl_skip_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("file.bin");
+        std::fs::write(&dest, body).unwrap();
+
+        let progress = DownloadProgress::new();
+        let task = FileTask::new(url, dest.clone()).with_size(body.len() as u64);
+        dl.download(&task, &progress).unwrap();
+
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert_eq!(progress.done.load(Ordering::Relaxed), 16);
     }
 }

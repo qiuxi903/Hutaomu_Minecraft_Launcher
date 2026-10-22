@@ -1,3 +1,4 @@
+pub mod bundle;
 pub mod install;
 pub mod launch;
 pub mod loaders;

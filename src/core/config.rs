@@ -65,6 +65,16 @@ pub struct DownloadSettings {
     pub timeout_secs: u64,
     pub auto_install_dependencies: bool,
     pub use_system_proxy: bool,
+    /// 安装游戏时默认预选的加载器：none / fabric / quilt / forge / neoforge
+    pub default_loader: String,
+    /// 加载器版本策略：stable（推荐稳定版）/ latest（最新）/ ask（每次询问）
+    pub loader_policy: String,
+    /// 加载器安装时机：parallel（与游戏同时）/ after（下载完成后）/ manual（不自动安装）
+    pub loader_timing: String,
+    /// 安装完成后自动把该版本设为当前版本
+    pub auto_select_after_install: bool,
+    /// 安装时同时下载资源文件（关闭则只装核心文件，速度更快）
+    pub install_assets: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +124,8 @@ pub struct VersionOverride {
     pub java_path: Option<PathBuf>,
     pub jvm_args: Option<String>,
     pub game_dir: Option<PathBuf>,
+    /// 该版本是否启用版本隔离（独立游戏目录），None 表示跟随全局设置
+    pub isolation: Option<bool>,
 }
 
 impl Default for Config {
@@ -162,11 +174,42 @@ impl Default for LaunchSettings {
 impl Default for DownloadSettings {
     fn default() -> Self {
         Self {
-            source: DownloadSource::Official,
+            // 默认使用国内镜像源，直连即可
+            source: DownloadSource::Bmclapi,
             threads: default_threads(),
             timeout_secs: 30,
             auto_install_dependencies: true,
             use_system_proxy: true,
+            default_loader: "none".into(),
+            loader_policy: "stable".into(),
+            loader_timing: "parallel".into(),
+            auto_select_after_install: true,
+            install_assets: true,
+        }
+    }
+}
+
+impl DownloadSettings {
+    /// 默认使用的加载器，None 表示只装原版
+    pub fn default_loader_kind(&self) -> Option<crate::core::minecraft::loaders::LoaderKind> {
+        crate::core::minecraft::loaders::LoaderKind::from_id(&self.default_loader)
+    }
+
+    /// 加载器版本选择策略
+    pub fn loader_policy(&self) -> crate::core::minecraft::loaders::LoaderPolicy {
+        crate::core::minecraft::loaders::LoaderPolicy::from_id(&self.loader_policy)
+    }
+
+    /// 加载器安装时机
+    pub fn loader_timing(&self) -> crate::core::minecraft::bundle::LoaderTiming {
+        crate::core::minecraft::bundle::LoaderTiming::from_id(&self.loader_timing)
+    }
+
+    /// 下载选项（并发数与资源文件开关）
+    pub fn install_options(&self) -> crate::core::minecraft::install::InstallOptions {
+        crate::core::minecraft::install::InstallOptions {
+            threads: self.threads.clamp(1, 32),
+            install_assets: self.install_assets,
         }
     }
 }
@@ -276,17 +319,26 @@ impl Config {
         }
     }
 
-    /// 该版本实际使用的游戏目录（开启版本隔离时返回 versions/<id>）
+    /// 该版本实际使用的游戏目录
+    ///
+    /// 优先顺序：该版本单独指定的目录 → 该版本的隔离开关 → 全局隔离开关。
+    /// 版本隔离开着时用 `versions/<id>`，每个版本的模组、存档、配置互不干扰。
     pub fn effective_game_dir(&self, version: &str) -> PathBuf {
         let ov = self.version_override(version);
         if let Some(dir) = ov.game_dir {
             return dir;
         }
-        if self.launch.isolation {
+        if self.isolation_for(version) {
             paths::versions_dir(&self.game_dir).join(version)
         } else {
             self.game_dir.clone()
         }
+    }
+
+    /// 该版本是否启用版本隔离
+    pub fn isolation_for(&self, version: &str) -> bool {
+        let ov = self.version_override(version);
+        ov.isolation.unwrap_or(self.launch.isolation)
     }
 
     pub fn record_launch(&mut self, version: &str) {

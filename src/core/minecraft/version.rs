@@ -400,35 +400,42 @@ pub fn library_artifact(lib: &Library) -> Option<(String, DownloadArtifact)> {
     if !library_allowed(lib) {
         return None;
     }
-    if let Some(downloads) = &lib.downloads {
-        if let Some(artifact) = &downloads.artifact {
-            if let Some(url) = &artifact.url {
-                let path = artifact
-                    .path
-                    .clone()
-                    .or_else(|| maven_path(&lib.name))
-                    .unwrap_or_default();
-                if !path.is_empty() {
-                    return Some((path, artifact.clone()));
-                }
-                let _ = url;
+    match &lib.downloads {
+        Some(downloads) => {
+            // 明确给出了 downloads，就只认其中的 artifact。
+            // 旧版本的一些库只有 classifiers（natives）没有 artifact，
+            // 此时若按 Maven 规则拼地址会得到一个 404 的不存在的文件。
+            let artifact = downloads.artifact.as_ref()?;
+            if artifact.url.is_none() {
+                return None;
             }
+            let path = artifact
+                .path
+                .clone()
+                .or_else(|| maven_path(&lib.name))
+                .unwrap_or_default();
+            if path.is_empty() {
+                return None;
+            }
+            Some((path, artifact.clone()))
+        }
+        // 没有 downloads 字段时，按 Maven 规则拼接
+        None => {
+            let path = maven_path(&lib.name)?;
+            let base = lib
+                .url
+                .clone()
+                .unwrap_or_else(|| "https://libraries.minecraft.net/".to_string());
+            let url = format!("{}/{}", base.trim_end_matches('/'), path);
+            Some((
+                path,
+                DownloadArtifact {
+                    url: Some(url),
+                    ..Default::default()
+                },
+            ))
         }
     }
-    // 无 downloads 字段时按 Maven 规则拼接
-    let path = maven_path(&lib.name)?;
-    let base = lib
-        .url
-        .clone()
-        .unwrap_or_else(|| "https://libraries.minecraft.net/".to_string());
-    let url = format!("{}/{}", base.trim_end_matches('/'), path);
-    Some((
-        path,
-        DownloadArtifact {
-            url: Some(url),
-            ..Default::default()
-        },
-    ))
 }
 
 /// 计算需要解压的 native 库
@@ -580,4 +587,71 @@ pub fn detect_mc_version(game_dir: &Path, id: &str, json: &VersionJson) -> Strin
         }
     }
     id.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 旧版本的一些库只有 classifiers（natives）没有 artifact，
+    /// 此时不能按 Maven 规则拼出一个根本不存在的地址（404）
+    #[test]
+    fn classifier_only_library_has_no_artifact() {
+        let lib: Library = serde_json::from_str(
+            r#"{
+                "name": "tv.twitch:twitch-platform:5.16",
+                "downloads": {
+                    "classifiers": {
+                        "natives-windows": {
+                            "url": "https://libraries.minecraft.net/tv/twitch/twitch-platform/5.16/twitch-platform-5.16-natives-windows.jar",
+                            "size": 12345
+                        }
+                    }
+                },
+                "natives": { "windows": "natives-windows" },
+                "extract": { "exclude": ["META-INF/"] }
+            }"#,
+        )
+        .unwrap();
+        assert!(library_artifact(&lib).is_none());
+        // natives 那一份要能取到
+        let (path, artifact) = library_native(&lib).expect("应当能取到 natives");
+        assert!(path.ends_with("twitch-platform-5.16-natives-windows.jar"));
+        assert!(artifact.url.is_some());
+    }
+
+    /// 正常带 artifact 的库不受影响
+    #[test]
+    fn normal_library_returns_artifact() {
+        let lib: Library = serde_json::from_str(
+            r#"{
+                "name": "com.google.guava:guava:17.0",
+                "downloads": {
+                    "artifact": {
+                        "url": "https://libraries.minecraft.net/com/google/guava/guava/17.0/guava-17.0.jar",
+                        "size": 100
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let (path, artifact) = library_artifact(&lib).expect("应当能取到 artifact");
+        assert_eq!(path, "com/google/guava/guava/17.0/guava-17.0.jar");
+        assert!(artifact.url.is_some());
+    }
+
+    /// 没有 downloads 字段时仍按 Maven 规则拼接
+    #[test]
+    fn library_without_downloads_uses_maven_path() {
+        let lib: Library = serde_json::from_str(
+            r#"{
+                "name": "net.minecraftforge:forge:1.7.10-10.13.4.1614-1.7.10",
+                "url": "https://maven.minecraftforge.net/"
+            }"#,
+        )
+        .unwrap();
+        let (path, artifact) = library_artifact(&lib).expect("应当能拼出地址");
+        assert!(path.ends_with("forge-1.7.10-10.13.4.1614-1.7.10.jar"));
+        assert!(artifact.url.unwrap().starts_with("https://maven.minecraftforge.net/"));
+    }
 }

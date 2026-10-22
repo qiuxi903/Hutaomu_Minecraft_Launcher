@@ -40,6 +40,86 @@ impl LoaderKind {
     pub fn all() -> [LoaderKind; 4] {
         [Self::Fabric, Self::Quilt, Self::Forge, Self::NeoForge]
     }
+
+    /// 配置文件中使用的稳定标识
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Fabric => "fabric",
+            Self::Quilt => "quilt",
+            Self::Forge => "forge",
+            Self::NeoForge => "neoforge",
+        }
+    }
+
+    /// 由配置标识还原加载器类型
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id.trim().to_lowercase().as_str() {
+            "fabric" => Some(Self::Fabric),
+            "quilt" => Some(Self::Quilt),
+            "forge" => Some(Self::Forge),
+            "neoforge" | "neo_forge" | "neo-forge" => Some(Self::NeoForge),
+            _ => None,
+        }
+    }
+}
+
+/// 加载器版本选择策略
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoaderPolicy {
+    /// 推荐稳定版
+    Stable,
+    /// 最新版
+    Latest,
+    /// 每次由用户手动选择
+    Ask,
+}
+
+impl LoaderPolicy {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stable => "推荐稳定版",
+            Self::Latest => "最新版",
+            Self::Ask => "每次询问",
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Latest => "latest",
+            Self::Ask => "ask",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Self {
+        match id.trim().to_lowercase().as_str() {
+            "latest" => Self::Latest,
+            "ask" => Self::Ask,
+            _ => Self::Stable,
+        }
+    }
+
+    pub fn all() -> [LoaderPolicy; 3] {
+        [Self::Stable, Self::Latest, Self::Ask]
+    }
+}
+
+/// 按策略从版本列表中挑选一个版本
+///
+/// 列表约定按「新到旧」排列，因此第一个即为最新版本。
+pub fn pick_version(list: &[LoaderVersion], policy: LoaderPolicy) -> Option<String> {
+    if list.is_empty() {
+        return None;
+    }
+    match policy {
+        LoaderPolicy::Stable => list
+            .iter()
+            .find(|v| v.stable)
+            .or_else(|| list.first())
+            .map(|v| v.version.clone()),
+        LoaderPolicy::Latest => list.first().map(|v| v.version.clone()),
+        LoaderPolicy::Ask => None,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -169,6 +249,7 @@ pub fn install(
     game_dir: &Path,
     java: &JavaInfo,
     progress: &Arc<DownloadProgress>,
+    opts: install::InstallOptions,
 ) -> Result<String> {
     match kind {
         LoaderKind::Fabric => install_profile_json(
@@ -178,6 +259,7 @@ pub fn install(
                 "/v2/versions/loader/{mc_version}/{loader_version}/profile/json"
             )),
             progress,
+            opts,
         ),
         LoaderKind::Quilt => install_profile_json(
             dl,
@@ -186,6 +268,7 @@ pub fn install(
                 "/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
             )),
             progress,
+            opts,
         ),
         LoaderKind::Forge => {
             let name = format!("{mc_version}-forge-{loader_version}");
@@ -219,6 +302,7 @@ fn install_profile_json(
     game_dir: &Path,
     url: &str,
     progress: &Arc<DownloadProgress>,
+    opts: install::InstallOptions,
 ) -> Result<String> {
     progress.set_message("正在获取加载器信息 ...");
     let json: VersionJson = dl
@@ -229,8 +313,45 @@ fn install_profile_json(
         return Err(anyhow!("加载器描述缺少版本号"));
     }
     version::write_local_json(game_dir, &json)?;
-    let report = install::install_version(dl, game_dir, &id, progress)?;
+    let report = install::install_version(dl, game_dir, &id, progress, opts)?;
     log::info!("加载器 {id} 安装完成：{}", report.summary());
+    Ok(id)
+}
+
+/// 只安装加载器自身的依赖库，不重复下载继承自原版的文件
+///
+/// 原版的客户端 jar 与依赖库由另一条安装流程负责，这里仅处理加载器
+/// 自己在版本 JSON 中声明的库，从而让两者可以并行执行。
+pub fn install_own(
+    dl: &Downloader,
+    kind: LoaderKind,
+    mc_version: &str,
+    loader_version: &str,
+    game_dir: &Path,
+    progress: &Arc<DownloadProgress>,
+    opts: install::InstallOptions,
+) -> Result<String> {
+    let url = match kind {
+        LoaderKind::Fabric => dl.source.fabric_meta(&format!(
+            "/v2/versions/loader/{mc_version}/{loader_version}/profile/json"
+        )),
+        LoaderKind::Quilt => dl.source.quilt_meta(&format!(
+            "/v3/versions/loader/{mc_version}/{loader_version}/profile/json"
+        )),
+        _ => return Err(anyhow!("{} 不支持按自身依赖方式安装", kind.label())),
+    };
+
+    progress.set_message(format!("正在获取 {} 加载器信息 ...", kind.label()));
+    let json: VersionJson = dl
+        .get_json_direct(&url)
+        .with_context(|| format!("获取加载器描述失败: {url}"))?;
+    let id = json.id.clone();
+    if id.is_empty() {
+        return Err(anyhow!("加载器描述缺少版本号"));
+    }
+    version::write_local_json(game_dir, &json)?;
+    install::install_own_libraries(dl, game_dir, &id, progress, opts)?;
+    log::info!("加载器 {id} 安装完成");
     Ok(id)
 }
 
@@ -363,4 +484,73 @@ pub fn supports(kind: LoaderKind, mc_version: &str) -> bool {
 
 pub fn loader_version_dir(game_dir: &Path, id: &str) -> PathBuf {
     version::version_dir(game_dir, id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(version: &str, stable: bool) -> LoaderVersion {
+        LoaderVersion {
+            version: version.to_string(),
+            stable,
+        }
+    }
+
+    /// 列表按「新到旧」排列
+    #[test]
+    fn pick_stable_prefers_marked_version() {
+        let list = vec![v("0.16.9", false), v("0.16.8", true)];
+        assert_eq!(
+            pick_version(&list, LoaderPolicy::Stable).as_deref(),
+            Some("0.16.8")
+        );
+    }
+
+    #[test]
+    fn pick_stable_falls_back_to_latest() {
+        let list = vec![v("0.16.9", false)];
+        assert_eq!(
+            pick_version(&list, LoaderPolicy::Stable).as_deref(),
+            Some("0.16.9")
+        );
+    }
+
+    #[test]
+    fn pick_latest_takes_first_entry() {
+        let list = vec![v("0.16.9", false), v("0.16.8", true)];
+        assert_eq!(
+            pick_version(&list, LoaderPolicy::Latest).as_deref(),
+            Some("0.16.9")
+        );
+    }
+
+    #[test]
+    fn pick_ask_leaves_choice_to_user() {
+        let list = vec![v("0.16.9", true)];
+        assert_eq!(pick_version(&list, LoaderPolicy::Ask), None);
+    }
+
+    #[test]
+    fn pick_on_empty_list_returns_none() {
+        assert_eq!(pick_version(&[], LoaderPolicy::Stable), None);
+    }
+
+    #[test]
+    fn loader_kind_id_roundtrip() {
+        for kind in LoaderKind::all() {
+            assert_eq!(LoaderKind::from_id(kind.id()), Some(kind));
+        }
+        assert_eq!(LoaderKind::from_id("none"), None);
+        assert_eq!(LoaderKind::from_id(""), None);
+    }
+
+    #[test]
+    fn loader_policy_id_roundtrip() {
+        for policy in LoaderPolicy::all() {
+            assert_eq!(LoaderPolicy::from_id(policy.id()), policy);
+        }
+        // 未知值回落到推荐稳定版
+        assert_eq!(LoaderPolicy::from_id("unknown"), LoaderPolicy::Stable);
+    }
 }
