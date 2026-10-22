@@ -13,9 +13,10 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 | 版本 | 说明 |
 | --- | --- |
+| [v0.1.0-beta.5](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.5) | 第五个公开测试版（Pre-release），Windows x64 |
 | [v0.1.0-beta.4](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/releases/tag/v0.1.0-beta.4) | 第四个公开测试版（Pre-release），Windows x64 |
 
-发行包 `htmcl-v0.1.0-beta.4-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
+发行包 `htmcl-v0.1.0-beta.5-windows-x64.zip` 内含 `htmcl.exe`、`README.md` 与 `LICENSE`。解压后双击 `htmcl.exe` 即可，无需安装。校验值见发行页的 `SHA256SUMS.txt`。
 
 从源码构建请见 [构建](#构建)。
 
@@ -40,11 +41,13 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ## 测试版声明
 
-当前版本 **v0.1.0-beta.4** 是项目的第四个公开测试版（Beta）。
+当前版本 **v0.1.0-beta.5** 是项目的第五个公开测试版（Beta）。
 
 - 功能仍在快速迭代，配置文件字段、目录结构与界面布局都可能在下个版本变化；
 - 升级前请备份 `accounts.json` 与游戏目录；
-- 已在真实环境验证：版本下载与安装、原版启动、Fabric 加载器安装与启动、Java 简要搜索、Modrinth 搜索与版本查询、三个中文资讯源、皮肤站接口错误处理、全部界面页面；
+- 已在真实环境验证：版本下载与安装（含资源文件）、原版启动、Fabric 加载器安装与启动、
+  游戏与加载器一次装好、Java 简要搜索、Modrinth 搜索与版本查询、
+  MCMod 中文名与官网跳转、三个中文资讯源、皮肤站接口错误处理、全部界面页面；
 - **尚未实机验证**：Forge / NeoForge 安装器流程、微软账号登录、皮肤站登录（这三项需要更完整的网络环境或真实账号）；
 - 遇到问题请提交 [Issue](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/issues)，并附上 `logs/` 下的日志。
 
@@ -52,9 +55,11 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ### 游戏与版本
 
-- 从 Mojang 官方源或 BMCLAPI 镜像获取版本清单（当前 900+ 版本，含正式版、快照、远古版本）；
+- 从 Mojang 官方源或 BMCLAPI 镜像获取版本清单（当前 900+ 版本，含正式版、快照、远古版本）；**默认使用国内镜像（BMCLAPI），直连即可**，可在「设置 - 下载」切换为官方源；
 - 完整安装流程：版本描述、客户端 jar、依赖库（按 `rules` 过滤平台）、natives 解压、资源索引与资源对象、日志配置、旧版 virtual 资源目录；
-- 下载支持多线程并发、SHA1 校验、失败重试；镜像缺失的文件自动回退官方源；
+- 下载支持多线程并发、SHA1 校验、**断点续传**（HTTP Range，中断后保留分片并从断点继续）、失败重试；镜像缺失的文件自动回退官方源；
+- 404 / 403 等永久性错误不再反复重试，只对网络类错误重试；
+- 并发线程数由「设置 - 下载」控制，对版本安装、资源下载与内容安装全部生效；
 - 版本隔离：每个版本使用独立的 `mods`、`saves`、`config` 目录；
 - 单版本可单独覆盖内存、Java 与 JVM 参数；
 - 启动参数按版本 JSON 的 `arguments` / `minecraftArguments` 模板展开，兼容 1.6 之前的老版本；
@@ -70,25 +75,54 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 | Forge | 解析 Maven 元数据，下载官方安装器并执行 `--installClient` |
 | NeoForge | 同上；1.20.1 走 `net/neoforged/forge`，更高版本走 `net/neoforged/neoforge` |
 
-安装加载器时会自动补齐对应的原版版本。安装器输出会实时回传到任务进度。
+**一次装好，无需单独安装**：下载页点击「安装」会弹出安装配置，可同时选择加载器与加载器版本，
+由启动器把游戏本体与加载器装到同一个任务里：
+
+- 加载器版本可选**自动选择**（按设置里的「推荐稳定版 / 最新版 / 每次询问」策略挑选）或**手动指定**；
+- 安装时机可选「与游戏同时 / 下载完成后 / 不自动安装」，在「设置 - 下载」中配置；
+- Fabric / Quilt 只下载自身声明的依赖库，与原版同时开始下载；
+  Forge / NeoForge 需要运行官方安装器，等原版核心文件就绪后启动，与资源文件下载并行；
+- 加载器页也走同一套管线，可为已安装的游戏补装加载器。
 
 ### 内容
 
 接入 [Modrinth](https://modrinth.com) 开放 API：
 
 - 搜索 Mod、光影、资源包、整合包，可按当前游戏版本与加载器过滤；
+- **切到内容标签即自动加载**，不必手动点搜索；Modrinth 搜索本身支持中文关键词；
+- **Mod 名称与 MCMod 对齐**：列表与详情页显示 MC 百科（MCMod）上的中文名与缩写，
+  卡片上直接标注 MCMod 链接，点击即可打开对应页面；MCMod 未收录的保持原始名称；
+- **详情页**分为「项目信息 / 安装 / 项目介绍」三段：
+  - 项目信息含作者、更新时间、下载量、许可证与分类，并提供
+    Modrinth 页面 / MCMod 页面 / 源码 / 问题反馈 / Wiki 的直达按钮；
+  - **安装默认装到当前实例**，可切换实例，界面直接显示实际安装目录；
+    加载器与游戏版本按实例自动筛选，也可手动放宽到「全部」；
+  - 项目介绍按 Markdown 渲染为可读文本。
+- 列表卡片高度统一，标题与简介按固定行数截断，超长自动省略；
+- 分类标签中文化（科技 / 优化 / 装饰 / 玩法 …），加载器名保留原名；
+- 详情页可显示中文简介（来自 MC 镜像站翻译接口，失败时自动回退原文，结果本地缓存）；
 - 安装到对应目录：`mods/`、`shaderpacks/`、`resourcepacks/`；
 - Mod 的必需前置依赖自动安装（一层，避免递归）；
 - `.mrpack` 整合包：解析 `modrinth.index.json`、按清单下载、写入 `overrides` 与 `client-overrides`。
 
 ### 版本管理
 
-- 左侧版本列表，支持按「正式版 / 快照 / 加载器 / 其他」筛选与搜索；
-- 右侧详情分为「概览 / 设置 / 存档 / 截图」四个标签；
-- 概览显示 MC 版本、加载器、继承关系、启动次数、最后启动时间、目录与占用空间；
-- 设置可为单个版本覆盖内存、Java、JVM 参数与独立游戏目录；
-- 存档页列出所有含 `level.dat` 的世界，截图页显示缩略图；
-- 支持设为当前、启动、重命名、复制、删除、打开版本目录与游戏目录。
+- **一级页面是所有版本列表**，以等宽等高的卡片排列，显示图标、版本 ID、加载器、
+  MC 版本、占用空间与修改时间，可按最近修改 / 名称 / 占用空间排序；
+- **点进去是二级页面**：顶部是版本信息卡（文件数、游戏目录、启动 / 设为当前 / 打开目录），
+  左侧是导航（概览 / 设置 / 存档 / 截图 / 模组），右侧是内容；
+- **设置只对该版本生效**：内存、Java、JVM 参数、独立游戏目录与版本隔离开关
+  都只作用于当前版本，「恢复全局设置」可一键还原；
+- **版本隔离默认开启**：每个版本使用独立的 `mods`、`saves`、`config` 目录；
+  可在设置里为单个版本单独关闭；
+- 模组菜单列出该实例已安装的模组，可直接打开目录或跳去下载页；
+- **内容**菜单统一管理 **模组 / 光影 / 资源包**，导航里各有专属图标：
+  - 模组会解析 jar 内的元数据（`fabric.mod.json`、`mods.toml`、`mcmod.info`），
+    并用 MC 百科（MCMod）词库补上中文名，例如 Sodium 显示为「钠」；
+  - 光影与资源包没有元数据时去掉文件名末尾的版本号；
+  - 每条都显示原始文件名、大小与修改时间，可直接定位到文件位置；
+  - 模组可一键跳转到 **MC 百科** 与 **Modrinth** 页面；
+    光影与资源包会按文件名反查 Modrinth 项目，命中后同样给出跳转入口。
 
 ### 账号
 
@@ -175,14 +209,14 @@ src/
 └── core/                业务逻辑（不依赖 UI）
     ├── config.rs        配置模型与原子写入
     ├── paths.rs         目录解析与校验
-    ├── download.rs      多线程下载、镜像重定向、系统代理、进度
+    ├── download.rs      多线程下载、断点续传、镜像重定向、系统代理、进度
     ├── java.rs          Java 搜索与版本匹配
     ├── log.rs           文件 logger 与内存日志缓冲
     ├── news.rs          资讯解析（JSON / RSS / Atom）
     ├── skin.rs          皮肤解析与默认皮肤程序化生成
     ├── auth/            offline / microsoft / authlib
     ├── content/         modrinth 搜索、版本、安装、整合包
-    └── minecraft/       manifest / version / install / launch / loaders
+    └── minecraft/       manifest / version / install / launch / loaders / bundle
 ```
 
 `core` 不引用任何 UI 类型；UI 通过后台任务与 `CoreEvent` 与业务层通信。
@@ -208,7 +242,19 @@ src/
 - 资源对象采用宽松批次，允许部分失败并写入 `InstallReport`，界面提示缺失数量，可重新安装补齐；
 - 失败文件达到阈值时熔断，避免在网络不可用时长时间重试。
 
-**网络策略**：同一文件准备「镜像地址 + 原始地址」两个候选，镜像 404 时自动回退官方；镜像站始终直连，其余主机在启用时走系统代理（环境变量优先，其次 Windows 注册表）。
+**统一安装管线**（`core/minecraft/bundle.rs`）：把「游戏本体」与「加载器」合成一次任务。
+
+- 先落盘原版版本 JSON（加载器的 `inheritsFrom` 依赖它），再决定加载器版本（按策略自动挑选或用户指定）；
+- Fabric / Quilt 只下载自身声明的依赖库，与原版核心文件同时开始；
+- Forge / NeoForge 需要运行官方安装器，等原版核心文件就绪后启动，与资源文件下载并行；
+- 进度采用累加语义，多条并行线程共享同一个 `DownloadProgress` 而互不覆盖；
+- 同一目标文件由文件占用锁串行化，避免游戏与加载器并行时写坏同一个文件。
+
+**断点续传**：下载中的文件写在 `xxx.part` 分片里，中断后保留分片；
+下次请求带上 `Range: bytes=<已下载长度>-`，服务器返回 206 时接着写并把已下载部分计入哈希；
+服务器不支持续传（返回 200）时自动改为整份重下，不会写坏文件。
+
+**网络策略**：同一文件准备「镜像地址 + 原始地址」两个候选，镜像 404 时自动回退官方；镜像站始终直连，其余主机在启用时走系统代理（环境变量优先，其次 Windows 注册表）。404 / 403 等永久性错误会被识别出来直接放弃，不再反复重试。
 
 **3D 皮肤渲染**：把皮肤纹理映射到 6 个立方体（头、身、双臂、双腿），每帧做 Yaw/Pitch 旋转、背面剔除与按面深度排序，写入 `egui::Mesh` 后提交给 GPU。
 
@@ -251,15 +297,16 @@ htmcl.exe                            # 正常启动
 htmcl.exe --selftest                 # 端到端自检（默认验证 1.20.1）
 htmcl.exe --selftest 1.20.1          # 指定版本
 htmcl.exe --selftest 1.20.1 fabric   # 额外安装 Fabric 后启动
+htmcl.exe --selftest 1.20.1 fabric --install-only   # 只安装不启动，用于验证安装管线
 ```
 
 环境变量：
 
 | 变量 | 作用 |
 | --- | --- |
-| `HTMCL_SHOT=<目录>` | 依次切换 8 个界面场景截图后退出，用于界面回归自检 |
+| `HTMCL_SHOT=<目录>` | 依次切换 18 个界面场景截图后退出，用于界面回归自检 |
 
-自检会真实执行：获取版本清单 → 搜索 Java → 下载安装 → 构建启动命令 → 启动并观察 90 秒 → Modrinth 搜索与版本查询。
+自检会真实执行：获取版本清单 → 搜索 Java → 通过统一安装管线下载安装（可带加载器）→ 构建启动命令 → 启动并观察 90 秒 → Modrinth 搜索与版本查询。`--install-only` 会跳过启动游戏那一步。
 
 ## 配置文件
 
@@ -304,11 +351,16 @@ htmcl/
   },
 
   "download": {
-    "source": "official",       // "official" | "bmclapi"
-    "threads": 8,
+    "source": "bmclapi",        // "bmclapi" | "official"，默认国内镜像
+    "threads": 8,                // 并发下载线程数
     "timeout_secs": 30,
     "auto_install_dependencies": true,
-    "use_system_proxy": true
+    "use_system_proxy": true,
+    "default_loader": "none",    // "none" | "fabric" | "quilt" | "forge" | "neoforge"
+    "loader_policy": "stable",   // "stable" | "latest" | "ask"
+    "loader_timing": "parallel", // "parallel" | "after" | "manual"
+    "auto_select_after_install": true,
+    "install_assets": true       // 是否下载音效、语言、材质等资源文件
   },
 
   "ui": {
