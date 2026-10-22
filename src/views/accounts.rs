@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use egui::{Align, Layout, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::app::{App, CoreEvent, SkinSource};
-use crate::core::auth::authlib::{self, AuthlibAuth};
+use crate::core::auth::authlib::{self, AuthlibAuth, AuthlibProfile, AuthlibSession};
 use crate::core::auth::microsoft::{self, DeviceCode, PollOutcome};
 use crate::core::auth::{self, Account, AuthlibAccount, MicrosoftAccount, OfflineAccount, SkinModel};
 use crate::icons;
@@ -23,6 +23,12 @@ pub struct AccountsState {
     pub authlib_status: String,
     pub authlib_logging_in: bool,
     pub just_logged_in: bool,
+    /// 皮肤站账号下的角色列表，等待用户挑选
+    pub authlib_profiles: Vec<AuthlibProfile>,
+    /// 等待选择角色时暂存的会话（服务器、访问令牌、客户端令牌）
+    pub authlib_session: Option<AuthlibSession>,
+    /// 只有一个角色时自动接着完成登录
+    pub pending_profile: Option<AuthlibProfile>,
 }
 
 impl Default for AccountsState {
@@ -41,6 +47,9 @@ impl Default for AccountsState {
             authlib_status: String::new(),
             authlib_logging_in: false,
             just_logged_in: false,
+            authlib_profiles: Vec::new(),
+            authlib_session: None,
+            pending_profile: None,
         }
     }
 }
@@ -113,6 +122,40 @@ impl AccountsState {
         }
     }
 
+    /// 皮肤站登录换取到会话，等待用户挑选角色
+    pub fn on_authlib_session(
+        &mut self,
+        result: Result<AuthlibSession, String>,
+    ) {
+        self.authlib_logging_in = false;
+        match result {
+            Ok(session) => {
+                let count = session.profiles.len();
+                if count <= 1 {
+                    // 只有一个角色时直接完成登录
+                    if let Some(profile) = session.profiles.first().cloned() {
+                        self.authlib_status = "登录成功，正在载入角色 ...".into();
+                        self.authlib_session = Some(session);
+                        // 交给外部触发选择
+                        self.pending_profile = Some(profile);
+                    } else {
+                        self.authlib_status = "该账号在皮肤站没有可用的角色".into();
+                    }
+                } else {
+                    self.authlib_status =
+                        format!("登录成功，该账号下有 {count} 个角色，请选择一个");
+                    self.authlib_profiles = session.profiles.clone();
+                    self.authlib_session = Some(session);
+                }
+            }
+            Err(err) => {
+                self.authlib_status = err;
+                self.authlib_profiles.clear();
+                self.authlib_session = None;
+            }
+        }
+    }
+
     pub fn on_authlib_login(
         &mut self,
         result: Result<AuthlibAuth, String>,
@@ -141,6 +184,9 @@ impl AccountsState {
                 accounts.selected = Some(account.id().to_string());
                 self.authlib_status = "登录成功".into();
                 self.authlib_pass.clear();
+                // 登录完成，清理待选角色的状态
+                self.authlib_profiles.clear();
+                self.authlib_session = None;
                 self.just_logged_in = true;
             }
             Err(err) => {
@@ -393,6 +439,13 @@ fn start_ms_login(app: &mut App) {
 
 fn authlib_form(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
+
+    // 账号下只有一个角色时直接接着完成登录
+    if let Some(profile) = app.accounts_ui.pending_profile.take() {
+        start_authlib_select(app, profile);
+    }
+
+    // ---------- 皮肤站地址 ----------
     ui.horizontal(|ui| {
         let mut server = app.accounts_ui.authlib_server.clone();
         if ui::text_field(ui, &p, &mut server, "皮肤站地址", 330.0, false).changed() {
@@ -413,26 +466,104 @@ fn authlib_form(app: &mut App, ui: &mut Ui) {
             });
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(10.0);
+
+    // ---------- 账号与密码：上下分行，避免两个输入框挤在一起 ----------
+    let mut user = app.accounts_ui.authlib_user.clone();
+    if ui::text_field(ui, &p, &mut user, "邮箱 / 用户名", 320.0, false).changed() {
+        app.accounts_ui.authlib_user = user;
+    }
+    ui.add_space(8.0);
+    let mut pass = app.accounts_ui.authlib_pass.clone();
+    if ui::text_field(ui, &p, &mut pass, "密码", 320.0, true).changed() {
+        app.accounts_ui.authlib_pass = pass;
+    }
+    ui.add_space(12.0);
+
     ui.horizontal(|ui| {
-        let mut user = app.accounts_ui.authlib_user.clone();
-        if ui::text_field(ui, &p, &mut user, "邮箱 / 用户名", 200.0, false).changed() {
-            app.accounts_ui.authlib_user = user;
-        }
-        let mut pass = app.accounts_ui.authlib_pass.clone();
-        if ui::text_field(ui, &p, &mut pass, "密码", 200.0, true).changed() {
-            app.accounts_ui.authlib_pass = pass;
-        }
         let enabled = !app.accounts_ui.authlib_logging_in;
-        if ui::button(ui, &p, ButtonOpts::primary("登录").icon("account-skin").enabled(enabled)).clicked()
+        if ui::button(ui, &p, ButtonOpts::primary("登录").icon("account-skin").enabled(enabled))
+            .clicked()
         {
             start_authlib_login(app);
         }
         if app.accounts_ui.authlib_logging_in {
             ui::spinner(ui, &p, 16.0);
+            ui.label(
+                egui::RichText::new("正在登录 ...")
+                    .font(ui::font(12.0))
+                    .color(p.text_faint),
+            );
         }
     });
-    ui.add_space(6.0);
+    ui.add_space(10.0);
+
+    // ---------- 选择角色 ----------
+    let profiles = app.accounts_ui.authlib_profiles.clone();
+    if !profiles.is_empty() {
+        ui::card(ui, &p, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("选择角色")
+                        .font(ui::font(14.0))
+                        .color(p.text)
+                        .strong(),
+                );
+                ui.label(
+                    egui::RichText::new(format!("该账号下有 {} 个角色", profiles.len()))
+                        .font(ui::font(11.5))
+                        .color(p.text_faint),
+                );
+            });
+            ui.add_space(8.0);
+            for profile in &profiles {
+                let response = ui::card_flat(ui, &p, |ui| {
+                    ui.horizontal(|ui| {
+                        icons::paint(
+                            ui.ctx(),
+                            ui.painter(),
+                            "user",
+                            Rect::from_center_size(
+                                Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
+                                Vec2::splat(18.0),
+                            ),
+                            p.text_weak,
+                        );
+                        ui.add_space(28.0);
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new(&profile.name)
+                                    .font(ui::font(13.0))
+                                    .color(p.text)
+                                    .strong(),
+                            );
+                            ui.label(
+                                egui::RichText::new(profile.id.replace('-', ""))
+                                    .font(ui::font(11.0))
+                                    .color(p.text_faint),
+                            );
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            let enabled = !app.accounts_ui.authlib_logging_in;
+                            if ui::button(
+                                ui,
+                                &p,
+                                ButtonOpts::secondary("使用这个角色").enabled(enabled),
+                            )
+                            .clicked()
+                            {
+                                start_authlib_select(app, profile.clone());
+                            }
+                        });
+                    });
+                });
+                let _ = response;
+                ui.add_space(6.0);
+            }
+        });
+        ui.add_space(10.0);
+    }
+
     ui.label(
         egui::RichText::new("默认使用 skin.hutaomu.cn，兼容 Blessing Skin 等皮肤站；登录后启动时会自动挂载 authlib-injector。")
             .font(ui::font(11.5))
@@ -458,15 +589,45 @@ fn start_authlib_login(app: &mut App) {
     }
     app.accounts_ui.authlib_logging_in = true;
     app.accounts_ui.authlib_status = "正在登录 ...".into();
+    app.accounts_ui.authlib_profiles.clear();
+    app.accounts_ui.authlib_session = None;
     let timeout = app.cfg.download.timeout_secs;
 
     app.spawn("皮肤站登录", true, move |job| {
+        let result = (|| -> anyhow::Result<AuthlibSession> {
+            let dl = crate::core::download::Downloader::new(
+                crate::core::download::DownloadSource::Official,
+                timeout,
+            )?;
+            authlib::authenticate(&dl, &server, &user, &pass)
+        })();
+        job.send(CoreEvent::AuthlibSession(result.map_err(|e| format!("{e}"))));
+        job.done(true, "");
+    });
+}
+
+/// 选定角色并完成登录
+fn start_authlib_select(app: &mut App, profile: AuthlibProfile) {
+    let Some(session) = app.accounts_ui.authlib_session.clone() else {
+        return;
+    };
+    app.accounts_ui.authlib_logging_in = true;
+    app.accounts_ui.authlib_status = format!("正在使用角色 {} ...", profile.name);
+    let timeout = app.cfg.download.timeout_secs;
+
+    app.spawn("皮肤站选择角色", true, move |job| {
         let result = (|| -> anyhow::Result<AuthlibAuth> {
             let dl = crate::core::download::Downloader::new(
                 crate::core::download::DownloadSource::Official,
                 timeout,
             )?;
-            authlib::login(&dl, &server, &user, &pass)
+            authlib::select_profile(
+                &dl,
+                &session.server,
+                &session.access_token,
+                &session.client_token,
+                &profile,
+            )
         })();
         job.send(CoreEvent::AuthlibLogin(
             result.map_err(|e| format!("{e}")),

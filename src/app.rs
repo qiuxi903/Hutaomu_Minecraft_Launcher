@@ -77,7 +77,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 23;
+pub const SHOT_SCENES: usize = 24;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -181,6 +181,27 @@ impl App {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.section = 6;
                 }
+            }
+            23 => {
+                // 皮肤站登录：展示角色选择列表
+                self.page = Page::Accounts;
+                self.accounts_ui.tab = 2;
+                self.accounts_ui.authlib_status =
+                    "登录成功，该账号下有 3 个角色，请选择一个".into();
+                self.accounts_ui.authlib_profiles = vec![
+                    crate::core::auth::authlib::AuthlibProfile {
+                        id: "8f6b1c2d-3e4f-5a6b-7c8d-9e0f1a2b3c4d".into(),
+                        name: "林间晚风".into(),
+                    },
+                    crate::core::auth::authlib::AuthlibProfile {
+                        id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d".into(),
+                        name: "Steve".into(),
+                    },
+                    crate::core::auth::authlib::AuthlibProfile {
+                        id: "2b3c4d5e-6f7a-8b9c-0d1e-2f3a4b5c6d7e".into(),
+                        name: "铁匠阿福".into(),
+                    },
+                ];
             }
             12 => {
                 // 触发一次真实下载，用于检查下载中心面板
@@ -363,6 +384,8 @@ pub enum CoreEvent {
     DeviceCode(Result<crate::core::auth::microsoft::DeviceCode, String>),
     MsPoll(Result<crate::core::auth::microsoft::PollOutcome, String>),
     AuthlibLogin(Result<crate::core::auth::authlib::AuthlibAuth, String>),
+    /// 皮肤站登录成功，等待用户挑选角色
+    AuthlibSession(Result<crate::core::auth::authlib::AuthlibSession, String>),
     SkinReady {
         account_id: String,
         path: PathBuf,
@@ -1235,6 +1258,9 @@ impl App {
                         self.save_accounts();
                         self.success("皮肤站账号登录成功");
                     }
+                }
+                CoreEvent::AuthlibSession(result) => {
+                    self.accounts_ui.on_authlib_session(result);
                 }
                 CoreEvent::SkinReady {
                     account_id,
@@ -2157,6 +2183,7 @@ fn shot_scene_wait(scene: usize) -> f64 {
         20 => 2.5,
         21 => 2.5,
         22 => 2.5,
+        23 => 2.0,
         _ => 1.8,
     }
 }
@@ -2185,7 +2212,8 @@ fn shot_scene_label(scene: usize) -> &'static str {
         19 => "版本管理-设置",
         20 => "版本管理-模组",
         21 => "版本管理-光影",
-        _ => "版本管理-资源包",
+        22 => "版本管理-资源包",
+        _ => "账号-皮肤站",
     }
 }
 
