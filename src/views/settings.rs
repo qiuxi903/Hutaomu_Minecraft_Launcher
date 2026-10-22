@@ -3,6 +3,8 @@ use egui::{Align, Layout, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use crate::app::App;
 use crate::core::config::BackgroundKind;
 use crate::core::download::DownloadSource;
+use crate::core::minecraft::bundle::LoaderTiming;
+use crate::core::minecraft::loaders::{LoaderKind, LoaderPolicy};
 use crate::core::paths;
 use crate::icons;
 use crate::theme;
@@ -458,6 +460,158 @@ fn download_section(app: &mut App, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::toggle(ui, &p, &mut auto_deps).changed() {
                     app.cfg.download.auto_install_dependencies = auto_deps;
+                    app.save_config();
+                }
+            });
+        });
+    });
+
+    loader_section(app, ui);
+}
+
+/// 加载器与安装行为设置
+fn loader_section(app: &mut App, ui: &mut Ui) {
+    let p = app.palette;
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "加载器");
+
+        // 默认加载器
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("默认加载器")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let labels = ["不安装", "Fabric", "Quilt", "Forge", "NeoForge"];
+                let mut index = match app.cfg.download.default_loader_kind() {
+                    None => 0,
+                    Some(LoaderKind::Fabric) => 1,
+                    Some(LoaderKind::Quilt) => 2,
+                    Some(LoaderKind::Forge) => 3,
+                    Some(LoaderKind::NeoForge) => 4,
+                };
+                if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+                    app.cfg.download.default_loader = match index {
+                        1 => "fabric",
+                        2 => "quilt",
+                        3 => "forge",
+                        4 => "neoforge",
+                        _ => "none",
+                    }
+                    .to_string();
+                    app.save_config();
+                }
+            });
+        });
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new("安装游戏时自动带上该加载器，无需再单独安装")
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+        ui.add_space(14.0);
+
+        // 加载器版本策略
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("加载器版本")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let policies = LoaderPolicy::all();
+                let labels: Vec<&str> = policies.iter().map(|v| v.label()).collect();
+                let mut index = policies
+                    .iter()
+                    .position(|v| *v == app.cfg.download.loader_policy())
+                    .unwrap_or(0);
+                if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+                    app.cfg.download.loader_policy = policies[index].id().to_string();
+                    app.save_config();
+                }
+            });
+        });
+        ui.add_space(4.0);
+        let policy_hint = match app.cfg.download.loader_policy() {
+            LoaderPolicy::Stable => "自动挑选带推荐标记的稳定版本",
+            LoaderPolicy::Latest => "自动挑选最新版本",
+            LoaderPolicy::Ask => "每次安装都由你手动挑选版本",
+        };
+        ui.label(
+            egui::RichText::new(policy_hint)
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+        ui.add_space(14.0);
+
+        // 安装时机
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("安装时机")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let timings = LoaderTiming::all();
+                let labels: Vec<&str> = timings.iter().map(|v| v.label()).collect();
+                let mut index = timings
+                    .iter()
+                    .position(|v| *v == app.cfg.download.loader_timing())
+                    .unwrap_or(0);
+                if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+                    app.cfg.download.loader_timing = timings[index].id().to_string();
+                    app.save_config();
+                }
+            });
+        });
+        ui.add_space(4.0);
+        let timing_hint = match app.cfg.download.loader_timing() {
+            LoaderTiming::Parallel => "加载器与游戏同时下载安装，整体耗时更短",
+            LoaderTiming::After => "游戏装好后再装加载器，步骤更清晰",
+            LoaderTiming::Manual => "不自动安装加载器，需要时到「下载 - 加载器」页手动安装",
+        };
+        ui.label(
+            egui::RichText::new(timing_hint)
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+    });
+
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "安装行为");
+
+        let mut install_assets = app.cfg.download.install_assets;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("安装资源文件")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.label(
+                egui::RichText::new("音效、语言、材质等，占下载量的大头")
+                    .font(ui::font(11.5))
+                    .color(p.text_faint),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::toggle(ui, &p, &mut install_assets).changed() {
+                    app.cfg.download.install_assets = install_assets;
+                    app.save_config();
+                }
+            });
+        });
+        ui.add_space(10.0);
+
+        let mut auto_select = app.cfg.download.auto_select_after_install;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("安装后设为当前版本")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::toggle(ui, &p, &mut auto_select).changed() {
+                    app.cfg.download.auto_select_after_install = auto_select;
                     app.save_config();
                 }
             });
