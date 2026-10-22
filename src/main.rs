@@ -33,12 +33,20 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--selftest") {
         let index = args.iter().position(|a| a == "--selftest").unwrap_or(0);
+        // 版本号是 --selftest 后的第一个非选项参数
         let version = args
             .get(index + 1)
+            .filter(|a| !a.starts_with("--"))
             .cloned()
             .unwrap_or_else(|| "1.20.1".to_string());
-        let loader = args.get(index + 2).cloned();
-        match selftest::run(&version, loader.as_deref()) {
+        // 加载器是版本号之后的下一个非选项参数
+        let loader = args
+            .get(index + 2)
+            .filter(|a| !a.starts_with("--"))
+            .cloned();
+        // --install-only 只安装不启动，用于验证安装管线
+        let install_only = args.iter().any(|a| a == "--install-only");
+        match selftest::run(&version, loader.as_deref(), install_only) {
             Ok(()) => std::process::exit(0),
             Err(err) => {
                 eprintln!("自检失败: {err:#}");

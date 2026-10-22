@@ -6,10 +6,10 @@ use std::time::Duration;
 use crate::core::auth;
 use crate::core::download::{DownloadProgress, DownloadSource, Downloader};
 use crate::core::java;
-use crate::core::minecraft::{install, launch, manifest, version};
+use crate::core::minecraft::{bundle, install, launch, loaders, manifest, version};
 use crate::core::paths;
 
-pub fn run(version_id: &str, loader: Option<&str>) -> anyhow::Result<()> {
+pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow::Result<()> {
     crate::core::paths::migrate_legacy_layout();
     crate::core::log::init();
     println!("=== htmcl 自检开始（版本 {version_id}）===");
@@ -47,7 +47,6 @@ pub fn run(version_id: &str, loader: Option<&str>) -> anyhow::Result<()> {
     println!("[3/5] 下载并安装 {version_id} ...");
     let game_dir = paths::exe_dir().join(".minecraft");
     paths::ensure_dir(&game_dir)?;
-    install::ensure_version_json(&dl, &game_dir, &entry)?;
     let progress = DownloadProgress::new();
     {
         let progress = progress.clone();
@@ -64,45 +63,47 @@ pub fn run(version_id: &str, loader: Option<&str>) -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_millis(1500));
         });
     }
-    match install::install_version(&dl, &game_dir, version_id, &progress) {
-        Ok(report) => println!("      {}", report.summary()),
-        Err(err) => println!("      资源下载未完全成功：{err}"),
+
+    // 加载器类型：交给统一安装管线，游戏与加载器一起装
+    let kind = match loader {
+        None => None,
+        Some(name) => Some(match name.to_lowercase().as_str() {
+            "fabric" => loaders::LoaderKind::Fabric,
+            "quilt" => loaders::LoaderKind::Quilt,
+            "forge" => loaders::LoaderKind::Forge,
+            "neoforge" => loaders::LoaderKind::NeoForge,
+            other => anyhow::bail!("未知加载器 {other}"),
+        }),
+    };
+
+    println!("[3.5/5] 统一安装管线（游戏 + 加载器）...");
+    let req = bundle::InstallRequest {
+        mc_version: version_id.to_string(),
+        entry: entry.clone(),
+        loader: kind,
+        loader_version: None,
+        loader_policy: loaders::LoaderPolicy::Stable,
+        timing: bundle::LoaderTiming::Parallel,
+        game_dir: game_dir.clone(),
+        java: java::pick_for(version_id, &javas),
+        opts: install::InstallOptions {
+            threads: 8,
+            install_assets: true,
+        },
+    };
+    let outcome = bundle::install_bundle(&dl, &req, &progress)?;
+    println!("      {}", outcome.report.summary());
+    if let Some(loader_id) = &outcome.loader_id {
+        println!("      加载器版本 id: {loader_id}");
     }
     progress
         .finished
         .store(true, std::sync::atomic::Ordering::Relaxed);
 
-    let mut launch_id = version_id.to_string();
-    if let Some(loader_name) = loader {
-        println!("[3.5/5] 安装加载器 {loader_name} ...");
-        let kind = match loader_name.to_lowercase().as_str() {
-            "fabric" => crate::core::minecraft::loaders::LoaderKind::Fabric,
-            "quilt" => crate::core::minecraft::loaders::LoaderKind::Quilt,
-            "forge" => crate::core::minecraft::loaders::LoaderKind::Forge,
-            "neoforge" => crate::core::minecraft::loaders::LoaderKind::NeoForge,
-            other => anyhow::bail!("未知加载器 {other}"),
-        };
-        let versions = crate::core::minecraft::loaders::list_versions(&dl, kind, version_id)?;
-        println!("      可用版本 {} 个，最新 {}", versions.len(), versions.first().map(|v| v.version.clone()).unwrap_or_default());
-        let target = versions
-            .iter()
-            .find(|v| v.stable)
-            .or_else(|| versions.first())
-            .ok_or_else(|| anyhow::anyhow!("没有可用的 {loader_name} 版本"))?;
-        let java = java::pick_for(version_id, &javas)
-            .ok_or_else(|| anyhow::anyhow!("没有满足要求的 Java"))?;
-        let installed = crate::core::minecraft::loaders::install(
-            &dl,
-            kind,
-            version_id,
-            &target.version,
-            &game_dir,
-            &java,
-            &progress,
-        )?;
-        println!("      加载器版本 id: {installed}");
-        launch_id = installed;
-    }
+    let launch_id = outcome
+        .loader_id
+        .clone()
+        .unwrap_or_else(|| outcome.game_id.clone());
 
     println!("[4/5] 构建启动命令 ...");
     let resolved = version::resolve(&game_dir, &launch_id)?;
@@ -127,6 +128,11 @@ pub fn run(version_id: &str, loader: Option<&str>) -> anyhow::Result<()> {
     };
     let command = launch::build_command(&spec)?;
     println!("      命令: {}", launch::describe_command(&command));
+
+    if install_only {
+        println!("[5/5] 仅安装模式，跳过启动游戏");
+        return Ok(());
+    }
 
     println!("[5/5] 启动游戏（最多观察 90 秒）...");
     let mut process = launch::spawn(command, &launch_id)?;

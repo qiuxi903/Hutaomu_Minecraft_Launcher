@@ -77,7 +77,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 14;
+pub const SHOT_SCENES: usize = 23;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -100,11 +100,10 @@ impl App {
                 views::download::load_loader_versions(self);
             }
             3 => {
+                // Mod 标签：靠「切标签自动加载」触发，不手动搜索
                 self.page = Page::Download;
                 self.download.tab = 2;
-                self.download.content_kind = 0;
                 self.download.content_query = "sodium".into();
-                views::download::run_search(self);
             }
             4 => self.page = Page::Versions,
             5 => self.page = Page::Accounts,
@@ -126,11 +125,62 @@ impl App {
                 self.home_ui.config_open = true;
             }
             11 => {
+                // 整合包标签：同样靠自动加载
                 self.page = Page::Download;
                 self.download.tab = 5;
-                self.download.content_kind = 3;
                 self.download.content_query = "complementary".into();
-                views::download::run_search(self);
+            }
+            16 => {
+                // 光影标签：验证内容类型随标签切换
+                self.page = Page::Download;
+                self.download.tab = 3;
+                self.download.content_query = "光影".into();
+            }
+            17 => {
+                // 项目详情：验证 MCMod 链接与中文名
+                self.page = Page::Download;
+                self.download.tab = 2;
+                self.download.content_loaded_tab = Some(2);
+                views::download::open_project(self, "sodium", "jellysquid3");
+            }
+            18 => {
+                // 版本详情：验证二级页面的导航与设置
+                self.page = Page::Versions;
+                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                    views::versions::open_detail(self, &id);
+                }
+            }
+            19 => {
+                // 版本详情 - 设置页
+                self.page = Page::Versions;
+                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = 1;
+                }
+            }
+            20 => {
+                // 版本详情 - 模组
+                self.page = Page::Versions;
+                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = 4;
+                }
+            }
+            21 => {
+                // 版本详情 - 光影
+                self.page = Page::Versions;
+                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = 5;
+                }
+            }
+            22 => {
+                // 版本详情 - 资源包
+                self.page = Page::Versions;
+                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = 6;
+                }
             }
             12 => {
                 // 触发一次真实下载，用于检查下载中心面板
@@ -144,17 +194,43 @@ impl App {
                     {
                         let game_dir = self.cfg.game_dir.clone();
                         let id = entry.id.clone();
+                        let opts = self.cfg.download.install_options();
                         self.spawn_download(format!("安装 {id}"), move |dl, progress, _job| {
                             crate::core::minecraft::install::ensure_version_json(
                                 &dl, &game_dir, &entry,
                             )?;
                             crate::core::minecraft::install::install_version(
-                                &dl, &game_dir, &id, &progress,
+                                &dl, &game_dir, &id, &progress, opts,
                             )?;
                             Ok(format!("{id} 安装完成"))
                         });
                     }
                 }
+            }
+            14 => {
+                // 安装弹窗：选择加载器与版本
+                self.page = Page::Download;
+                self.download.tab = 0;
+                self.download.install_target = None;
+                if let Some(manifest) = &self.manifest {
+                    if let Some(entry) = manifest.versions.iter().find(|v| v.id == "1.20.1").cloned()
+                    {
+                        views::download::open_install_dialog(self, entry);
+                        // 预选 Fabric 并展示手动版本列表
+                        self.download.install_loader_index = 1;
+                        self.download.install_loader_auto = false;
+                        views::download::load_install_loader_versions(
+                            self,
+                            "1.20.1",
+                            crate::core::minecraft::loaders::LoaderKind::Fabric,
+                        );
+                    }
+                }
+            }
+            15 => {
+                // 设置页新增的加载器选项
+                self.page = Page::Settings;
+                self.settings_ui.tab = 1;
             }
             _ => {
                 // 提示条位置与动效检查
@@ -278,6 +354,12 @@ pub enum CoreEvent {
         mc: String,
         result: Result<Vec<LoaderVersion>, String>,
     },
+    /// 安装弹窗内加载器版本列表
+    InstallLoaderVersions {
+        kind: LoaderKind,
+        mc: String,
+        result: Result<Vec<LoaderVersion>, String>,
+    },
     DeviceCode(Result<crate::core::auth::microsoft::DeviceCode, String>),
     MsPoll(Result<crate::core::auth::microsoft::PollOutcome, String>),
     AuthlibLogin(Result<crate::core::auth::authlib::AuthlibAuth, String>),
@@ -290,6 +372,15 @@ pub enum CoreEvent {
         project: Box<crate::core::content::modrinth::Project>,
         versions: Vec<ModVersion>,
     },
+    /// 项目的中文简介（翻译服务不可用时不会发送）
+    ContentTranslated {
+        project_id: String,
+        text: String,
+    },
+    /// MCMod 元数据更新完成
+    McmodDbReady(crate::core::content::mcmod::Database),
+    /// 本地内容反查到的 Modrinth 项目：文件名 → slug
+    ContentSlugs(std::collections::HashMap<String, String>),
     ImageReady {
         url: String,
         path: PathBuf,
@@ -347,6 +438,10 @@ pub struct App {
     pub news_fetched_at: Option<std::time::Instant>,
 
     pub download: views::download::DownloadState,
+    /// MCMod 元数据库（Mod 中文名、缩写与 MCMod 链接）
+    pub mcmod_db: crate::core::content::mcmod::Database,
+    /// MCMod 元数据是否正在更新
+    pub mcmod_db_loading: bool,
     pub accounts_ui: views::accounts::AccountsState,
     pub settings_ui: views::settings::SettingsState,
     pub home_ui: views::home::HomeState,
@@ -432,6 +527,8 @@ impl App {
             news_error: None,
             news_fetched_at: None,
             download: Default::default(),
+            mcmod_db: crate::core::content::mcmod::Database::load_cached().unwrap_or_default(),
+            mcmod_db_loading: false,
             accounts_ui: Default::default(),
             settings_ui: Default::default(),
             home_ui: Default::default(),
@@ -477,10 +574,38 @@ impl App {
         app.reload_background();
         app.load_manifest();
         app.load_news();
+        app.refresh_mcmod_db();
         if app.javas.is_empty() {
             app.start_java_search(false);
         }
         app
+    }
+
+    /// 后台更新 MCMod 元数据（Mod 中文名与 MCMod 链接）
+    ///
+    /// 缓存 7 天有效；下载失败时沿用旧数据，不影响使用。
+    pub fn refresh_mcmod_db(&mut self) {
+        if self.mcmod_db_loading {
+            return;
+        }
+        if let Some(db) = crate::core::content::mcmod::Database::load_cached() {
+            self.mcmod_db = db;
+            return;
+        }
+        self.mcmod_db_loading = true;
+        let source = self.cfg.download.source;
+        let timeout = self.cfg.download.timeout_secs;
+        self.spawn("更新 MCMod 元数据", false, move |job| {
+            let result = (|| -> anyhow::Result<crate::core::content::mcmod::Database> {
+                let dl = Downloader::new(source, timeout.max(30))?;
+                crate::core::content::mcmod::refresh(&dl)
+                    .ok_or_else(|| anyhow::anyhow!("MCMod 元数据下载失败"))
+            })();
+            if let Ok(db) = result {
+                job.send(CoreEvent::McmodDbReady(db));
+            }
+            job.done(true, "");
+        });
     }
 
     // ------------------------------------------------------------ 基础访问
@@ -531,6 +656,8 @@ impl App {
             last_time: std::time::Instant::now(),
         });
         self.download_panel_open = true;
+        // 任务全部结束后自动收起面板；若用户手动打开过则保持打开
+        self.download_panel_auto = true;
 
         let job = Job {
             tx: self.tx.clone(),
@@ -1087,6 +1214,9 @@ impl App {
                 CoreEvent::LoaderVersions { kind, mc, result } => {
                     self.download.on_loader_versions(kind, &mc, result);
                 }
+                CoreEvent::InstallLoaderVersions { kind, mc, result } => {
+                    self.download.on_install_loader_versions(kind, &mc, result);
+                }
                 CoreEvent::DeviceCode(result) => {
                     self.accounts_ui.on_device_code(result);
                 }
@@ -1145,6 +1275,28 @@ impl App {
                     self.download.content_version_index = 0;
                     self.download.content_detail = Some(project);
                 }
+                CoreEvent::ContentTranslated { project_id, text } => {
+                    self.download.content_translation_loading = false;
+                    // 只在详情页对应的项目上生效，避免旧请求串台
+                    if self
+                        .download
+                        .content_detail
+                        .as_ref()
+                        .map(|p| p.id == project_id)
+                        .unwrap_or(false)
+                    {
+                        self.download.content_translation = Some(text);
+                    }
+                }
+                CoreEvent::McmodDbReady(db) => {
+                    self.mcmod_db_loading = false;
+                    self.mcmod_db = db;
+                }
+                CoreEvent::ContentSlugs(map) => {
+                    for (name, slug) in map {
+                        self.versions_ui.content_slugs.insert(name, slug);
+                    }
+                }
                 CoreEvent::ImageReady { url, path } => {
                     self.images_pending.remove(&url);
                     if path.as_os_str().is_empty() {
@@ -1172,8 +1324,10 @@ impl App {
                 }
                 CoreEvent::Installed(version) => {
                     self.refresh_local_versions();
-                    self.cfg.selected_version = Some(version.clone());
-                    self.save_config();
+                    if self.cfg.download.auto_select_after_install {
+                        self.cfg.selected_version = Some(version.clone());
+                        self.save_config();
+                    }
                     self.success(format!("{version} 已安装完成"));
                 }
                 CoreEvent::GameExited { version, code } => {
@@ -1995,6 +2149,14 @@ fn shot_scene_wait(scene: usize) -> f64 {
         11 => 9.0,
         12 => 6.0,
         13 => 1.2,
+        14 => 4.0,
+        16 => 4.0,
+        17 => 4.0,
+        18 => 2.0,
+        19 => 2.0,
+        20 => 2.5,
+        21 => 2.5,
+        22 => 2.5,
         _ => 1.8,
     }
 }
@@ -2014,7 +2176,16 @@ fn shot_scene_label(scene: usize) -> &'static str {
         10 => "首页-游戏配置",
         11 => "下载-整合包",
         12 => "下载中心",
-        _ => "提示条",
+        13 => "提示条",
+        14 => "下载-安装弹窗",
+        15 => "设置-下载",
+        16 => "下载-光影",
+        17 => "下载-项目详情",
+        18 => "版本管理-详情",
+        19 => "版本管理-设置",
+        20 => "版本管理-模组",
+        21 => "版本管理-光影",
+        _ => "版本管理-资源包",
     }
 }
 
