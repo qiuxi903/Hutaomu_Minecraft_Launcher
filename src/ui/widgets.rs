@@ -1,6 +1,6 @@
 use egui::{
     Align2, Color32, CornerRadius, Id, Margin, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui,
-    Vec2,
+    UiBuilder, Vec2,
 };
 
 use crate::icons;
@@ -963,6 +963,81 @@ pub fn slider(
         value_text,
         font(13.0),
         p.text_weak,
+    );
+    response
+}
+
+// ---------------------------------------------------------------- 文本截断
+
+/// 估算单个字符的显示宽度：中日韩全角按 1 个字宽，其余按 0.58
+fn char_width(ch: char, font_size: f32) -> f32 {
+    if ch == '\n' {
+        return font_size * 1.5;
+    }
+    let code = ch as u32;
+    let wide = (0x1100..=0x115F).contains(&code)      // 韩文字母
+        || (0x2E80..=0x303E).contains(&code)           // 中日韩符号
+        || (0x3041..=0x33FF).contains(&code)           // 假名、中日韩兼容
+        || (0x3400..=0x4DBF).contains(&code)           // 中日韩扩展 A
+        || (0x4E00..=0x9FFF).contains(&code)           // 中日韩统一表意
+        || (0xAC00..=0xD7A3).contains(&code)           // 韩文音节
+        || (0xF900..=0xFAFF).contains(&code)           // 中日韩兼容表意
+        || (0xFF00..=0xFF60).contains(&code)           // 全角字符
+        || (0xFFE0..=0xFFE6).contains(&code); // 全角符号
+    if wide {
+        font_size
+    } else {
+        font_size * 0.58
+    }
+}
+
+/// 按显示宽度截断单行文本，超出部分用省略号代替
+///
+/// 用于自绘文本：egui 的 Label 即使设了 truncate，测量宽度仍是原文，
+/// 会把外层布局撑开，所以卡片标题这类需要固定宽度的场合要自己截断。
+pub fn ellipsize(text: &str, max_width: f32, font_size: f32) -> String {
+    if max_width <= 0.0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut width = 0.0;
+    for ch in text.chars() {
+        let w = char_width(ch, font_size);
+        if width + w > max_width {
+            out.push('…');
+            break;
+        }
+        width += w;
+        out.push(ch);
+    }
+    out
+}
+
+// ---------------------------------------------------------------- 固定高度卡片
+
+/// 绘制一张高度固定的内容卡片
+///
+/// 与 `card` 不同，这里的高度由调用方指定，因此一排卡片的上下边缘完全对齐。
+/// 内容区域是卡片内缩后的矩形，由回调自行安排。
+pub fn fixed_card(
+    ui: &mut Ui,
+    p: &Palette,
+    size: Vec2,
+    padding: f32,
+    add: impl FnOnce(&mut Ui, Rect),
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let radius = p.corner_sm();
+    ui.painter().rect_filled(rect, radius, p.surface);
+    ui.painter()
+        .rect_stroke(rect, radius, Stroke::new(1.0, p.border), StrokeKind::Inside);
+    let inner = rect.shrink(padding);
+    // 显式指定自上而下的布局，避免继承外层的横向排列导致内容溢出卡片
+    ui.scope_builder(
+        UiBuilder::new()
+            .max_rect(inner)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| add(ui, inner),
     );
     response
 }
