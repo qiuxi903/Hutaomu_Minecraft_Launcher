@@ -11,6 +11,12 @@ use crate::core::paths;
 #[serde(default)]
 pub struct VersionJson {
     pub id: String,
+    /// 版本显示名，Minecraft 主菜单左下角显示的就是它
+    ///
+    /// 官方版本 JSON 多数不带这个字段，游戏会退回内置名称；
+    /// 我们统一写成启动器品牌名，让主菜单左下角显示品牌而不是版本号。
+    #[serde(default)]
+    pub name: String,
     #[serde(rename = "type")]
     pub version_type: String,
     #[serde(rename = "mainClass")]
@@ -280,6 +286,11 @@ fn merge(parent: &VersionJson, child: &VersionJson) -> VersionJson {
 
     VersionJson {
         id: child.id.clone(),
+        name: if child.name.is_empty() {
+            parent.name.clone()
+        } else {
+            child.name.clone()
+        },
         version_type: if child.version_type.is_empty() {
             parent.version_type.clone()
         } else {
@@ -909,5 +920,46 @@ mod tests {
         let instances = group_instances(&[vanilla, fabric], None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].active, "fabric-loader-0.20.1-26.2");
+    }
+
+    /// 子版本没写 name 时沿用父版本的名字
+    #[test]
+    fn merge_takes_name_from_child_or_parent() {
+        let parent = VersionJson {
+            id: "26.2".into(),
+            name: "HTMCL".into(),
+            main_class: "net.minecraft.client.main.Main".into(),
+            ..Default::default()
+        };
+        let child = VersionJson {
+            id: "fabric-loader-0.20.1-26.2".into(),
+            inherits_from: Some("26.2".into()),
+            ..Default::default()
+        };
+        let merged = merge(&parent, &child);
+        assert_eq!(merged.name, "HTMCL");
+
+        let child_named = VersionJson {
+            name: "别的名字".into(),
+            ..child.clone()
+        };
+        assert_eq!(merge(&parent, &child_named).name, "别的名字");
+    }
+
+    /// 写版本 JSON 时原样保留 name 字段
+    #[test]
+    fn write_local_json_keeps_name() {
+        let dir = std::env::temp_dir().join(format!("htmcl-brand-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let json = VersionJson {
+            id: "26.2".into(),
+            name: "1.0".into(),
+            main_class: "net.minecraft.client.main.Main".into(),
+            ..Default::default()
+        };
+        write_local_json(&dir, &json).unwrap();
+        let saved = read_local_json(&dir, "26.2").unwrap();
+        assert_eq!(saved.name, "1.0");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
