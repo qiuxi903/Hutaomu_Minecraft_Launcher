@@ -23,12 +23,12 @@ pub struct VersionsState {
     pub sort: usize,
     /// 当前打开的版本详情，None 表示停留在一级列表
     pub detail: Option<String>,
-    /// 详情页左侧导航选中项
-    pub section: usize,
+    /// 详情页左侧导航选中项，对应 sections_for 里的 id
+    pub section: &'static str,
     /// 本地文件名 → Modrinth 项目 slug（后台反查得到，用于跳转官网）
     pub content_slugs: HashMap<String, String>,
     /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
-    pub content_lookup_section: Option<usize>,
+    pub content_lookup_section: Option<&'static str>,
     pub detail_memory: f32,
     pub detail_java: usize,
     pub detail_jvm: String,
@@ -49,7 +49,7 @@ impl Default for VersionsState {
             filter: 0,
             sort: 0,
             detail: None,
-            section: 0,
+            section: "info",
             content_slugs: HashMap::new(),
             content_lookup_section: None,
             detail_memory: 4096.0,
@@ -68,16 +68,25 @@ impl Default for VersionsState {
 
 const FILTERS: [&str; 5] = ["全部", "正式版", "快照", "加载器", "其他"];
 const SORTS: [&str; 3] = ["最近修改", "名称", "占用空间"];
+
 /// 详情页左侧导航
-const SECTIONS: [(&str, &str); 7] = [
-    ("info", "概览"),
-    ("sliders", "设置"),
-    ("world", "存档"),
-    ("image", "截图"),
-    ("mod", "模组"),
-    ("shader", "光影"),
-    ("resourcepack", "资源包"),
-];
+///
+/// 原版没有加载器，既装不了模组也用不上光影，这两项就不列出来。
+fn sections_for(inst: &crate::core::minecraft::GameInstance) -> Vec<(&'static str, &'static str)> {
+    let mut list: Vec<(&'static str, &'static str)> = vec![
+        ("info", "概览"),
+        ("sliders", "设置"),
+        ("world", "存档"),
+        ("image", "截图"),
+    ];
+    let has_loader = inst.variants.iter().any(|v| v.loader.is_some());
+    if has_loader {
+        list.push(("mod", "模组"));
+        list.push(("shader", "光影"));
+    }
+    list.push(("resourcepack", "资源包"));
+    list
+}
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
     if app.versions_ui.detail.is_some() {
@@ -359,7 +368,7 @@ fn instance_card(
 /// 打开某个实例的详情页
 pub(crate) fn open_detail(app: &mut App, mc_version: &str) {
     app.versions_ui.detail = Some(mc_version.to_string());
-    app.versions_ui.section = 0;
+    app.versions_ui.section = "info";
     load_detail(app, mc_version);
 }
 
@@ -381,6 +390,13 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
         return;
     };
     let is_current = app.cfg.selected_version.as_deref() == Some(active.id.as_str());
+
+    // 左侧导航：原版没有加载器，模组与光影不列出来
+    let sections = sections_for(&inst);
+    // 切换加载器后当前分区可能已经不在列表里，退回概览
+    if !sections.iter().any(|(id, _)| *id == app.versions_ui.section) {
+        app.versions_ui.section = "info";
+    }
 
     // ---------- 顶部：返回 + 版本信息 + 操作 ----------
     ui.horizontal(|ui| {
@@ -500,10 +516,10 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             ui.set_width(150.0);
             ui::card_padded(ui, &p, 8, |ui| {
                 ui.set_width(134.0);
-                for (index, (icon, label)) in SECTIONS.iter().enumerate() {
-                    let selected = app.versions_ui.section == index;
+                for (icon, label) in sections.iter() {
+                    let selected = app.versions_ui.section == *icon;
                     if ui::nav_item(ui, &p, icon, label, selected).clicked() {
-                        app.versions_ui.section = index;
+                        app.versions_ui.section = icon;
                     }
                     ui.add_space(2.0);
                 }
@@ -513,13 +529,15 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             let width = ui.available_width();
             ui.set_width(width);
             match app.versions_ui.section {
-                0 => overview_tab(app, ui, &inst, &active),
-                1 => settings_tab(app, ui, &inst),
-                2 => saves_tab(app, ui, &inst),
-                3 => screenshots_tab(app, ui, &inst),
-                4 => content_tab(app, ui, &inst, ContentKind::Mod, 4),
-                5 => content_tab(app, ui, &inst, ContentKind::Shader, 5),
-                _ => content_tab(app, ui, &inst, ContentKind::ResourcePack, 6),
+                "settings" => settings_tab(app, ui, &inst),
+                "saves" => saves_tab(app, ui, &inst),
+                "screenshots" => screenshots_tab(app, ui, &inst),
+                "mod" => content_tab(app, ui, &inst, ContentKind::Mod, "mod"),
+                "shader" => content_tab(app, ui, &inst, ContentKind::Shader, "shader"),
+                "resourcepack" => {
+                    content_tab(app, ui, &inst, ContentKind::ResourcePack, "resourcepack")
+                }
+                _ => overview_tab(app, ui, &inst, &active),
             }
         });
     });
@@ -1265,6 +1283,42 @@ fn slug_candidates(name: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// 原版实例不列模组与光影，带加载器的实例才列
+    #[test]
+    fn vanilla_instance_hides_mod_and_shader() {
+        let make = |id: &str, loader: Option<&str>| crate::core::minecraft::LocalVersion {
+            id: id.to_string(),
+            version_type: "release".into(),
+            loader: loader.map(|l| l.to_string()),
+            loader_version: None,
+            mc_version: "26.2".into(),
+            size: 1,
+            last_modified: None,
+            has_jar: true,
+            icon_data_url: None,
+        };
+
+        let vanilla = crate::core::minecraft::GameInstance {
+            mc_version: "26.2".into(),
+            variants: vec![make("26.2", None)],
+            active: "26.2".into(),
+        };
+        let ids: Vec<&str> = sections_for(&vanilla).iter().map(|(id, _)| *id).collect();
+        assert!(!ids.contains(&"mod"));
+        assert!(!ids.contains(&"shader"));
+        assert!(ids.contains(&"resourcepack"));
+        assert!(ids.contains(&"info"));
+
+        let fabric = crate::core::minecraft::GameInstance {
+            mc_version: "26.2".into(),
+            variants: vec![make("26.2", None), make("fabric-loader-0.20.1-26.2", Some("Fabric"))],
+            active: "fabric-loader-0.20.1-26.2".into(),
+        };
+        let ids: Vec<&str> = sections_for(&fabric).iter().map(|(id, _)| *id).collect();
+        assert!(ids.contains(&"mod"));
+        assert!(ids.contains(&"shader"));
+    }
+
     #[test]
     fn strips_version_suffix_from_file_name() {
         assert_eq!(strip_version_suffix("sodium-fabric-0.5.13.jar"), "sodium-fabric");
@@ -1305,7 +1359,7 @@ fn content_tab(
     ui: &mut Ui,
     inst: &crate::core::minecraft::GameInstance,
     kind: ContentKind,
-    section: usize,
+    section: &'static str,
 ) {
     let p = app.palette;
     let game_dir = app.cfg.effective_game_dir(&inst.mc_version);

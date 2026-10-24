@@ -144,42 +144,42 @@ impl App {
                 views::download::open_project(self, "sodium", "jellysquid3");
             }
             18 => {
-                // 版本详情：验证二级页面的导航与设置
+                // 版本详情：原版实例（左侧导航没有模组与光影）
                 self.page = Page::Versions;
-                if let Some(id) = self.shot_instance_id() {
+                if let Some(id) = self.shot_vanilla_instance_id() {
                     views::versions::open_detail(self, &id);
                 }
             }
             19 => {
                 // 版本详情 - 设置页
                 self.page = Page::Versions;
-                if let Some(id) = self.shot_instance_id() {
+                if let Some(id) = self.shot_vanilla_instance_id() {
                     views::versions::open_detail(self, &id);
-                    self.versions_ui.section = 1;
+                    self.versions_ui.section = "settings";
                 }
             }
             20 => {
-                // 版本详情 - 模组
+                // 版本详情 - 模组（带加载器的实例才有这一项）
                 self.page = Page::Versions;
-                if let Some(id) = self.shot_instance_id() {
+                if let Some(id) = self.shot_loader_instance_id() {
                     views::versions::open_detail(self, &id);
-                    self.versions_ui.section = 4;
+                    self.versions_ui.section = "mod";
                 }
             }
             21 => {
                 // 版本详情 - 光影
                 self.page = Page::Versions;
-                if let Some(id) = self.shot_instance_id() {
+                if let Some(id) = self.shot_loader_instance_id() {
                     views::versions::open_detail(self, &id);
-                    self.versions_ui.section = 5;
+                    self.versions_ui.section = "shader";
                 }
             }
             22 => {
                 // 版本详情 - 资源包
                 self.page = Page::Versions;
-                if let Some(id) = self.shot_instance_id() {
+                if let Some(id) = self.shot_loader_instance_id() {
                     views::versions::open_detail(self, &id);
-                    self.versions_ui.section = 6;
+                    self.versions_ui.section = "resourcepack";
                 }
             }
             23 => {
@@ -871,6 +871,23 @@ impl App {
             .iter()
             .find(|i| Some(i.active.as_str()) == selected)
             .or_else(|| self.instances.first())
+            .map(|i| i.mc_version.clone())
+    }
+
+    /// 界面自检要打开的原版实例（没有加载器的）
+    fn shot_vanilla_instance_id(&self) -> Option<String> {
+        self.instances
+            .iter()
+            .find(|i| i.variants.iter().all(|v| v.loader.is_none()))
+            .map(|i| i.mc_version.clone())
+            .or_else(|| self.shot_instance_id())
+    }
+
+    /// 界面自检要打开的带加载器实例
+    fn shot_loader_instance_id(&self) -> Option<String> {
+        self.instances
+            .iter()
+            .find(|i| i.variants.iter().any(|v| v.loader.is_some()))
             .map(|i| i.mc_version.clone())
     }
 
