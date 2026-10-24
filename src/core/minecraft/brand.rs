@@ -49,11 +49,26 @@ fn read_version_json(jar_path: &Path) -> Result<serde_json::Value> {
     serde_json::from_str(&text).context("解析 jar 内 version.json 失败")
 }
 
-/// 客户端 jar 里那份 version.json，改成品牌名之后的内容
+/// 官方版本名后面加一个品牌名
+///
+/// 官方原本的版本名要留着（`26.2` 就是 `26.2`），
+/// 品牌名只是额外加上去的一段：`26.2 (HTMCL)`。
+fn brand_name(original: &str) -> String {
+    let original = original.trim();
+    if original.is_empty() {
+        return BRAND_NAME.to_string();
+    }
+    if original.contains(BRAND_NAME) {
+        return original.to_string();
+    }
+    format!("{original} ({BRAND_NAME})")
+}
+
+/// 客户端 jar 里那份 version.json，给版本名加上品牌之后的内容
 ///
 /// 1.13.2 及更早的版本 jar 里没有这个文件，版本名写死在代码里，
 /// 这种版本返回 `None`，改不了也不必改。
-fn brand_version_json(jar_path: &Path) -> Result<Option<String>> {
+fn brand_version_json(jar_path: &Path) -> Result<Option<serde_json::Value>> {
     let mut archive = match ZipArchive::new(
         File::open(jar_path)
             .with_context(|| format!("打开客户端 jar 失败: {}", jar_path.display()))?,
@@ -69,8 +84,25 @@ fn brand_version_json(jar_path: &Path) -> Result<Option<String>> {
     entry.read_to_string(&mut text)?;
     let mut json: serde_json::Value =
         serde_json::from_str(&text).context("解析 jar 内 version.json 失败")?;
-    json["name"] = serde_json::Value::String(BRAND_NAME.to_string());
-    Ok(Some(serde_json::to_string(&json).context("生成品牌版本信息失败")?))
+    let original = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .or_else(|| json.get("id").and_then(|v| v.as_str()))
+        .unwrap_or("")
+        .to_string();
+    if original.trim().is_empty() {
+        return Ok(None);
+    }
+    json["name"] = serde_json::Value::String(brand_name(&original));
+    Ok(Some(json))
+}
+
+/// 版本名是不是已经是想要的样子
+fn name_matches(jar_path: &Path, expected: &serde_json::Value) -> bool {
+    let Ok(current) = read_version_json(jar_path) else {
+        return false;
+    };
+    current.get("name") == expected.get("name")
 }
 
 /// 目标比源新，说明还是现成的
@@ -89,9 +121,10 @@ fn is_fresh(target: &Path, source: &Path) -> bool {
 /// 放在 classpath 最前面，游戏读到的版本名就是品牌名，
 /// 客户端 jar 本身不动，签名完好。
 pub fn prepare_brand_dir(jar_path: &Path) -> Result<Option<PathBuf>> {
-    let Some(content) = brand_version_json(jar_path)? else {
+    let Some(json) = brand_version_json(jar_path)? else {
         return Ok(None);
     };
+    let content = serde_json::to_string(&json).context("生成品牌版本信息失败")?;
     let dir = jar_path.with_file_name(BRAND_DIR);
     let file = dir.join(VERSION_ENTRY);
     let same = std::fs::read_to_string(&file)
@@ -111,11 +144,13 @@ pub fn prepare_brand_dir(jar_path: &Path) -> Result<Option<PathBuf>> {
 /// 签名去掉是必须的：jar 里的 `version.json` 一改，原来的签名就对不上了，
 /// JVM 读到它会直接抛 `SHA-384 digest error`。
 pub fn prepare_brand_jar(jar_path: &Path) -> Result<Option<PathBuf>> {
-    let Some(patched) = brand_version_json(jar_path)? else {
+    let Some(json) = brand_version_json(jar_path)? else {
         return Ok(None);
     };
+    let patched = serde_json::to_string(&json).context("生成品牌版本信息失败")?;
     let out = jar_path.with_file_name(BRAND_JAR);
-    if is_fresh(&out, jar_path) {
+    // 现成的品牌 jar 内容对得上就不用重建
+    if is_fresh(&out, jar_path) && name_matches(&out, &json) {
         return Ok(Some(out));
     }
 
@@ -170,14 +205,14 @@ fn is_signature_entry(name: &str) -> bool {
             || upper.ends_with(".EC"))
 }
 
-/// 客户端 jar 有没有写品牌名
+/// 客户端 jar 的版本名里有没有带上品牌
 pub fn has_brand(jar_path: &Path) -> bool {
     read_version_json(jar_path)
         .ok()
         .and_then(|json| {
             json.get("name")
                 .and_then(|v| v.as_str())
-                .map(|name| name == BRAND_NAME)
+                .map(|name| name.contains(BRAND_NAME))
         })
         .unwrap_or(false)
 }
@@ -229,7 +264,8 @@ mod tests {
         let brand_dir = prepare_brand_dir(&jar).unwrap().unwrap();
         let text = std::fs::read_to_string(brand_dir.join(VERSION_ENTRY)).unwrap();
         let json: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(json.get("name").unwrap().as_str().unwrap(), BRAND_NAME);
+        // 官方版本名保留，只在后面加品牌
+        assert_eq!(json.get("name").unwrap().as_str().unwrap(), "1.0 (HTMCL)");
         assert_eq!(json.get("id").unwrap().as_str().unwrap(), "1.0");
 
         // 原 jar 不该被动过
@@ -248,6 +284,9 @@ mod tests {
 
         let brand_jar = prepare_brand_jar(&jar).unwrap().unwrap();
         assert!(has_brand(&brand_jar));
+        // 版本名保留，品牌加在后面
+        let json = read_version_json(&brand_jar).unwrap();
+        assert_eq!(json.get("name").unwrap().as_str().unwrap(), "1.0 (HTMCL)");
         // 签名文件去掉了，JVM 不会再校验
         let file = File::open(&brand_jar).unwrap();
         let mut archive = ZipArchive::new(file).unwrap();
