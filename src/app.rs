@@ -400,6 +400,11 @@ pub enum CoreEvent {
     DeviceCode(Result<crate::core::auth::microsoft::DeviceCode, String>),
     MsPoll(Result<crate::core::auth::microsoft::PollOutcome, String>),
     AuthlibLogin(Result<crate::core::auth::authlib::AuthlibAuth, String>),
+    /// 令牌过期后用记住的密码自动续期
+    AuthlibRelogin {
+        account_id: String,
+        result: Result<crate::core::auth::authlib::AuthlibAuth, String>,
+    },
     /// 皮肤站登录成功，等待用户挑选角色
     AuthlibSession(Result<crate::core::auth::authlib::AuthlibSession, String>),
     /// authlib-injector 准备完成（皮肤站账号启动游戏时需要挂载）
@@ -511,6 +516,8 @@ pub struct App {
     pub maximized: bool,
     pub first_frame: bool,
     pub authlib_jar: Option<PathBuf>,
+    /// 这次启动里已经尝试过自动续期，避免续期失败时反复重试
+    pub authlib_relogin_attempted: bool,
     /// authlib-injector 是否正在下载
     pub authlib_jar_loading: bool,
     /// authlib-injector 上一次准备失败的原因
@@ -602,13 +609,12 @@ impl App {
             maximized: false,
             first_frame: true,
             authlib_jar: None,
+            authlib_relogin_attempted: false,
             authlib_jar_loading: false,
             authlib_jar_error: None,
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
-            page_changed_at: 0.0,
-            last_page: Page::Home,
             last_window_size: egui::vec2(1120.0, 720.0),
             image_tx,
             image_rx: image_rx.clone(),
@@ -1427,6 +1433,34 @@ impl App {
                 }
                 CoreEvent::AuthlibSession(result) => {
                     self.accounts_ui.on_authlib_session(result);
+                }
+                CoreEvent::AuthlibRelogin { account_id, result } => {
+                    match result {
+                        Ok(auth) => {
+                            if let Some(crate::core::auth::Account::Authlib(a)) =
+                                self.accounts.get_mut(&account_id)
+                            {
+                                a.access_token = auth.access_token;
+                                a.client_token = auth.client_token;
+                                a.expires_at = auth.expires_at;
+                                a.skin_url = auth.skin_url.clone();
+                                if auth.skin_model == "slim" {
+                                    a.skin_model = crate::core::auth::SkinModel::Slim;
+                                } else {
+                                    a.skin_model = crate::core::auth::SkinModel::Classic;
+                                }
+                            }
+                            self.save_accounts();
+                            self.success("皮肤站登录已自动续期");
+                            // 令牌换好了，继续刚才的启动流程
+                            crate::views::launch_game(self);
+                        }
+                        Err(err) => {
+                            self.error(format!("皮肤站自动续期失败：{err}"));
+                            self.accounts_ui.tab = 2;
+                            self.page = crate::app::Page::Accounts;
+                        }
+                    }
                 }
                 CoreEvent::AuthlibJar(result) => {
                     self.authlib_jar_loading = false;

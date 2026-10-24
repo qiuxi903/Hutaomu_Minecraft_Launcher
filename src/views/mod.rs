@@ -52,14 +52,13 @@ pub fn launch_game(app: &mut App) {
     };
 
     // 皮肤站的令牌有效期不长，过期后启动会直接失败，
-    // 与其让游戏报一堆看不懂的错，不如先提示重新登录
+    // 与其让游戏报一堆看不懂的错，不如先问一次皮肤站。
+    // 记过密码的话，过期了就用密码自动换一张新令牌，不用用户再输一遍。
     if let crate::core::auth::Account::Authlib(a) = &account {
-        if a.expires_at > 0 && a.expires_at <= chrono::Utc::now().timestamp() {
-            app.error("皮肤站登录已过期，请到「账号」页面重新登录");
-            return;
-        }
+        let expired = a.expires_at > 0 && a.expires_at <= chrono::Utc::now().timestamp();
         // 令牌也可能被皮肤站单方面作废（比如在别处登录），
-        // 这种情况下游戏能进但皮肤会变回默认角色，提前问一次皮肤站
+        // 这种情况下游戏能进但皮肤会变回默认角色
+        let mut invalid = false;
         if let Ok(dl) = app.downloader() {
             match crate::core::auth::authlib::validate(
                 &dl,
@@ -67,19 +66,34 @@ pub fn launch_game(app: &mut App) {
                 &a.access_token,
                 &a.client_token,
             ) {
-                Ok(false) => {
-                    app.error("皮肤站登录已失效，请重新登录后再启动游戏");
-                    app.accounts_ui.tab = 2;
-                    app.accounts_ui.authlib_user = a.name.clone();
-                    app.page = crate::app::Page::Accounts;
-                    return;
-                }
+                Ok(false) => invalid = true,
                 Err(err) => {
                     // 连不上皮肤站就别拦着，先进游戏再说
                     log::warn!("检查皮肤站登录状态失败：{err}");
                 }
                 Ok(true) => {}
             }
+        }
+        if expired || invalid {
+            // 记住过密码就自动续期
+            if !app.authlib_relogin_attempted {
+                if let Some(pass) = a
+                    .saved_password
+                    .as_ref()
+                    .and_then(|p| crate::core::auth::secret::unprotect(p))
+                {
+                    if !a.username.is_empty() {
+                        app.authlib_relogin_attempted = true;
+                        start_authlib_relogin(app, a.clone(), pass);
+                        return;
+                    }
+                }
+            }
+            app.error("皮肤站登录已过期，请到「账号」页面重新登录");
+            app.accounts_ui.tab = 2;
+            app.accounts_ui.authlib_user = a.username.clone();
+            app.page = crate::app::Page::Accounts;
+            return;
         }
     }
 
@@ -190,6 +204,40 @@ pub fn launch_game(app: &mut App) {
         }
         Err(err) => app.error(format!("启动失败：{err}")),
     }
+}
+
+/// 用记住的密码重新登录皮肤站，换一张新令牌
+///
+/// 令牌彻底过期后 refresh 接口换不了新的（它要拿旧令牌去换），
+/// 只能重新走一次认证。续期成功后再继续启动游戏。
+fn start_authlib_relogin(app: &mut App, account: crate::core::auth::AuthlibAccount, password: String) {
+    let account_id = account.id.clone();
+    let server = account.server_url.clone();
+    let user = account.username.clone();
+    let profile_id = account.uuid.clone();
+    let timeout = app.cfg.download.timeout_secs;
+    app.info("皮肤站登录已过期，正在自动续期 ...");
+
+    app.spawn("皮肤站自动续期", true, move |job| {
+        let result = (|| -> anyhow::Result<crate::core::auth::authlib::AuthlibAuth> {
+            let dl = crate::core::download::Downloader::new(
+                crate::core::download::DownloadSource::Official,
+                timeout,
+            )?;
+            crate::core::auth::authlib::relogin(
+                &dl,
+                &server,
+                &user,
+                &password,
+                Some(&profile_id),
+            )
+        })();
+        job.send(crate::app::CoreEvent::AuthlibRelogin {
+            account_id,
+            result: result.map_err(|e| format!("{e}")),
+        });
+        job.done(true, "");
+    });
 }
 
 /// 打开版本对应的游戏目录

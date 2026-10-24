@@ -309,6 +309,38 @@ pub fn login(
     )
 }
 
+/// 用账号密码重新登录，换一张新的令牌
+///
+/// 令牌彻底过期后 refresh 接口就不好使了（它要拿旧令牌去换），
+/// 只能重新走一次认证。给了 `profile_id` 就保持原来的角色，
+/// 角色没了才退回取第一个。
+pub fn relogin(
+    dl: &Downloader,
+    server_url: &str,
+    username: &str,
+    password: &str,
+    profile_id: Option<&str>,
+) -> Result<AuthlibAuth> {
+    let session = authenticate(dl, server_url, username, password)?;
+    let profile = match profile_id {
+        Some(id) => session
+            .profiles
+            .iter()
+            .find(|p| p.id == id)
+            .cloned()
+            .or_else(|| session.profiles.first().cloned()),
+        None => session.profiles.first().cloned(),
+    };
+    let profile = profile.ok_or_else(|| anyhow!("该账号在皮肤站没有可用的角色"))?;
+    select_profile(
+        dl,
+        server_url,
+        &session.access_token,
+        &session.client_token,
+        &profile,
+    )
+}
+
 /// 刷新会话令牌
 ///
 /// `keep_profile_id` 为该账号当前绑定的角色，刷新时保持该角色不变；

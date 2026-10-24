@@ -29,6 +29,12 @@ pub struct AccountsState {
     pub authlib_session: Option<AuthlibSession>,
     /// 只有一个角色时自动接着完成登录
     pub pending_profile: Option<AuthlibProfile>,
+    /// 记住密码，令牌到期时自动续期
+    pub authlib_remember: bool,
+    /// 本次登录用的账号名，登录成功后写进账号
+    pub pending_username: String,
+    /// 本次登录用的密码（加密后），登录成功后写进账号
+    pub pending_secret: Option<String>,
 }
 
 impl Default for AccountsState {
@@ -50,6 +56,9 @@ impl Default for AccountsState {
             authlib_profiles: Vec::new(),
             authlib_session: None,
             pending_profile: None,
+            authlib_remember: true,
+            pending_username: String::new(),
+            pending_secret: None,
         }
     }
 }
@@ -179,6 +188,8 @@ impl AccountsState {
                     },
                     expires_at: auth.expires_at,
                     skin_url: auth.skin_url,
+                    username: self.pending_username.clone(),
+                    saved_password: self.pending_secret.take(),
                 });
                 accounts.upsert(account.clone());
                 accounts.selected = Some(account.id().to_string());
@@ -483,6 +494,29 @@ fn authlib_form(app: &mut App, ui: &mut Ui) {
     if ui::text_field(ui, &p, &mut pass, "密码", 320.0, true).changed() {
         app.accounts_ui.authlib_pass = pass;
     }
+    ui.add_space(10.0);
+
+    // 记住密码：令牌过期时用它自动续期，用户不用再输一遍
+    ui.horizontal(|ui| {
+        let mut remember = app.accounts_ui.authlib_remember;
+        if ui::toggle(ui, &p, &mut remember).changed() {
+            app.accounts_ui.authlib_remember = remember;
+        }
+        ui.label(
+            egui::RichText::new("记住密码，到期自动续期")
+                .font(ui::font(12.0))
+                .color(p.text_weak),
+        );
+    });
+    ui.label(
+        egui::RichText::new(if crate::core::auth::secret::is_encrypted() {
+            "密码经系统加密后保存在本机，其它程序读不到"
+        } else {
+            "密码会保存在本机，仅供自动续期使用"
+        })
+        .font(ui::font(10.5))
+        .color(p.text_faint),
+    );
     ui.add_space(12.0);
 
     ui.horizontal(|ui| {
@@ -596,6 +630,19 @@ fn start_authlib_login(app: &mut App) {
     app.accounts_ui.authlib_status = "正在登录 ...".into();
     app.accounts_ui.authlib_profiles.clear();
     app.accounts_ui.authlib_session = None;
+    // 记下这次的账号名与密码，登录成功后写进账号
+    app.accounts_ui.pending_username = user.clone();
+    app.accounts_ui.pending_secret = if app.accounts_ui.authlib_remember {
+        match crate::core::auth::secret::protect(&pass) {
+            Ok(secret) => Some(secret),
+            Err(err) => {
+                log::warn!("保存密码失败：{err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     let timeout = app.cfg.download.timeout_secs;
 
     app.spawn("皮肤站登录", true, move |job| {
@@ -898,6 +945,32 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                             );
                         }
                     });
+                    // 记住密码后令牌到期会自动续期，这里能关掉
+                    if a.saved_password.is_some() {
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("已记住密码，令牌到期后自动续期")
+                                    .font(ui::font(11.0))
+                                    .color(p.text_faint),
+                            );
+                            if ui::button(
+                                ui,
+                                &p,
+                                ButtonOpts::ghost("删除已保存的密码"),
+                            )
+                            .clicked()
+                            {
+                                if let Some(acc) = app.accounts.get_mut(&id) {
+                                    if let Account::Authlib(a) = acc {
+                                        a.saved_password = None;
+                                    }
+                                }
+                                app.save_accounts();
+                                app.success("已删除保存的密码");
+                            }
+                        });
+                    }
                 }
                 ui.add_space(16.0);
 

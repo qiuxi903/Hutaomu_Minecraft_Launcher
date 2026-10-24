@@ -1,6 +1,7 @@
 pub mod authlib;
 pub mod microsoft;
 pub mod offline;
+pub mod secret;
 
 use std::path::{Path, PathBuf};
 
@@ -81,6 +82,17 @@ pub struct AuthlibAccount {
     pub expires_at: i64,
     #[serde(default)]
     pub skin_url: Option<String>,
+    /// 登录用的账号名
+    ///
+    /// `name` 存的是角色名，同一个账号可以有好几个角色，
+    /// 重新登录时得用账号名而不是角色名。
+    #[serde(default)]
+    pub username: String,
+    /// 记住的密码（加密后保存）
+    ///
+    /// 令牌过期时用它自动重新登录，用户不用再输一遍密码。
+    #[serde(default)]
+    pub saved_password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
