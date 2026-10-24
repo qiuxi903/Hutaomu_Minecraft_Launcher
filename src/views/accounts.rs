@@ -190,7 +190,12 @@ impl AccountsState {
                 self.just_logged_in = true;
             }
             Err(err) => {
-                self.authlib_status = err;
+                self.authlib_status = err.clone();
+                // 令牌彻底失效时，刷新也换不了新的，只能重新输密码
+                if err.contains("失效") || err.contains("过期") {
+                    self.tab = 2;
+                    self.authlib_pass.clear();
+                }
             }
         }
     }

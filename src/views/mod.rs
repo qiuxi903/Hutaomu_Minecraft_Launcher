@@ -58,6 +58,29 @@ pub fn launch_game(app: &mut App) {
             app.error("皮肤站登录已过期，请到「账号」页面重新登录");
             return;
         }
+        // 令牌也可能被皮肤站单方面作废（比如在别处登录），
+        // 这种情况下游戏能进但皮肤会变回默认角色，提前问一次皮肤站
+        if let Ok(dl) = app.downloader() {
+            match crate::core::auth::authlib::validate(
+                &dl,
+                &a.server_url,
+                &a.access_token,
+                &a.client_token,
+            ) {
+                Ok(false) => {
+                    app.error("皮肤站登录已失效，请重新登录后再启动游戏");
+                    app.accounts_ui.tab = 2;
+                    app.accounts_ui.authlib_user = a.name.clone();
+                    app.page = crate::app::Page::Accounts;
+                    return;
+                }
+                Err(err) => {
+                    // 连不上皮肤站就别拦着，先进游戏再说
+                    log::warn!("检查皮肤站登录状态失败：{err}");
+                }
+                Ok(true) => {}
+            }
+        }
     }
 
     let game_dir = app.cfg.game_dir.clone();

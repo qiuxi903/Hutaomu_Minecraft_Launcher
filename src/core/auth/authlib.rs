@@ -362,19 +362,47 @@ pub fn refresh(
     })
 }
 
+/// 从 validate 的响应里判断令牌是否已经失效
+///
+/// 皮肤站返回 403 且提到 AccessToken 时才算失效，
+/// 其它错误（比如服务不可用）不能当成失效，否则连不上皮肤站也会拦着用户。
+pub fn token_invalid(status: u16, body: &str) -> bool {
+    if status != 403 {
+        return false;
+    }
+    let lower = body.to_lowercase();
+    lower.contains("accesstoken") || lower.contains("access token")
+}
+
+/// 检查访问令牌是否还有效
+///
+/// 返回 `Ok(false)` 表示令牌已明确失效，需要重新登录；
+/// 网络不通返回 `Err`，不要把这种情况当成失效。
 pub fn validate(
     dl: &Downloader,
     server_url: &str,
     access_token: &str,
     client_token: &str,
-) -> bool {
+) -> Result<bool> {
     let server = normalize_api_root(server_url);
+    let url = format!("{server}/authserver/validate");
     let body = serde_json::json!({
         "accessToken": access_token,
         "clientToken": client_token
     });
-    dl.post_json::<_, serde_json::Value>(&format!("{server}/authserver/validate"), &body)
-        .is_ok()
+    let resp = dl
+        .client_for_auth(&url)
+        .post(&url)
+        .json(&body)
+        .send()
+        .with_context(|| format!("连接皮肤站失败: {url}"))?;
+    let status = resp.status();
+    let text = resp.text().unwrap_or_default();
+    if token_invalid(status.as_u16(), &text) {
+        log::warn!("皮肤站令牌已失效：{}", crate::core::download::truncate(&text, 120));
+        return Ok(false);
+    }
+    Ok(true)
 }
 
 /// Yggdrasil 在 4xx 时也会返回 JSON 错误体，这里统一解析
@@ -662,5 +690,18 @@ mod tests {
         );
         // 没见过的错误原样返回，不丢信息
         assert_eq!(translate_error("Something odd"), "Something odd");
+    }
+    /// 只有明确提到令牌无效才算失效，服务不可用不能算
+    #[test]
+    fn detects_invalid_token_response() {
+        assert!(token_invalid(
+            403,
+            r#"{"error":"ForbiddenOperationException","errorMessage":"Invalid AccessToken. Please re-login."}"#
+        ));
+        // 403 但说的是别的事，不算令牌失效
+        assert!(!token_invalid(403, r#"{"error":"ForbiddenOperationException"}"#));
+        // 其它状态码不算
+        assert!(!token_invalid(500, "Internal Server Error"));
+        assert!(!token_invalid(200, "{}"));
     }
 }
