@@ -1,3 +1,4 @@
+pub mod anim;
 pub mod download_panel;
 pub mod skin3d;
 pub mod widgets;

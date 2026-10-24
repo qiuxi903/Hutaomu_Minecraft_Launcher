@@ -65,6 +65,18 @@ impl Page {
             Page::About => "info",
         }
     }
+
+    /// 页面序号，用来给入场动画区分不同的页面
+    pub fn page_index(self) -> u8 {
+        match self {
+            Page::Home => 0,
+            Page::Download => 1,
+            Page::Versions => 2,
+            Page::Accounts => 3,
+            Page::Settings => 4,
+            Page::About => 5,
+        }
+    }
 }
 
 /// 自检截图模式：设置环境变量 HTMCL_SHOT=<目录> 后，
@@ -528,9 +540,6 @@ pub struct App {
     pub shot: Option<ShotState>,
     pub download_panel_open: bool,
     download_panel_auto: bool,
-    /// 页面切换动画：上次切换时间与上次页面
-    page_changed_at: f64,
-    last_page: Page,
     pub last_window_size: egui::Vec2,
     image_tx: std::sync::mpsc::Sender<String>,
     image_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>,
@@ -618,8 +627,6 @@ impl App {
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
-            page_changed_at: 0.0,
-            last_page: Page::Home,
             last_window_size: egui::vec2(1120.0, 720.0),
             image_tx,
             image_rx: image_rx.clone(),
@@ -2329,26 +2336,24 @@ impl eframe::App for App {
             full.max,
         );
         let collapsed = self.cfg.ui.sidebar_collapsed;
-        let sidebar_width = if collapsed { 64.0 } else { 186.0 };
+        // 侧栏收放是滑动的，不是啪地一下变窄
+        let target_width = if collapsed { 64.0 } else { 186.0 };
+        let sidebar_width = if ui::animations_enabled() {
+            ctx.animate_value_with_time(egui::Id::new("sidebar_width"), target_width, 0.2)
+        } else {
+            target_width
+        };
         let sidebar_rect = Rect::from_min_size(
             Pos2::new(body.left() + 8.0, body.top()),
             Vec2::new(sidebar_width, body.height()),
         );
 
-        // 页面切换：淡入的同时略微上移，像是内容被推进来
-        if self.last_page != self.page {
-            self.last_page = self.page;
-            self.page_changed_at = now;
-        }
-        let page_t = if ui::animations_enabled() {
-            ui::ease_out(((now - self.page_changed_at) / 0.20) as f32)
-        } else {
-            1.0
-        };
-        if page_t < 1.0 {
+        // 页面切换：内容淡入的同时略微上移，像是推进来
+        let page_enter = ui::anim::enter(&ctx, egui::Id::new(("page", self.page.page_index())), 0.0);
+        if page_enter.opacity < 1.0 {
             ctx.request_repaint();
         }
-        let page_offset = (1.0 - page_t) * 8.0;
+        let page_offset = page_enter.offset;
 
         let content_rect = Rect::from_min_max(
             Pos2::new(sidebar_rect.right() + 8.0, body.top() + page_offset),
@@ -2371,7 +2376,7 @@ impl eframe::App for App {
                 .layout(Layout::top_down(Align::Min)),
             |ui| {
                 ui.set_width(content_rect.width());
-                ui.set_opacity(0.25 + 0.75 * page_t);
+                ui.set_opacity(page_enter.opacity);
                 ui.add_space(12.0);
                 self.game_bar(ui);
                 egui::ScrollArea::vertical()

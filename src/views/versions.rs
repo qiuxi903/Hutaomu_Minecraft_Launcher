@@ -253,10 +253,16 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
     let card_width = (width - 14.0 * (columns as f32 - 1.0)) / columns as f32;
 
     let mut open: Option<String> = None;
+    let mut index = 0usize;
     for chunk in instances.chunks(columns) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
             for inst in chunk {
+                // 卡片逐个淡入，网格不会整片糊上来
+                let delay = ui::anim::stagger(index, 0.035);
+                let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("inst", index)), delay);
+                ui.set_opacity(appear);
+                index += 1;
                 let is_current = app
                     .instances
                     .iter()
@@ -272,6 +278,7 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
                 if clickable.clicked() {
                     open = Some(inst.mc_version.clone());
                 }
+                ui.set_opacity(1.0);
             }
         });
         ui.add_space(14.0);
@@ -1511,7 +1518,11 @@ fn content_tab(
         return;
     }
 
-    for item in &items {
+    for (index, item) in items.iter().enumerate() {
+        // 逐项淡入，一长串卡片像依次落位，而不是整片糊上来
+        let delay = ui::anim::stagger(index, 0.022);
+        let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("content", index)), delay);
+        ui.set_opacity(appear);
         // 在线页面：模组用 MCMod 词库里的 slug，光影与资源包用后台反查的结果
         let modrinth_slug = item
             .modrinth_slug
@@ -1605,6 +1616,7 @@ fn content_tab(
                 });
             });
         });
+        ui.set_opacity(1.0);
         ui.add_space(6.0);
     }
 }

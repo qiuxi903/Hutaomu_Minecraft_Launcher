@@ -156,24 +156,54 @@ pub fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
 }
 
 pub fn card_padded(ui: &mut Ui, p: &Palette, padding: i8, add: impl FnOnce(&mut Ui)) -> Response {
-    egui::Frame::NONE
+    let id = ui.id().with("card");
+    let frame = egui::Frame::NONE
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
         .corner_radius(p.corner(0))
         .inner_margin(Margin::same(padding))
-        .shadow(p.shadow)
-        .show(ui, add)
-        .response
+        .shadow(p.shadow);
+    let response = frame.show(ui, add).response;
+    paint_card_state(ui, p, &response, id, true);
+    response
 }
 
 pub fn card_flat(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
-    egui::Frame::NONE
+    let id = ui.id().with("card_flat");
+    let frame = egui::Frame::NONE
         .fill(p.surface)
-        .stroke(Stroke::new(1.0, p.border))
         .corner_radius(p.corner(0))
-        .inner_margin(Margin::same(16))
-        .show(ui, add)
-        .response
+        .inner_margin(Margin::same(16));
+    let response = frame.show(ui, add).response;
+    paint_card_state(ui, p, &response, id, false);
+    response
+}
+
+/// 卡片的状态：边框颜色、阴影随悬停平滑过渡
+///
+/// 边框由我们自己画（而不是交给 Frame），
+/// 这样才能在悬停时把颜色一点点染上主色，而不是啪地跳过去。
+fn paint_card_state(ui: &Ui, p: &Palette, response: &Response, id: Id, with_shadow: bool) {
+    let rect = response.rect;
+    if !ui.is_rect_visible(rect) {
+        return;
+    }
+    let hovered = response.hovered();
+    let t = if super::animations_enabled() {
+        ui.ctx()
+            .animate_bool_with_time(id.with("hov"), hovered, 0.16)
+    } else if hovered {
+        1.0
+    } else {
+        0.0
+    };
+    let radius = p.corner(0);
+    // 边框：平时是灰的，悬停时染上主色
+    let border = lerp_color(p.border, p.accent, t * 0.85);
+    ui.painter()
+        .rect_stroke(rect, radius, Stroke::new(1.0, border), StrokeKind::Inside);
+    if with_shadow {
+        super::anim::shadow(ui.painter(), rect, radius, (24.0 + 46.0 * t) as u8);
+    }
 }
 
 pub fn inset(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
