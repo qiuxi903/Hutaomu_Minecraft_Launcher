@@ -481,55 +481,46 @@ impl Downloader {
 
     pub fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
         let url = self.source.rewrite(url);
-        let resp = self
-            .client_for(&url)
-            .get(&url)
-            .send()
-            .with_context(|| format!("请求失败: {url}"))?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("请求失败 (HTTP {}): {url}", resp.status()));
-        }
-        let bytes = resp.bytes().context("读取响应失败")?;
+        let bytes = self.get_bytes_with_retry(&url)?;
         serde_json::from_slice(&bytes).with_context(|| format!("解析 JSON 失败: {url}"))
     }
 
     /// 直接按原样请求（不经过镜像重写），用于 Modrinth 等第三方 API
     pub fn get_json_direct<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .with_context(|| format!("请求失败: {url}"))?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("请求失败 (HTTP {}): {url}", resp.status()));
-        }
-        let bytes = resp.bytes().context("读取响应失败")?;
+        let bytes = self.get_bytes_with_retry(url)?;
         serde_json::from_slice(&bytes).with_context(|| format!("解析 JSON 失败: {url}"))
     }
 
     pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
         let url = self.source.rewrite(url);
-        let resp = self
-            .client_for(&url)
-            .get(&url)
-            .send()
-            .with_context(|| format!("请求失败: {url}"))?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("请求失败 (HTTP {}): {url}", resp.status()));
-        }
-        Ok(resp.bytes().context("读取响应失败")?.to_vec())
+        self.get_bytes_with_retry(&url)
     }
 
     pub fn get_bytes_direct(&self, url: &str) -> Result<Vec<u8>> {
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .with_context(|| format!("请求失败: {url}"))?;
-        if !resp.status().is_success() {
-            return Err(anyhow!("请求失败 (HTTP {}): {url}", resp.status()));
+        self.get_bytes_with_retry(url)
+    }
+
+    /// GET 并读取原始字节，连接类错误会重试几次
+    ///
+    /// 镜像站偶尔会在握手阶段直接断开连接，一次失败不该让整个流程停摆。
+    fn get_bytes_with_retry(&self, url: &str) -> Result<Vec<u8>> {
+        let mut last: Option<anyhow::Error> = None;
+        for attempt in 1..=3u64 {
+            match self.client_for(url).get(url).send() {
+                Ok(resp) => {
+                    if !resp.status().is_success() {
+                        return Err(anyhow!("请求失败 (HTTP {}): {url}", resp.status()));
+                    }
+                    return Ok(resp.bytes().context("读取响应失败")?.to_vec());
+                }
+                Err(err) => {
+                    log::warn!("请求 {url} 失败（第 {attempt} 次）: {err}");
+                    last = Some(anyhow!("请求失败: {url}").context(err));
+                    std::thread::sleep(std::time::Duration::from_millis(500 * attempt));
+                }
+            }
         }
-        Ok(resp.bytes().context("读取响应失败")?.to_vec())
+        Err(last.unwrap_or_else(|| anyhow!("请求失败: {url}")))
     }
 
     pub fn client(&self) -> &reqwest::blocking::Client {
