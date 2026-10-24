@@ -884,12 +884,15 @@ fn loader_tab(app: &mut App, ui: &mut Ui) {
         let ready = !app.download.loader_versions.is_empty();
         let kind = LoaderKind::all()[app.download.loader_kind];
         let mc = app.download.loader_mc.clone();
-        // 下标 0 表示自动选择
-        let loader_version = app
-            .download
-            .loader_versions
-            .get(app.download.loader_version_index.saturating_sub(1))
-            .map(|v| v.version.clone());
+        // 下标 0 表示自动选择，交给启动器按策略挑选
+        let loader_version = if app.download.loader_version_index == 0 {
+            None
+        } else {
+            app.download
+                .loader_versions
+                .get(app.download.loader_version_index - 1)
+                .map(|v| v.version.clone())
+        };
         let supported = loaders::supports(kind, &mc);
 
         ui.horizontal(|ui| {
