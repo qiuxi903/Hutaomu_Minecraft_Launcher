@@ -471,14 +471,31 @@ fn read_stream<R: std::io::Read + Send + 'static>(
     }
 }
 
+/// authlib-injector 在启动器缓存目录里的位置
+///
+/// 已经下载过且文件大小正常时返回路径，否则返回 None。
+pub fn cached_authlib_injector() -> Option<PathBuf> {
+    let jar = paths::cache_dir()
+        .join("authlib-injector")
+        .join("authlib-injector.jar");
+    if jar.is_file() && std::fs::metadata(&jar).map(|m| m.len() > 100_000).unwrap_or(false) {
+        Some(jar)
+    } else {
+        None
+    }
+}
+
 /// 确保 authlib-injector 已下载到启动器缓存目录
+///
+/// 皮肤站账号启动游戏时需要把它挂成 javaagent，
+/// 没有它就只能按普通正版账号启动，皮肤与披风都不会生效。
 pub fn ensure_authlib_injector(dl: &crate::core::download::Downloader) -> Result<PathBuf> {
+    if let Some(jar) = cached_authlib_injector() {
+        return Ok(jar);
+    }
     let dir = paths::cache_dir().join("authlib-injector");
     paths::ensure_dir(&dir)?;
     let jar = dir.join("authlib-injector.jar");
-    if jar.is_file() && std::fs::metadata(&jar).map(|m| m.len() > 100_000).unwrap_or(false) {
-        return Ok(jar);
-    }
     let url = "https://authlib-injector.yushi.moe/artifact/latest.json";
     #[derive(serde::Deserialize)]
     struct Latest {
@@ -490,6 +507,9 @@ pub fn ensure_authlib_injector(dl: &crate::core::download::Downloader) -> Result
     let bytes = dl
         .get_bytes_direct(&latest.download_url)
         .context("下载 authlib-injector 失败")?;
+    if bytes.len() < 100_000 {
+        return Err(anyhow!("下载到的 authlib-injector 文件不完整"));
+    }
     std::fs::write(&jar, bytes)?;
     log::info!("authlib-injector 已更新: {}", jar.display());
     Ok(jar)

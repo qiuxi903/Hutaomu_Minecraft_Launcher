@@ -386,6 +386,8 @@ pub enum CoreEvent {
     AuthlibLogin(Result<crate::core::auth::authlib::AuthlibAuth, String>),
     /// 皮肤站登录成功，等待用户挑选角色
     AuthlibSession(Result<crate::core::auth::authlib::AuthlibSession, String>),
+    /// authlib-injector 准备完成（皮肤站账号启动游戏时需要挂载）
+    AuthlibJar(Result<PathBuf, String>),
     SkinReady {
         account_id: String,
         path: PathBuf,
@@ -487,6 +489,10 @@ pub struct App {
     pub maximized: bool,
     pub first_frame: bool,
     pub authlib_jar: Option<PathBuf>,
+    /// authlib-injector 是否正在下载
+    pub authlib_jar_loading: bool,
+    /// authlib-injector 上一次准备失败的原因
+    pub authlib_jar_error: Option<String>,
     pub dwm_applied: bool,
     pub shot: Option<ShotState>,
     pub download_panel_open: bool,
@@ -571,6 +577,8 @@ impl App {
             maximized: false,
             first_frame: true,
             authlib_jar: None,
+            authlib_jar_loading: false,
+            authlib_jar_error: None,
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
@@ -598,6 +606,10 @@ impl App {
         app.load_manifest();
         app.load_news();
         app.refresh_mcmod_db();
+        if app.has_authlib_account() {
+            // 有皮肤站账号就把 authlib-injector 先备好，避免启动时卡住
+            app.refresh_authlib_jar();
+        }
         if app.javas.is_empty() {
             app.start_java_search(false);
         }
@@ -632,6 +644,40 @@ impl App {
     }
 
     // ------------------------------------------------------------ 基础访问
+
+    /// 准备 authlib-injector
+    ///
+    /// 皮肤站账号启动游戏时需要把它挂成 javaagent，
+    /// 少了它皮肤与披风都不会生效。这里提前下载好，启动时就不用等。
+    pub fn refresh_authlib_jar(&mut self) {
+        if self.authlib_jar.is_some() || self.authlib_jar_loading {
+            return;
+        }
+        // 已经下载过就直接用
+        if let Some(path) = crate::core::minecraft::launch::cached_authlib_injector() {
+            self.authlib_jar = Some(path);
+            return;
+        }
+        self.authlib_jar_loading = true;
+        self.authlib_jar_error = None;
+        let source = self.cfg.download.source;
+        let timeout = self.cfg.download.timeout_secs;
+        self.spawn("准备皮肤站组件", false, move |job| {
+            let result = (|| -> anyhow::Result<PathBuf> {
+                let dl = Downloader::new(source, timeout.max(30))?;
+                crate::core::minecraft::launch::ensure_authlib_injector(&dl)
+            })();
+            job.send(CoreEvent::AuthlibJar(result.map_err(|e| format!("{e}"))));
+        });
+    }
+
+    /// 是否有皮肤站账号（这类账号启动时需要 authlib-injector）
+    pub fn has_authlib_account(&self) -> bool {
+        self.accounts
+            .accounts
+            .iter()
+            .any(|a| a.authlib_url().is_some())
+    }
 
     pub fn downloader(&self) -> anyhow::Result<Downloader> {
         Downloader::new(self.cfg.download.source, self.cfg.download.timeout_secs)
@@ -1257,10 +1303,27 @@ impl App {
                         self.accounts_ui.just_logged_in = false;
                         self.save_accounts();
                         self.success("皮肤站账号登录成功");
+                        // 新增了皮肤站账号，把 authlib-injector 备好
+                        self.refresh_authlib_jar();
                     }
                 }
                 CoreEvent::AuthlibSession(result) => {
                     self.accounts_ui.on_authlib_session(result);
+                }
+                CoreEvent::AuthlibJar(result) => {
+                    self.authlib_jar_loading = false;
+                    match result {
+                        Ok(path) => {
+                            log::info!("皮肤站组件已就绪: {}", path.display());
+                            self.authlib_jar = Some(path);
+                            self.authlib_jar_error = None;
+                        }
+                        Err(err) => {
+                            log::warn!("皮肤站组件准备失败: {err}");
+                            self.authlib_jar_error = Some(err);
+                            self.error("皮肤站组件下载失败，皮肤与披风将无法加载");
+                        }
+                    }
                 }
                 CoreEvent::SkinReady {
                     account_id,

@@ -73,7 +73,12 @@ pub fn launch_game(app: &mut App) {
 
     let authlib_url = account.authlib_url().map(|s| s.to_string());
     if authlib_url.is_some() && app.authlib_jar.is_none() {
-        app.error("皮肤站组件尚未就绪，请稍后再试");
+        // 组件还没准备好，先去下载，别让用户干等
+        app.refresh_authlib_jar();
+        match app.authlib_jar_error.clone() {
+            Some(err) => app.error(format!("皮肤站组件下载失败：{err}")),
+            None => app.info("正在准备皮肤站组件，稍等片刻再启动"),
+        }
         return;
     }
 
