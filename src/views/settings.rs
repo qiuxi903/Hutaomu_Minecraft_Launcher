@@ -822,9 +822,9 @@ fn game_section(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(8.0);
         ui.label(
-            egui::RichText::new(match app.local_versions.len() {
+            egui::RichText::new(match app.instances.len() {
                 0 => "当前目录下还没有已安装的版本".to_string(),
-                n => format!("当前目录下已安装 {n} 个版本"),
+                n => format!("当前目录下已安装 {n} 个实例"),
             })
             .font(ui::font(11.5))
             .color(p.text_faint),

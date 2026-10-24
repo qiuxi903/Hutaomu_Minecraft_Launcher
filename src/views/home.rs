@@ -104,7 +104,19 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
             ui.vertical(|ui| {
                 let width = (ui.available_width() - 210.0).clamp(220.0, 340.0);
                 ui.set_width(width);
-                let ids: Vec<String> = app.local_versions.iter().map(|v| v.id.clone()).collect();
+                // 按实例列出：一个 Minecraft 版本一条，后面标出用的加载器
+                let ids: Vec<String> = app
+                    .instances
+                    .iter()
+                    .map(|inst| {
+                        let loader = inst.loader_label();
+                        if loader == "原版" {
+                            inst.mc_version.clone()
+                        } else {
+                            format!("{} · {}", inst.mc_version, loader)
+                        }
+                    })
+                    .collect();
                 if ids.is_empty() {
                     if ui::button(
                         ui,
@@ -118,10 +130,36 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                         app.page = Page::Download;
                     }
                 } else {
-                    let current = version_id.clone().unwrap_or_else(|| ids[0].clone());
+                    let current = version_id
+                        .clone()
+                        .and_then(|id| {
+                            app.local_versions
+                                .iter()
+                                .find(|v| v.id == id)
+                                .map(|v| v.mc_version.clone())
+                        })
+                        .and_then(|mc| {
+                            app.instances
+                                .iter()
+                                .find(|i| i.mc_version == mc)
+                                .map(|i| {
+                                    let loader = i.loader_label();
+                                    if loader == "原版" {
+                                        i.mc_version.clone()
+                                    } else {
+                                        format!("{} · {}", i.mc_version, loader)
+                                    }
+                                })
+                        })
+                        .unwrap_or_else(|| ids[0].clone());
                     if let Some(index) = ui::dropdown(ui, &p, "home_version", &current, &ids, width) {
-                        app.cfg.selected_version = Some(ids[index].clone());
-                        app.save_config();
+                        if let Some(inst) = app.instances.get(index) {
+                            if let Some(active) = inst.active_version() {
+                                app.cfg.selected_version = Some(active.id.clone());
+                                app.save_config();
+                                app.refresh_local_versions();
+                            }
+                        }
                     }
                 }
                 ui.add_space(6.0);
@@ -145,7 +183,7 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                 });
                 parts.push(format!(
                     "内存 {} MB",
-                    app.cfg.effective_memory(version_id.as_deref().unwrap_or(""))
+                    app.cfg.effective_memory(&mc_version)
                 ));
                 ui.label(
                     egui::RichText::new(parts.join("  ·  "))
@@ -506,7 +544,7 @@ fn shortcuts_card(app: &mut App, ui: &mut Ui) {
 
 fn stats_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let total_size: u64 = app.local_versions.iter().map(|v| v.size).sum();
+    let total_size: u64 = app.instances.iter().map(|i| i.size()).sum();
     let last_launch = app
         .cfg
         .version_stats
@@ -523,7 +561,7 @@ fn stats_card(app: &mut App, ui: &mut Ui) {
                 .strong(),
         );
         ui.add_space(8.0);
-        widgets::key_value(ui, &p, "已安装版本", &format!("{} 个", app.local_versions.len()));
+        widgets::key_value(ui, &p, "已安装实例", &format!("{} 个", app.instances.len()));
         ui.add_space(4.0);
         widgets::key_value(ui, &p, "版本占用", &paths::format_size(total_size));
         ui.add_space(4.0);

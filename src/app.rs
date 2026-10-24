@@ -146,14 +146,14 @@ impl App {
             18 => {
                 // 版本详情：验证二级页面的导航与设置
                 self.page = Page::Versions;
-                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                if let Some(id) = self.shot_instance_id() {
                     views::versions::open_detail(self, &id);
                 }
             }
             19 => {
                 // 版本详情 - 设置页
                 self.page = Page::Versions;
-                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                if let Some(id) = self.shot_instance_id() {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.section = 1;
                 }
@@ -161,7 +161,7 @@ impl App {
             20 => {
                 // 版本详情 - 模组
                 self.page = Page::Versions;
-                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                if let Some(id) = self.shot_instance_id() {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.section = 4;
                 }
@@ -169,7 +169,7 @@ impl App {
             21 => {
                 // 版本详情 - 光影
                 self.page = Page::Versions;
-                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                if let Some(id) = self.shot_instance_id() {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.section = 5;
                 }
@@ -177,7 +177,7 @@ impl App {
             22 => {
                 // 版本详情 - 资源包
                 self.page = Page::Versions;
-                if let Some(id) = self.local_versions.first().map(|v| v.id.clone()) {
+                if let Some(id) = self.shot_instance_id() {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.section = 6;
                 }
@@ -452,6 +452,8 @@ pub struct App {
     pub manifest_loading: bool,
     pub manifest_error: Option<String>,
     pub local_versions: Vec<LocalVersion>,
+    /// 按 Minecraft 版本聚合出的游戏实例（原版与各加载器版本合成一条）
+    pub instances: Vec<crate::core::minecraft::GameInstance>,
     pub javas: Vec<JavaInfo>,
     pub java_searching: bool,
     pub java_search_message: String,
@@ -546,6 +548,7 @@ impl App {
             manifest_loading: false,
             manifest_error: None,
             local_versions: Vec::new(),
+            instances: Vec::new(),
             javas: Vec::new(),
             java_searching: false,
             java_search_message: String::new(),
@@ -861,10 +864,77 @@ impl App {
         self.themes = theme::all_themes();
     }
 
+    /// 界面自检要打开的实例：优先当前正在用的那个
+    fn shot_instance_id(&self) -> Option<String> {
+        let selected = self.cfg.selected_version.as_deref();
+        self.instances
+            .iter()
+            .find(|i| Some(i.active.as_str()) == selected)
+            .or_else(|| self.instances.first())
+            .map(|i| i.mc_version.clone())
+    }
+
     // ------------------------------------------------------------ 数据刷新
 
     pub fn refresh_local_versions(&mut self) {
         self.local_versions = crate::core::minecraft::scan_local(&self.cfg.game_dir);
+        self.migrate_instance_dirs();
+        self.migrate_version_overrides();
+        self.instances = crate::core::minecraft::group_instances(
+            &self.local_versions,
+            self.cfg.selected_version.as_deref(),
+        );
+    }
+
+    /// 旧布局把实例目录放在版本目录里，现在统一按 Minecraft 版本存放
+    ///
+    /// 老的布局是 `versions/<版本目录 id>/mods`，新的布局是
+    /// `versions/<Minecraft 版本>/mods`。加载器变体目录里的实例内容
+    /// 搬到对应的实例目录下，这样原版与加载器版本共用同一份模组与存档。
+    fn migrate_instance_dirs(&mut self) {
+        const INSTANCE_DIRS: [&str; 6] = [
+            "mods",
+            "shaderpacks",
+            "resourcepacks",
+            "saves",
+            "config",
+            "texturepacks",
+        ];
+        let versions_dir = crate::core::paths::versions_dir(&self.cfg.game_dir);
+        for v in self.local_versions.clone() {
+            if v.mc_version == v.id {
+                continue;
+            }
+            let old_dir = versions_dir.join(&v.id);
+            let new_dir = versions_dir.join(&v.mc_version);
+            for name in INSTANCE_DIRS {
+                let from = old_dir.join(name);
+                let to = new_dir.join(name);
+                if !from.is_dir() || to.exists() {
+                    continue;
+                }
+                if std::fs::rename(&from, &to).is_ok() {
+                    log::info!("已迁移实例内容 {} -> {}", from.display(), to.display());
+                }
+            }
+        }
+    }
+
+    /// 版本覆盖设置改为按 Minecraft 版本存放，把旧的版本目录 id 键迁移过来
+    fn migrate_version_overrides(&mut self) {
+        let mut migrated = false;
+        for v in self.local_versions.clone() {
+            if let Some(ov) = self.cfg.version_overrides.remove(&v.id) {
+                self.cfg
+                    .version_overrides
+                    .entry(v.mc_version.clone())
+                    .or_insert(ov);
+                migrated = true;
+            }
+        }
+        if migrated {
+            self.save_config();
+        }
     }
 
     pub fn load_manifest(&mut self) {
@@ -978,15 +1048,11 @@ impl App {
     }
 
     pub fn java_for(&self, mc_version: &str) -> Option<JavaInfo> {
-        if let Some(path) = self.cfg.java.path.clone() {
-            if let Some(found) = self.javas.iter().find(|j| j.path == path) {
-                return Some(found.clone());
-            }
-            if let Some(probed) = crate::core::java::probe(&path) {
-                return Some(probed);
-            }
-        }
-        crate::core::java::pick_for(mc_version, &self.javas)
+        crate::core::java::pick_for_version(
+            crate::core::java::required_major(mc_version),
+            self.cfg.java.path.as_deref(),
+            &self.javas,
+        )
     }
 
     // ------------------------------------------------------------ 皮肤

@@ -1328,8 +1328,8 @@ pub(crate) fn open_project(app: &mut App, project_id: &str, author: &str) {
     app.download.content_translation = None;
     app.download.content_translation_loading = true;
     app.download.content_author = author.to_string();
-    // 安装目标默认当前实例
-    app.download.content_install_instance = app.selected_version_id();
+    // 安装目标默认当前实例（按 Minecraft 版本，原版与加载器版本是同一个实例）
+    app.download.content_install_instance = app.selected_version().map(|v| v.mc_version.clone());
     app.download.content_loader_filter.clear();
     app.download.content_game_filter.clear();
     app.download.content_version_index = 0;
@@ -1621,12 +1621,16 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
 /// 安装区：选择实例、筛选兼容版本并安装
 fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind: ContentKind) {
     // ---- 实例列表 ----
+    // 按 Minecraft 版本聚合，原版与各加载器版本是同一个实例
     let instances: Vec<(String, Option<String>, String)> = app
-        .local_versions
+        .instances
         .iter()
-        .map(|v| {
-            let loader = v.loader.clone().unwrap_or_else(|| "原版".to_string());
-            (v.id.clone(), v.loader.clone(), loader)
+        .map(|inst| {
+            let loader = inst
+                .active_version()
+                .and_then(|v| v.loader.clone())
+                .unwrap_or_else(|| "原版".to_string());
+            (inst.mc_version.clone(), inst.loader_label_opt(), loader)
         })
         .collect();
 
@@ -1635,17 +1639,23 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
         .download
         .content_install_instance
         .clone()
-        .or_else(|| app.selected_version_id());
+        .or_else(|| {
+            app.selected_version()
+                .map(|v| v.mc_version.clone())
+        });
     if let Some(id) = &instance_id {
         if !instances.iter().any(|(vid, _, _)| vid == id) {
             instance_id = None;
         }
     }
     let instance = instance_id.as_ref().and_then(|id| {
-        app.local_versions
+        app.instances
             .iter()
-            .find(|v| &v.id == id)
-            .map(|v| (v.id.clone(), v.mc_version.clone(), v.loader.clone()))
+            .find(|i| &i.mc_version == id)
+            .map(|i| {
+                let loader = i.active_version().and_then(|v| v.loader.clone());
+                (i.mc_version.clone(), i.mc_version.clone(), loader)
+            })
     });
 
     // 实例自带的加载器与 MC 版本，作为筛选的默认值
@@ -2036,10 +2046,10 @@ fn install_content(
     let auto_deps = app.cfg.download.auto_install_dependencies;
     // 依赖筛选按目标实例的 MC 版本与加载器来算
     let (mc, loader) = app
-        .local_versions
+        .instances
         .iter()
-        .find(|v| v.id == instance_id)
-        .map(|v| (v.mc_version.clone(), v.loader.as_ref().map(|l| l.to_lowercase())))
+        .find(|i| i.mc_version == instance_id)
+        .map(|i| (i.mc_version.clone(), i.loader_label_opt().map(|l| l.to_lowercase())))
         .unwrap_or_default();
 
     app.spawn_download(format!("安装 {title}"), move |dl, progress, _job| {

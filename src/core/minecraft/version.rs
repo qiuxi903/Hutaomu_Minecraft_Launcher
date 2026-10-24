@@ -36,9 +36,21 @@ pub struct VersionJson {
     #[serde(rename = "complianceLevel")]
     pub compliance_level: Option<u32>,
     pub jar: Option<String>,
+    /// Fabric / Quilt 的加载器信息
+    pub loader: Option<LoaderInfo>,
     /// 仅用于本地 UI 显示
     #[serde(skip)]
     pub local_path: Option<PathBuf>,
+}
+
+/// Fabric / Quilt 版本 JSON 里的加载器信息
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LoaderInfo {
+    /// 加载器版本号，如 0.20.1
+    pub version: String,
+    /// 版本号与 Minecraft 版本之间的分隔符
+    pub separator: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -297,6 +309,7 @@ fn merge(parent: &VersionJson, child: &VersionJson) -> VersionJson {
         logging: child.logging.clone().or(parent.logging.clone()),
         compliance_level: child.compliance_level.or(parent.compliance_level),
         jar: child.jar.clone().or(parent.jar.clone()),
+        loader: child.loader.clone().or(parent.loader.clone()),
         local_path: child.local_path.clone().or(parent.local_path.clone()),
     }
 }
@@ -485,6 +498,8 @@ pub struct LocalVersion {
     pub id: String,
     pub version_type: String,
     pub loader: Option<String>,
+    /// 加载器版本号，如 0.20.1
+    pub loader_version: Option<String>,
     pub mc_version: String,
     pub size: u64,
     pub last_modified: Option<std::time::SystemTime>,
@@ -502,6 +517,12 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
         };
         let loader = detect_loader(&id, &json);
         let mc_version = detect_mc_version(game_dir, &id, &json);
+        let loader_version = json
+            .loader
+            .as_ref()
+            .map(|l| l.version.clone())
+            .filter(|v| !v.is_empty())
+            .or_else(|| loader_version_from_id(&id, &mc_version));
         let dir = version_dir(game_dir, &id);
         let size = paths::dir_size(&dir);
         let last_modified = std::fs::metadata(dir.join(format!("{id}.json")))
@@ -513,6 +534,7 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             id,
             version_type: json.version_type.clone(),
             loader,
+            loader_version,
             mc_version,
             size,
             last_modified,
@@ -528,8 +550,149 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
     result
 }
 
-fn detect_loader(id: &str, json: &VersionJson) -> Option<String> {
-    let lower = id.to_lowercase();
+/// 从版本目录 id 里解析加载器版本号
+///
+/// 版本目录的命名各加载器不一样，这里按已知的几种前缀还原：
+/// - `fabric-loader-0.20.1-26.2` → `0.20.1`
+/// - `1.12.2-forge-14.23.0.2486` → `14.23.0.2486`
+/// - `neoforge-21.1.172` → `21.1.172`
+pub fn loader_version_from_id(id: &str, mc_version: &str) -> Option<String> {
+    let mut rest = id.to_string();
+    if let Some(stripped) = rest.strip_prefix(&format!("{mc_version}-")) {
+        rest = stripped.to_string();
+    }
+    for prefix in [
+        "fabric-loader-",
+        "quilt-loader-",
+        "neoforge-",
+        "forge-",
+        "loader-",
+    ] {
+        let Some(version) = rest.strip_prefix(prefix) else {
+            continue;
+        };
+        let version = version
+            .strip_suffix(&format!("-{mc_version}"))
+            .unwrap_or(version);
+        if version.is_empty() {
+            continue;
+        }
+        return Some(version.to_string());
+    }
+    None
+}
+
+/// 变体的显示名：原版或「加载器 版本号」
+impl LocalVersion {
+    pub fn variant_label(&self) -> String {
+        match (&self.loader, &self.loader_version) {
+            (Some(loader), Some(version)) => format!("{loader} {version}"),
+            (Some(loader), None) => loader.clone(),
+            _ => "原版".to_string(),
+        }
+    }
+}
+
+/// 一个游戏实例：一个 Minecraft 版本及其加载器变体
+///
+/// 版本列表按实例展示：原版与各加载器版本合成一条，
+/// 模组、光影、存档都挂在这个实例上，不再各占一份。
+#[derive(Debug, Clone)]
+pub struct GameInstance {
+    /// Minecraft 版本号，如 26.2
+    pub mc_version: String,
+    /// 该实例下的变体，对应真实的版本目录
+    pub variants: Vec<LocalVersion>,
+    /// 当前使用的变体 id
+    pub active: String,
+}
+
+impl GameInstance {
+    /// 当前使用的变体
+    pub fn active_version(&self) -> Option<&LocalVersion> {
+        self.variants.iter().find(|v| v.id == self.active)
+    }
+
+    /// 原版变体
+    pub fn vanilla(&self) -> Option<&LocalVersion> {
+        self.variants.iter().find(|v| v.loader.is_none())
+    }
+
+    /// 当前变体的加载器名，原版显示「原版」
+    pub fn loader_label(&self) -> String {
+        self.active_version()
+            .and_then(|v| v.loader.clone())
+            .unwrap_or_else(|| "原版".to_string())
+    }
+
+    /// 当前变体的加载器名，原版为 None
+    pub fn loader_label_opt(&self) -> Option<String> {
+        self.active_version().and_then(|v| v.loader.clone())
+    }
+
+    /// 实例内所有变体占用的空间
+    pub fn size(&self) -> u64 {
+        self.variants.iter().map(|v| v.size).sum()
+    }
+
+    /// 实例内最近一次修改的时间
+    pub fn last_modified(&self) -> Option<std::time::SystemTime> {
+        self.variants.iter().filter_map(|v| v.last_modified).max()
+    }
+
+    /// 变体数量
+    pub fn variant_count(&self) -> usize {
+        self.variants.len()
+    }
+}
+
+/// 把版本目录聚合成游戏实例
+///
+/// 同一个 Minecraft 版本下的原版与各加载器版本合成一条，
+/// 模组、光影、存档因此只有一份，不会因为换了加载器就各分一份。
+pub fn group_instances(versions: &[LocalVersion], selected: Option<&str>) -> Vec<GameInstance> {
+    let mut order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<LocalVersion>> = HashMap::new();
+    for v in versions {
+        if !groups.contains_key(&v.mc_version) {
+            order.push(v.mc_version.clone());
+        }
+        groups
+            .entry(v.mc_version.clone())
+            .or_default()
+            .push(v.clone());
+    }
+
+    let mut instances: Vec<GameInstance> = order
+        .into_iter()
+        .filter_map(|mc| {
+            let variants = groups.remove(&mc)?;
+            // 当前变体：优先用全局选中的那个，否则取最近修改过的
+            let active = variants
+                .iter()
+                .find(|v| Some(v.id.as_str()) == selected)
+                .map(|v| v.id.clone())
+                .unwrap_or_else(|| {
+                    variants
+                        .iter()
+                        .max_by_key(|v| v.last_modified)
+                        .map(|v| v.id.clone())
+                        .unwrap_or_default()
+                });
+            Some(GameInstance {
+                mc_version: mc,
+                variants,
+                active,
+            })
+        })
+        .collect();
+
+    // 按最近修改排序，与原来的版本列表顺序保持一致
+    instances.sort_by(|a, b| b.last_modified().cmp(&a.last_modified()));
+    instances
+}
+
+fn detect_loader(id: &str, json: &VersionJson) -> Option<String> {    let lower = id.to_lowercase();
     if lower.starts_with("fabric-loader") || lower.contains("fabric") {
         return Some("Fabric".into());
     }
@@ -653,5 +816,98 @@ mod tests {
         let (path, artifact) = library_artifact(&lib).expect("应当能拼出地址");
         assert!(path.ends_with("forge-1.7.10-10.13.4.1614-1.7.10.jar"));
         assert!(artifact.url.unwrap().starts_with("https://maven.minecraftforge.net/"));
+    }
+    /// 从版本目录 id 里还原加载器版本号
+    #[test]
+    fn parses_loader_version_from_id() {
+        assert_eq!(
+            loader_version_from_id("fabric-loader-0.20.1-26.2", "26.2").as_deref(),
+            Some("0.20.1")
+        );
+        assert_eq!(
+            loader_version_from_id("quilt-loader-0.20.1-1.20.1", "1.20.1").as_deref(),
+            Some("0.20.1")
+        );
+        assert_eq!(
+            loader_version_from_id("1.12.2-forge-14.23.0.2486", "1.12.2").as_deref(),
+            Some("14.23.0.2486")
+        );
+        assert_eq!(
+            loader_version_from_id("1.20.1-forge-47.1.106", "1.20.1").as_deref(),
+            Some("47.1.106")
+        );
+        assert_eq!(
+            loader_version_from_id("neoforge-21.1.172", "1.21.1").as_deref(),
+            Some("21.1.172")
+        );
+        // 原版没有加载器版本
+        assert_eq!(loader_version_from_id("26.2", "26.2"), None);
+    }
+
+    /// 原版与加载器版本合成同一个实例
+    #[test]
+    fn groups_loader_variants_into_one_instance() {
+        let make = |id: &str, loader: Option<&str>, mc: &str| LocalVersion {
+            id: id.to_string(),
+            version_type: "release".into(),
+            loader: loader.map(|l| l.to_string()),
+            loader_version: None,
+            mc_version: mc.to_string(),
+            size: 1,
+            last_modified: None,
+            has_jar: true,
+            icon_data_url: None,
+        };
+        let versions = vec![
+            make("26.2", None, "26.2"),
+            make("fabric-loader-0.20.1-26.2", Some("Fabric"), "26.2"),
+            make("1.20.1", None, "1.20.1"),
+        ];
+        let instances = group_instances(&versions, Some("fabric-loader-0.20.1-26.2"));
+        assert_eq!(instances.len(), 2);
+        let inst = instances
+            .iter()
+            .find(|i| i.mc_version == "26.2")
+            .expect("应当有 26.2 实例");
+        assert_eq!(inst.variant_count(), 2);
+        assert_eq!(inst.active, "fabric-loader-0.20.1-26.2");
+        assert_eq!(inst.loader_label(), "Fabric");
+        assert!(inst.vanilla().is_some());
+        // 另一个实例没有加载器
+        let other = instances.iter().find(|i| i.mc_version == "1.20.1").unwrap();
+        assert_eq!(other.loader_label(), "原版");
+    }
+
+    /// 没选中时用最近修改的变体
+    #[test]
+    fn instance_active_falls_back_to_latest_modified() {
+        let mut vanilla = LocalVersion {
+            id: "26.2".to_string(),
+            version_type: "release".into(),
+            loader: None,
+            loader_version: None,
+            mc_version: "26.2".to_string(),
+            size: 1,
+            last_modified: Some(std::time::SystemTime::UNIX_EPOCH),
+            has_jar: true,
+            icon_data_url: None,
+        };
+        let mut fabric = LocalVersion {
+            id: "fabric-loader-0.20.1-26.2".to_string(),
+            version_type: "release".into(),
+            loader: Some("Fabric".to_string()),
+            loader_version: Some("0.20.1".to_string()),
+            mc_version: "26.2".to_string(),
+            size: 1,
+            last_modified: Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60)),
+            has_jar: true,
+            icon_data_url: None,
+        };
+        vanilla.last_modified = Some(std::time::SystemTime::UNIX_EPOCH);
+        fabric.last_modified =
+            Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60));
+        let instances = group_instances(&[vanilla, fabric], None);
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].active, "fabric-loader-0.20.1-26.2");
     }
 }

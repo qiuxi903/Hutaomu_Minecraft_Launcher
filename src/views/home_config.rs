@@ -61,16 +61,48 @@ fn version_row(app: &mut App, ui: &mut Ui) {
                 .color(p.text_weak),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let ids: Vec<String> = app.local_versions.iter().map(|v| v.id.clone()).collect();
+            // 按实例列出：一个 Minecraft 版本一条
+            let ids: Vec<String> = app
+                .instances
+                .iter()
+                .map(|inst| {
+                    let loader = inst.loader_label();
+                    if loader == "原版" {
+                        inst.mc_version.clone()
+                    } else {
+                        format!("{} · {}", inst.mc_version, loader)
+                    }
+                })
+                .collect();
             if ids.is_empty() {
                 if ui::button(ui, &p, ButtonOpts::secondary("去下载版本")).clicked() {
                     app.page = Page::Download;
                 }
             } else {
-                let current = app.selected_version_id().unwrap_or_else(|| ids[0].clone());
+                let current = app
+                    .selected_version()
+                    .and_then(|v| {
+                        app.instances
+                            .iter()
+                            .find(|i| i.mc_version == v.mc_version)
+                            .map(|i| {
+                                let loader = i.loader_label();
+                                if loader == "原版" {
+                                    i.mc_version.clone()
+                                } else {
+                                    format!("{} · {}", i.mc_version, loader)
+                                }
+                            })
+                    })
+                    .unwrap_or_else(|| ids[0].clone());
                 if let Some(index) = ui::dropdown(ui, &p, "modal_version", &current, &ids, 300.0) {
-                    app.cfg.selected_version = Some(ids[index].clone());
-                    app.save_config();
+                    if let Some(inst) = app.instances.get(index) {
+                        if let Some(active) = inst.active_version() {
+                            app.cfg.selected_version = Some(active.id.clone());
+                            app.save_config();
+                            app.refresh_local_versions();
+                        }
+                    }
                 }
             }
         });
@@ -79,8 +111,11 @@ fn version_row(app: &mut App, ui: &mut Ui) {
 
 fn memory_row(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let version_id = app.selected_version_id().unwrap_or_default();
-    let mut memory = app.cfg.effective_memory(&version_id) as f32;
+    let mc_version = app
+        .selected_version()
+        .map(|v| v.mc_version.clone())
+        .unwrap_or_default();
+    let mut memory = app.cfg.effective_memory(&mc_version) as f32;
     if ui::slider(ui, &p, "最大内存", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
         app.cfg.java.memory_mb = memory as u32;
         app.save_config();

@@ -98,10 +98,10 @@ fn list_page(app: &mut App, ui: &mut Ui) {
         ui,
         &p,
         "版本管理",
-        "查看已安装的版本，点进去可以单独配置启动参数、管理存档与模组",
+        "查看已安装的实例，点进去可以切换加载器、配置启动参数、管理存档与模组",
     );
 
-    if app.local_versions.is_empty() {
+    if app.instances.is_empty() {
         ui::empty_state(
             ui,
             &p,
@@ -120,7 +120,7 @@ fn list_page(app: &mut App, ui: &mut Ui) {
 /// 一级页面的工具栏
 fn toolbar(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let total_size: u64 = app.local_versions.iter().map(|v| v.size).sum();
+    let total_size: u64 = app.instances.iter().map(|i| i.size()).sum();
 
     ui.horizontal(|ui| {
         let mut search = app.versions_ui.search.clone();
@@ -148,8 +148,8 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
                 egui::RichText::new(format!(
-                    "共 {} 个版本 · 占用 {}",
-                    app.local_versions.len(),
+                    "共 {} 个实例 · 占用 {}",
+                    app.instances.len(),
                     paths::format_size(total_size)
                 ))
                 .font(ui::font(11.5))
@@ -171,38 +171,54 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
     });
 }
 
-/// 按筛选与排序整理出的版本列表
-fn filtered_versions(app: &App) -> Vec<crate::core::minecraft::LocalVersion> {
+/// 按筛选与排序整理出的实例列表
+fn filtered_instances(app: &App) -> Vec<crate::core::minecraft::GameInstance> {
     let keyword = app.versions_ui.search.trim().to_lowercase();
     let filter = app.versions_ui.filter;
-    let mut versions: Vec<crate::core::minecraft::LocalVersion> = app
-        .local_versions
+    let mut instances: Vec<crate::core::minecraft::GameInstance> = app
+        .instances
         .iter()
-        .filter(|v| match filter {
-            1 => v.loader.is_none() && v.version_type == "release",
-            2 => v.version_type == "snapshot",
-            3 => v.loader.is_some(),
-            4 => v.loader.is_none() && v.version_type != "release" && v.version_type != "snapshot",
-            _ => true,
+        .filter(|inst| {
+            // 版本类型看原版变体，实例本身就是按 Minecraft 版本聚合的
+            let version_type = inst
+                .vanilla()
+                .map(|v| v.version_type.as_str())
+                .unwrap_or("");
+            match filter {
+                1 => version_type == "release",
+                2 => version_type == "snapshot",
+                3 => inst.variants.iter().any(|v| v.loader.is_some()),
+                4 => !version_type.is_empty()
+                    && version_type != "release"
+                    && version_type != "snapshot",
+                _ => true,
+            }
         })
-        .filter(|v| keyword.is_empty() || v.id.to_lowercase().contains(&keyword))
+        .filter(|inst| {
+            keyword.is_empty()
+                || inst.mc_version.to_lowercase().contains(&keyword)
+                || inst
+                    .variants
+                    .iter()
+                    .any(|v| v.id.to_lowercase().contains(&keyword))
+        })
         .cloned()
         .collect();
 
     match app.versions_ui.sort {
-        1 => versions.sort_by(|a, b| a.id.to_lowercase().cmp(&b.id.to_lowercase())),
-        2 => versions.sort_by(|a, b| b.size.cmp(&a.size)),
-        _ => versions.sort_by(|a, b| b.last_modified.cmp(&a.last_modified)),
+        1 => instances.sort_by(|a, b| a.mc_version.to_lowercase().cmp(&b.mc_version.to_lowercase())),
+        2 => instances.sort_by(|a, b| b.size().cmp(&a.size())),
+        _ => instances.sort_by(|a, b| b.last_modified().cmp(&a.last_modified())),
     }
-    versions
+    instances
 }
 
 /// 版本卡片网格
 fn version_grid(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let versions = filtered_versions(app);
+    let instances = filtered_instances(app);
 
-    if versions.is_empty() {
+    if instances.is_empty() {
         ui::empty_state(ui, &p, "search", "没有匹配的版本", "换个关键词或筛选条件试试");
         return;
     }
@@ -219,23 +235,25 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
     };
     let card_width = (width - 14.0 * (columns as f32 - 1.0)) / columns as f32;
 
-    const CARD_HEIGHT: f32 = 88.0;
-    const CARD_PADDING: f32 = 12.0;
-    const ICON_SIZE: f32 = 26.0;
-
     let mut open: Option<String> = None;
-    for chunk in versions.chunks(columns) {
+    for chunk in instances.chunks(columns) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 14.0;
-            for info in chunk {
-                let is_current = app.cfg.selected_version.as_deref() == Some(info.id.as_str());
-                let response = version_card(ui, &p, info, card_width, is_current);
+            for inst in chunk {
+                let is_current = app
+                    .instances
+                    .iter()
+                    .find(|i| i.mc_version == inst.mc_version)
+                    .and_then(|i| i.active_version())
+                    .map(|v| app.cfg.selected_version.as_deref() == Some(v.id.as_str()))
+                    .unwrap_or(false);
+                let response = instance_card(ui, &p, inst, card_width, is_current);
                 let clickable = response.interact(Sense::click());
                 if clickable.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if clickable.clicked() {
-                    open = Some(info.id.clone());
+                    open = Some(inst.mc_version.clone());
                 }
             }
         });
@@ -247,14 +265,14 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// 单个版本卡片
+/// 单个实例卡片
 ///
 /// 整张卡片用 painter 绘制：egui 的 Label 即使设了 truncate，测量宽度仍是原文，
 /// 版本号一长就会把整行布局撑开，所以这里自己截断文本。
-fn version_card(
+fn instance_card(
     ui: &mut Ui,
     p: &crate::theme::Palette,
-    info: &crate::core::minecraft::LocalVersion,
+    inst: &crate::core::minecraft::GameInstance,
     card_width: f32,
     is_current: bool,
 ) -> egui::Response {
@@ -262,10 +280,8 @@ fn version_card(
     const PAD: f32 = 12.0;
     const ICON_SIZE: f32 = 26.0;
 
-    let (rect, response) = ui.allocate_exact_size(
-        Vec2::new(card_width, CARD_HEIGHT),
-        Sense::click(),
-    );
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(card_width, CARD_HEIGHT), Sense::click());
     ui.painter().rect_filled(rect, p.corner_sm(), p.surface);
     ui.painter().rect_stroke(
         rect,
@@ -278,10 +294,11 @@ fn version_card(
     let icon_rect = Rect::from_min_size(rect.min + Vec2::new(PAD, PAD), Vec2::splat(ICON_SIZE));
     ui.painter()
         .rect_filled(icon_rect, p.corner_sm(), p.surface_alt);
+    let has_loader = inst.variants.iter().any(|v| v.loader.is_some());
     icons::paint(
         ui.ctx(),
         ui.painter(),
-        if info.loader.is_some() { "layers" } else { "cube" },
+        if has_loader { "layers" } else { "cube" },
         icon_rect.shrink(6.0),
         p.text_weak,
     );
@@ -289,7 +306,7 @@ fn version_card(
     // 标题：自行截断，保证不超出卡片
     let text_x = icon_rect.right() + 8.0;
     let avail = (rect.right() - PAD - text_x).max(40.0);
-    let title = widgets::ellipsize(&info.id, avail, 13.0);
+    let title = widgets::ellipsize(&inst.mc_version, avail, 13.0);
     ui.painter().text(
         Pos2::new(text_x, icon_rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -298,14 +315,10 @@ fn version_card(
         p.text,
     );
 
-    // 副信息：MC 版本 · 加载器 · 当前状态
-    let mut meta: Vec<String> = Vec::new();
-    if info.mc_version != info.id {
-        meta.push(info.mc_version.clone());
-    }
-    match &info.loader {
-        Some(loader) => meta.push(loader.clone()),
-        None => meta.push("原版".to_string()),
+    // 副信息：加载器 · 变体数 · 当前状态
+    let mut meta: Vec<String> = vec![inst.loader_label()];
+    if inst.variant_count() > 1 {
+        meta.push(format!("{} 个变体", inst.variant_count()));
     }
     if is_current {
         meta.push("当前使用".to_string());
@@ -322,8 +335,8 @@ fn version_card(
     // 底部：占用与时间（坐标相对卡片，不能用屏幕坐标）
     let bottom = format!(
         "{} · {}",
-        paths::format_size(info.size),
-        info.last_modified
+        paths::format_size(inst.size()),
+        inst.last_modified()
             .map(|t| {
                 let dt: chrono::DateTime<chrono::Local> = t.into();
                 dt.format("%m-%d %H:%M").to_string()
@@ -343,26 +356,31 @@ fn version_card(
 
 // ------------------------------------------------------------------ 二级：版本详情
 
-/// 打开某个版本的详情页
-pub(crate) fn open_detail(app: &mut App, id: &str) {
-    app.versions_ui.detail = Some(id.to_string());
+/// 打开某个实例的详情页
+pub(crate) fn open_detail(app: &mut App, mc_version: &str) {
+    app.versions_ui.detail = Some(mc_version.to_string());
     app.versions_ui.section = 0;
-    load_detail(app, id);
+    load_detail(app, mc_version);
 }
 
 fn detail_page(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let Some(id) = app.versions_ui.detail.clone() else {
+    let Some(mc) = app.versions_ui.detail.clone() else {
         return;
     };
-    let Some(info) = app.local_versions.iter().find(|v| v.id == id).cloned() else {
+    let Some(inst) = app.instances.iter().find(|i| i.mc_version == mc).cloned() else {
         // 版本已被删除，回到列表
         app.versions_ui.detail = None;
         return;
     };
-    if app.versions_ui.loaded_for.as_deref() != Some(id.as_str()) {
-        load_detail(app, &id);
+    if app.versions_ui.loaded_for.as_deref() != Some(mc.as_str()) {
+        load_detail(app, &mc);
     }
+    let Some(active) = inst.active_version().cloned() else {
+        app.versions_ui.detail = None;
+        return;
+    };
+    let is_current = app.cfg.selected_version.as_deref() == Some(active.id.as_str());
 
     // ---------- 顶部：返回 + 版本信息 + 操作 ----------
     ui.horizontal(|ui| {
@@ -380,7 +398,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             icons::paint(
                 ui.ctx(),
                 ui.painter(),
-                if info.loader.is_some() { "layers" } else { "cube" },
+                if active.loader.is_some() { "layers" } else { "cube" },
                 rect.shrink(10.0),
                 p.text_weak,
             );
@@ -388,31 +406,31 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(&info.id)
+                        egui::RichText::new(&inst.mc_version)
                             .font(ui::font(18.0))
                             .color(p.text)
                             .strong(),
                     );
-                    if let Some(loader) = &info.loader {
+                    if let Some(loader) = &active.loader {
                         widgets::badge(ui, &p, loader, views::loader_color(Some(loader)));
                     }
                     widgets::badge(
                         ui,
                         &p,
-                        &info.mc_version,
-                        views::version_type_color(&info.version_type),
+                        version_type_label(&active.version_type),
+                        views::version_type_color(&active.version_type),
                     );
-                    if app.cfg.selected_version.as_deref() == Some(info.id.as_str()) {
+                    if is_current {
                         widgets::badge(ui, &p, "当前使用", p.accent);
                     }
                 });
                 ui.add_space(3.0);
-                let game_dir = app.cfg.effective_game_dir(&info.id);
+                let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
                 ui.label(
                     egui::RichText::new(format!(
-                        "{} · {} 个文件 · 游戏目录 {}",
-                        paths::format_size(info.size),
-                        count_files(&version::version_dir(&app.cfg.game_dir, &info.id)),
+                        "{} · {} 个变体 · 游戏目录 {}",
+                        paths::format_size(inst.size()),
+                        inst.variant_count(),
                         game_dir.display()
                     ))
                     .font(ui::font(11.5))
@@ -421,21 +439,57 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::button(ui, &p, ButtonOpts::primary("启动").icon("play")).clicked() {
-                    app.cfg.selected_version = Some(info.id.clone());
+                    app.cfg.selected_version = Some(active.id.clone());
                     app.save_config();
                     views::launch_game(app);
                 }
-                if app.cfg.selected_version.as_deref() != Some(info.id.as_str()) {
+                if !is_current {
                     if ui::button(ui, &p, ButtonOpts::secondary("设为当前")).clicked() {
-                        app.cfg.selected_version = Some(info.id.clone());
+                        app.cfg.selected_version = Some(active.id.clone());
                         app.save_config();
+                        app.refresh_local_versions();
                     }
                 }
                 if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
-                    views::open_version_dir(app, &info.id);
+                    views::open_version_dir(app, &inst.mc_version);
                 }
             });
         });
+        ui.add_space(12.0);
+
+        // ---------- 加载器变体切换 ----------
+        if inst.variant_count() > 1 {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("加载器版本")
+                        .font(ui::font(13.0))
+                        .color(p.text_weak),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let labels: Vec<String> =
+                        inst.variants.iter().map(|v| v.variant_label()).collect();
+                    let current = labels
+                        .iter()
+                        .position(|l| *l == active.variant_label())
+                        .unwrap_or(0);
+                    let current_label = labels[current].clone();
+                    if let Some(index) =
+                        ui::dropdown(ui, &p, "variant", &current_label, &labels, 260.0)
+                    {
+                        let picked = inst.variants[index].id.clone();
+                        app.cfg.selected_version = Some(picked);
+                        app.save_config();
+                        app.refresh_local_versions();
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new("切换加载器版本会同时改用该版本启动，模组、光影与存档仍共用这一份。")
+                    .font(ui::font(11.5))
+                    .color(p.text_faint),
+            );
+        }
     });
     ui.add_space(12.0);
 
@@ -459,13 +513,13 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             let width = ui.available_width();
             ui.set_width(width);
             match app.versions_ui.section {
-                0 => overview_tab(app, ui, &info),
-                1 => settings_tab(app, ui, &info),
-                2 => saves_tab(app, ui, &info),
-                3 => screenshots_tab(app, ui, &info),
-                4 => content_tab(app, ui, &info, ContentKind::Mod, 4),
-                5 => content_tab(app, ui, &info, ContentKind::Shader, 5),
-                _ => content_tab(app, ui, &info, ContentKind::ResourcePack, 6),
+                0 => overview_tab(app, ui, &inst, &active),
+                1 => settings_tab(app, ui, &inst),
+                2 => saves_tab(app, ui, &inst),
+                3 => screenshots_tab(app, ui, &inst),
+                4 => content_tab(app, ui, &inst, ContentKind::Mod, 4),
+                5 => content_tab(app, ui, &inst, ContentKind::Shader, 5),
+                _ => content_tab(app, ui, &inst, ContentKind::ResourcePack, 6),
             }
         });
     });
@@ -489,33 +543,42 @@ fn count_files(dir: &Path) -> usize {
         .count()
 }
 
-fn overview_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::LocalVersion) {
+fn overview_tab(
+    app: &mut App,
+    ui: &mut Ui,
+    inst: &crate::core::minecraft::GameInstance,
+    active: &crate::core::minecraft::LocalVersion,
+) {
     let p = app.palette;
-    let dir = version::version_dir(&app.cfg.game_dir, &info.id);
-    let json_path = version::version_json_path(&app.cfg.game_dir, &info.id);
-    let inherits = version::read_local_json(&app.cfg.game_dir, &info.id)
+    let dir = version::version_dir(&app.cfg.game_dir, &active.id);
+    let json_path = version::version_json_path(&app.cfg.game_dir, &active.id);
+    let inherits = version::read_local_json(&app.cfg.game_dir, &active.id)
         .ok()
         .and_then(|json| json.inherits_from)
         .unwrap_or_default();
-    let stat = app.cfg.stat_of(&info.id);
-    let game_dir = app.cfg.effective_game_dir(&info.id);
+    let stat = app.cfg.stat_of(&active.id);
+    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
 
-    widgets::key_value(ui, &p, "版本 ID", &info.id);
-    ui.add_space(6.0);
-    widgets::key_value(ui, &p, "Minecraft 版本", &info.mc_version);
+    widgets::key_value(ui, &p, "Minecraft 版本", &inst.mc_version);
     ui.add_space(6.0);
     widgets::key_value(
         ui,
         &p,
         "加载器",
-        info.loader.as_deref().unwrap_or("原版"),
+        active.loader.as_deref().unwrap_or("原版"),
     );
+    ui.add_space(6.0);
+    if let Some(version) = &active.loader_version {
+        widgets::key_value(ui, &p, "加载器版本", version);
+        ui.add_space(6.0);
+    }
+    widgets::key_value(ui, &p, "当前变体", &active.id);
     ui.add_space(6.0);
     if !inherits.is_empty() {
         widgets::key_value(ui, &p, "继承自", &inherits);
         ui.add_space(6.0);
     }
-    widgets::key_value(ui, &p, "版本类型", version_type_label(&info.version_type));
+    widgets::key_value(ui, &p, "版本类型", version_type_label(&active.version_type));
     ui.add_space(6.0);
     widgets::key_value(ui, &p, "启动次数", &format!("{} 次", stat.launches));
     ui.add_space(6.0);
@@ -530,7 +593,7 @@ fn overview_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
     ui.add_space(6.0);
     widgets::key_value(ui, &p, "游戏目录", &game_dir.display().to_string());
     ui.add_space(6.0);
-    widgets::key_value(ui, &p, "占用空间", &paths::format_size(info.size));
+    widgets::key_value(ui, &p, "占用空间", &paths::format_size(inst.size()));
     ui.add_space(14.0);
 
     ui.horizontal_wrapped(|ui| {
@@ -545,20 +608,20 @@ fn overview_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
             paths::reveal(&json_path);
         }
         if ui::button(ui, &p, ButtonOpts::secondary("重命名").icon("edit")).clicked() {
-            app.versions_ui.rename_target = Some(info.id.clone());
-            app.versions_ui.rename_value = info.id.clone();
+            app.versions_ui.rename_target = Some(active.id.clone());
+            app.versions_ui.rename_value = active.id.clone();
         }
         if ui::button(ui, &p, ButtonOpts::secondary("复制版本").icon("copy")).clicked() {
-            copy_version(app, &info.id);
+            copy_version(app, &active.id);
         }
         if ui::button(ui, &p, ButtonOpts::danger("删除版本").icon("trash")).clicked() {
-            app.versions_ui.confirm_delete = Some(info.id.clone());
+            app.versions_ui.confirm_delete = Some(active.id.clone());
         }
     });
 }
 
-fn load_detail(app: &mut App, id: &str) {
-    let ov = app.cfg.version_override(id);
+fn load_detail(app: &mut App, mc_version: &str) {
+    let ov = app.cfg.version_override(mc_version);
     app.versions_ui.detail_memory = ov.memory_mb.unwrap_or(app.cfg.java.memory_mb) as f32;
     app.versions_ui.detail_jvm = ov
         .jvm_args
@@ -575,15 +638,15 @@ fn load_detail(app: &mut App, id: &str) {
         .and_then(|path| app.javas.iter().position(|j| &j.path == path))
         .unwrap_or(0);
     // 隔离开关默认跟随全局（全局默认开启）
-    app.versions_ui.detail_isolation = app.cfg.isolation_for(id);
-    app.versions_ui.loaded_for = Some(id.to_string());
+    app.versions_ui.detail_isolation = app.cfg.isolation_for(mc_version);
+    app.versions_ui.loaded_for = Some(mc_version.to_string());
 }
 
-fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::LocalVersion) {
+fn settings_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInstance) {
     let p = app.palette;
 
     ui.label(
-        egui::RichText::new("这里的设置只对当前版本生效，会覆盖全局设置。")
+        egui::RichText::new("这里的设置只对当前实例生效，会覆盖全局设置。")
             .font(ui::font(12.0))
             .color(p.text_weak),
     );
@@ -598,7 +661,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
                 .color(p.text_weak),
         );
         ui.label(
-            egui::RichText::new("每个版本使用独立的模组、存档与配置目录")
+            egui::RichText::new("每个实例使用独立的模组、存档与配置目录")
                 .font(ui::font(11.5))
                 .color(p.text_faint),
         );
@@ -609,12 +672,12 @@ fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
         });
     });
     ui.add_space(4.0);
-    let isolated_dir = version::version_dir(&app.cfg.game_dir, &info.id);
+    let isolated_dir = version::version_dir(&app.cfg.game_dir, &inst.mc_version);
     ui.label(
         egui::RichText::new(if isolation {
-            format!("该版本的游戏目录：{}", isolated_dir.display())
+            format!("该实例的游戏目录：{}", isolated_dir.display())
         } else {
-            "该版本与其它版本共用游戏目录".to_string()
+            "该实例与其它实例共用游戏目录".to_string()
         })
         .font(ui::font(11.5))
         .color(p.text_faint),
@@ -701,7 +764,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
     ui.add_space(14.0);
 
     ui.horizontal(|ui| {
-        if ui::button(ui, &p, ButtonOpts::primary("保存该版本设置")).clicked() {
+        if ui::button(ui, &p, ButtonOpts::primary("保存该实例设置")).clicked() {
             let java_path = app
                 .javas
                 .get(app.versions_ui.detail_java)
@@ -718,22 +781,24 @@ fn settings_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::Local
                 },
                 isolation: Some(app.versions_ui.detail_isolation),
             };
-            app.cfg.version_overrides.insert(info.id.clone(), override_new);
+            app.cfg
+                .version_overrides
+                .insert(inst.mc_version.clone(), override_new);
             app.save_config();
-            app.success(format!("{} 的配置已保存", info.id));
+            app.success(format!("{} 的配置已保存", inst.mc_version));
         }
         if ui::button(ui, &p, ButtonOpts::secondary("恢复全局设置")).clicked() {
-            app.cfg.version_overrides.remove(&info.id);
+            app.cfg.version_overrides.remove(&inst.mc_version);
             app.save_config();
-            load_detail(app, &info.id);
+            load_detail(app, &inst.mc_version);
             app.info("已恢复为全局设置");
         }
     });
 }
 
-fn saves_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::LocalVersion) {
+fn saves_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInstance) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&info.id);
+    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
     let saves_dir = game_dir.join("saves");
     let mut worlds: Vec<(String, u64, Option<std::time::SystemTime>)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&saves_dir) {
@@ -819,9 +884,9 @@ fn saves_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::LocalVer
     }
 }
 
-fn screenshots_tab(app: &mut App, ui: &mut Ui, info: &crate::core::minecraft::LocalVersion) {
+fn screenshots_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInstance) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&info.id);
+    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
     let shots_dir = game_dir.join("screenshots");
     let mut files: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&shots_dir) {
@@ -1238,12 +1303,12 @@ mod tests {
 fn content_tab(
     app: &mut App,
     ui: &mut Ui,
-    info: &crate::core::minecraft::LocalVersion,
+    inst: &crate::core::minecraft::GameInstance,
     kind: ContentKind,
     section: usize,
 ) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&info.id);
+    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
 
     let dir = game_dir.join(kind.sub_dir());
     let items = list_contents(app, kind, &game_dir);
@@ -1270,6 +1335,8 @@ fn content_tab(
             if ui::button(ui, &p, ButtonOpts::secondary(&download_label).icon("download")).clicked() {
                 // 跳到下载页并定位到对应标签
                 app.download.tab = kind.download_tab();
+                // 下载页装到当前实例，别让用户再选一遍
+                app.download.content_install_instance = Some(inst.mc_version.clone());
                 app.download.content_loaded_tab = None;
                 app.page = Page::Download;
             }
@@ -1421,7 +1488,13 @@ fn rename_modal(app: &mut App, ui: &mut Ui) {
         let new_id = app.versions_ui.rename_value.trim().to_string();
         match rename_version(app, &old_id, &new_id) {
             Ok(()) => {
-                app.versions_ui.detail = Some(new_id.clone());
+                let new_mc_version = app
+                    .local_versions
+                    .iter()
+                    .find(|v| v.id == new_id)
+                    .map(|v| v.mc_version.clone())
+                    .unwrap_or_else(|| new_id.clone());
+                app.versions_ui.detail = Some(new_mc_version);
                 app.success(format!("已重命名为 {new_id}"));
             }
             Err(err) => app.error(format!("重命名失败：{err}")),
@@ -1468,16 +1541,7 @@ fn rename_version(app: &mut App, old_id: &str, new_id: &str) -> anyhow::Result<(
     if app.cfg.selected_version.as_deref() == Some(old_id) {
         app.cfg.selected_version = Some(new_id.to_string());
     }
-    if let Some(mut ov) = app.cfg.version_overrides.remove(old_id) {
-        if let Some(dir) = ov.game_dir.take() {
-            if dir.starts_with(&old_dir) {
-                ov.game_dir = Some(new_dir.join(dir.strip_prefix(&old_dir).unwrap_or(&dir)));
-            } else {
-                ov.game_dir = Some(dir);
-            }
-        }
-        app.cfg.version_overrides.insert(new_id.to_string(), ov);
-    }
+
     if let Some(stat) = app.cfg.version_stats.remove(old_id) {
         app.cfg.version_stats.insert(new_id.to_string(), stat);
     }
@@ -1519,7 +1583,13 @@ fn copy_version(app: &mut App, id: &str) {
     match result {
         Ok(()) => {
             app.refresh_local_versions();
-            app.versions_ui.detail = Some(new_id.clone());
+            let new_mc_version = app
+                .local_versions
+                .iter()
+                .find(|v| v.id == new_id)
+                .map(|v| v.mc_version.clone())
+                .unwrap_or_else(|| new_id.clone());
+            app.versions_ui.detail = Some(new_mc_version.clone());
             app.success(format!("已复制为 {new_id}"));
         }
         Err(err) => app.error(format!("复制失败：{err}")),

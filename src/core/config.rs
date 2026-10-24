@@ -297,47 +297,51 @@ impl Config {
         Ok(())
     }
 
-    pub fn version_override(&self, version: &str) -> VersionOverride {
-        self.version_overrides.get(version).cloned().unwrap_or_default()
+    pub fn version_override(&self, mc_version: &str) -> VersionOverride {
+        self.version_overrides
+            .get(mc_version)
+            .cloned()
+            .unwrap_or_default()
     }
 
-    pub fn effective_memory(&self, version: &str) -> u32 {
-        let ov = self.version_override(version);
+    pub fn effective_memory(&self, mc_version: &str) -> u32 {
+        let ov = self.version_override(mc_version);
         ov.memory_mb.unwrap_or(self.java.memory_mb)
     }
 
-    pub fn effective_java(&self, version: &str) -> Option<PathBuf> {
-        let ov = self.version_override(version);
+    pub fn effective_java(&self, mc_version: &str) -> Option<PathBuf> {
+        let ov = self.version_override(mc_version);
         ov.java_path.or_else(|| self.java.path.clone())
     }
 
-    pub fn effective_jvm_args(&self, version: &str) -> String {
-        let ov = self.version_override(version);
+    pub fn effective_jvm_args(&self, mc_version: &str) -> String {
+        let ov = self.version_override(mc_version);
         match ov.jvm_args {
             Some(args) if !args.trim().is_empty() => args,
             _ => self.java.jvm_args.clone(),
         }
     }
 
-    /// 该版本实际使用的游戏目录
+    /// 该实例实际使用的游戏目录
     ///
-    /// 优先顺序：该版本单独指定的目录 → 该版本的隔离开关 → 全局隔离开关。
-    /// 版本隔离开着时用 `versions/<id>`，每个版本的模组、存档、配置互不干扰。
-    pub fn effective_game_dir(&self, version: &str) -> PathBuf {
-        let ov = self.version_override(version);
+    /// 优先顺序：该实例单独指定的目录 → 该实例的隔离开关 → 全局隔离开关。
+    /// 版本隔离开着时用 `versions/<MC 版本>`，同一个 Minecraft 版本下的
+    /// 原版与各加载器版本共用这一个目录，模组、存档、配置只有一份。
+    pub fn effective_game_dir(&self, mc_version: &str) -> PathBuf {
+        let ov = self.version_override(mc_version);
         if let Some(dir) = ov.game_dir {
             return dir;
         }
-        if self.isolation_for(version) {
-            paths::versions_dir(&self.game_dir).join(version)
+        if self.isolation_for(mc_version) {
+            paths::versions_dir(&self.game_dir).join(mc_version)
         } else {
             self.game_dir.clone()
         }
     }
 
-    /// 该版本是否启用版本隔离
-    pub fn isolation_for(&self, version: &str) -> bool {
-        let ov = self.version_override(version);
+    /// 该实例是否启用版本隔离
+    pub fn isolation_for(&self, mc_version: &str) -> bool {
+        let ov = self.version_override(mc_version);
         ov.isolation.unwrap_or(self.launch.isolation)
     }
 

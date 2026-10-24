@@ -5,4 +5,6 @@ pub mod loaders;
 pub mod manifest;
 pub mod version;
 
-pub use version::{resolve, scan_local, LocalVersion, VersionJson};
+pub use version::{
+    group_instances, resolve, scan_local, GameInstance, LocalVersion, VersionJson,
+};
