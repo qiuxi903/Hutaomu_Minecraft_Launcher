@@ -574,6 +574,10 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             let width = ui.available_width();
             ui.set_width(width);
+            // 换子标签时内容淡入，不是一下子跳过去
+            let section = app.versions_ui.section.clone();
+            let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("section", &section)), 0.0);
+            ui.set_opacity(appear);
             match app.versions_ui.section {
                 "settings" => settings_tab(app, ui, &inst),
                 "saves" => saves_tab(app, ui, &inst),
@@ -588,6 +592,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                     None => overview_tab(app, ui, &inst, &active),
                 },
             }
+            ui.set_opacity(1.0);
         });
     });
 }

@@ -55,6 +55,10 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             let width = ui.available_width();
             ui.set_width(width);
+            // 换标签时内容淡入
+            let tab = app.settings_ui.tab;
+            let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("set_tab", tab)), 0.0);
+            ui.set_opacity(appear);
             match app.settings_ui.tab {
                 0 => appearance(app, ui),
                 1 => download_section(app, ui),
@@ -63,6 +67,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 4 => news_section(app, ui),
                 _ => misc_section(app, ui),
             }
+            ui.set_opacity(1.0);
         });
     });
 }

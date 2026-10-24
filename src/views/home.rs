@@ -63,8 +63,7 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
         .and_then(|a| app.skin_of(a.id()))
         .map(|s| s.head.clone());
 
-    ui::card_padded(ui, &p, 18, |ui| {
-        ui.horizontal(|ui| {
+    let launch_rect = ui::card_padded(ui, &p, 18, |ui| {        ui.horizontal(|ui| {
             // 账号
             ui.vertical(|ui| {
                 ui.set_width(190.0);
@@ -213,7 +212,26 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                 }
             });
         });
-    });
+    })
+    .rect;
+
+    // 启动区是首页的视觉焦点：左边一条主色条，卡片底下垫一层淡主色
+    let rect = launch_rect;
+    if ui.is_rect_visible(rect) {
+        let bar = egui::Rect::from_min_max(
+            egui::pos2(rect.left(), rect.top() + 12.0),
+            egui::pos2(rect.left() + 3.0, rect.bottom() - 12.0),
+        );
+        ui.painter().rect_filled(bar, p.corner_sm(), p.accent);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(rect.left(), rect.bottom() - 90.0),
+                egui::pos2(rect.right(), rect.bottom()),
+            ),
+            p.corner(0),
+            widgets::alpha(p.accent, if p.dark { 7 } else { 10 }),
+        );
+    }
 }
 
 // ------------------------------------------------------------------ 资讯

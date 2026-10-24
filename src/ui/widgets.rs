@@ -1244,10 +1244,15 @@ pub fn key_value(ui: &mut Ui, p: &Palette, key: &str, value: &str) {
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(key).font(font(13.0)).color(p.text_weak));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // 超长内容（路径等）截断显示，避免与左侧标签重叠
+            // 数值用主色标出来，扫一眼就知道重点
             ui.add(
-                egui::Label::new(egui::RichText::new(value).font(font(13.0)).color(p.text))
-                    .truncate(),
+                egui::Label::new(
+                    egui::RichText::new(value)
+                        .font(font(13.5))
+                        .color(p.accent)
+                        .strong(),
+                )
+                .truncate(),
             );
         });
     });

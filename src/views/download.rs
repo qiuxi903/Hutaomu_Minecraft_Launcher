@@ -248,11 +248,16 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         run_search(app);
     }
 
+    // 切标签时内容不是啪地换掉，而是淡入进来
+    let tab = app.download.tab;
+    let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("dl_tab", tab)), 0.0);
+    ui.set_opacity(appear);
     match app.download.tab {
         0 => game_tab(app, ui),
         1 => loader_tab(app, ui),
         _ => content_tab(app, ui),
     }
+    ui.set_opacity(1.0);
 
     install_modal(app, ui);
 }
@@ -1076,10 +1081,16 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
     const ICON_SIZE: f32 = 40.0;
 
     let mut open_detail: Option<SearchHit> = None;
+    let mut index = 0usize;
     for chunk in hits.chunks(columns) {
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = 12.0;
             for hit in chunk {
+                // 搜索结果逐个淡入
+                let delay = ui::anim::stagger(index, 0.02);
+                let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("hit", index)), delay);
+                ui.set_opacity(appear);
+                index += 1;
                 let desc_width = card_width - CARD_PADDING * 2.0;
                 // MCMod 元数据：有中文名时用中文名，缩写按 PCL2 的写法放在前面
                 let mcmod_entry = app.mcmod_db.lookup_modrinth(&hit.slug).cloned();
@@ -1232,6 +1243,7 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                     let _ = open::that(url);
                     open_detail = None;
                 }
+                ui.set_opacity(1.0);
             }
         });
         ui.add_space(12.0);

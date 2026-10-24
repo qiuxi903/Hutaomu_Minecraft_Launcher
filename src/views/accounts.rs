@@ -252,11 +252,16 @@ fn add_account_card(app: &mut App, ui: &mut Ui) {
         }
         ui.add_space(14.0);
 
+        // 换登录方式时内容淡入
+        let tab = app.accounts_ui.tab;
+        let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("acc_tab", tab)), 0.0);
+        ui.set_opacity(appear);
         match app.accounts_ui.tab {
             0 => offline_form(app, ui),
             1 => microsoft_form(app, ui),
             _ => authlib_form(app, ui),
         }
+        ui.set_opacity(1.0);
     });
 }
 
