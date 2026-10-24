@@ -8,6 +8,7 @@ use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 
 use crate::core::java::JavaInfo;
+use crate::core::minecraft::brand;
 use crate::core::minecraft::install;
 use crate::core::minecraft::version::{self, ResolvedVersion};
 use crate::core::paths;
@@ -178,8 +179,35 @@ pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
             }
         }
     }
-    if resolved.jar_path.is_file() {
-        classpath.push(resolved.jar_path.clone());
+    // 游戏主菜单左下角显示的名字来自 classpath 里的 version.json
+    //
+    // Fabric、Quilt 的 Knot 自己扫 classpath 找游戏 jar，
+    // 目录排在它后面没用，得把客户端 jar 换成品牌版。
+    // 别的加载器（含原版）按 classpath 顺序找资源，
+    // 放一个只含 version.json 的目录在最前面就行，
+    // 客户端 jar 保持官方原样，签名完好，不会多出「（已修改）」。
+    let main_jar = resolved.jar_path.clone();
+    let knot_loader = json.main_class.contains("knot");
+    if main_jar.is_file() {
+        if knot_loader {
+            match brand::prepare_brand_jar(&main_jar) {
+                Ok(Some(jar)) => classpath.push(jar),
+                Ok(None) => classpath.push(main_jar.clone()),
+                Err(err) => {
+                    log::warn!("生成品牌 jar 失败：{err}");
+                    classpath.push(main_jar.clone());
+                }
+            }
+        } else {
+            classpath.push(main_jar.clone());
+        }
+    }
+    if !knot_loader && main_jar.is_file() {
+        match brand::prepare_brand_dir(&main_jar) {
+            Ok(Some(dir)) => classpath.insert(0, dir),
+            Ok(None) => {}
+            Err(err) => log::warn!("准备品牌目录失败：{err}"),
+        }
     }
     if classpath.is_empty() {
         return Err(anyhow!("缺少依赖库，请先下载该版本"));
