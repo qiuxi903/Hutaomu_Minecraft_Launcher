@@ -13,6 +13,36 @@ use crate::core::minecraft::version::{self, ResolvedVersion};
 use crate::core::paths;
 
 pub const LAUNCHER_NAME: &str = "htmcl";
+/// 游戏默认语言，简体中文
+pub const DEFAULT_LANG: &str = "zh_cn";
+
+/// 把游戏语言固定成简体中文
+///
+/// Minecraft 的语言由游戏目录里 `options.txt` 的 `lang` 决定，
+/// 启动参数 `--lang` 并不管用（26.x 的参数表里没有它）。
+/// 其它设置原样保留，只改语言这一项。
+pub fn ensure_chinese_lang(game_dir: &Path) -> Result<()> {
+    let path = game_dir.join("options.txt");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = Vec::new();
+    let mut found = false;
+    for line in text.lines() {
+        if line.starts_with("lang:") {
+            if !found {
+                lines.push(format!("lang:{DEFAULT_LANG}"));
+                found = true;
+            }
+            continue;
+        }
+        lines.push(line.to_string());
+    }
+    if !found {
+        lines.push(format!("lang:{DEFAULT_LANG}"));
+    }
+    std::fs::write(&path, lines.join("\n") + "\n")
+        .with_context(|| format!("写入语言设置失败: {}", path.display()))?;
+    Ok(())
+}
 pub const LAUNCHER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone, Default)]
@@ -513,4 +543,44 @@ pub fn ensure_authlib_injector(dl: &crate::core::download::Downloader) -> Result
     std::fs::write(&jar, bytes)?;
     log::info!("authlib-injector 已更新: {}", jar.display());
     Ok(jar)
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 语言固定简体中文，其它设置不能被弄丢
+    #[test]
+    fn chinese_lang_is_written_to_options() {
+        let dir = std::env::temp_dir().join("htmcl-lang-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("应能建目录");
+        let opts = dir.join("options.txt");
+        std::fs::write(&opts, "version:3955\nlang:en_us\nfov:0.0\n").expect("应能写文件");
+
+        ensure_chinese_lang(&dir).expect("应能设置语言");
+
+        let text = std::fs::read_to_string(&opts).expect("应能读文件");
+        assert!(text.contains("lang:zh_cn"), "语言应改成简体中文：{text}");
+        assert!(!text.contains("en_us"), "不该残留旧语言：{text}");
+        // 其它设置要留着
+        assert!(text.contains("version:3955"));
+        assert!(text.contains("fov:0.0"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 没有 options.txt 时也能建一个
+    #[test]
+    fn chinese_lang_creates_missing_options() {
+        let dir = std::env::temp_dir().join("htmcl-lang-test-new");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("应能建目录");
+
+        ensure_chinese_lang(&dir).expect("应能设置语言");
+
+        let text = std::fs::read_to_string(dir.join("options.txt")).expect("应能读文件");
+        assert!(text.contains("lang:zh_cn"), "应写入语言：{text}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

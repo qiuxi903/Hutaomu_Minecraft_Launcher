@@ -145,6 +145,11 @@ pub fn launch_game(app: &mut App) {
     }
     resolved.game_dir = effective_dir;
 
+    // 语言固定简体中文，和 PCL2 一样
+    if let Err(err) = crate::core::minecraft::launch::ensure_chinese_lang(&resolved.game_dir) {
+        log::warn!("设置游戏语言失败：{err}");
+    }
+
     let spec = crate::core::minecraft::launch::LaunchSpec {
         version: &resolved,
         identity: &identity,
