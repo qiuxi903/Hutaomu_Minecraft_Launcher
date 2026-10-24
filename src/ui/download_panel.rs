@@ -46,6 +46,10 @@ impl App {
             .collect();
 
         if !self.download_panel_open {
+            // 收起时清掉入场状态，下次打开重新播一遍
+            ctx.memory_mut(|m| {
+                m.data.remove::<f64>(egui::Id::new("htmcl_download_panel_anim"))
+            });
             if active.is_empty() {
                 return;
             }
@@ -59,10 +63,27 @@ impl App {
         let mut close = false;
         let mut cancel: Option<u64> = None;
 
+        // 面板从右下角滑入，不要啪地一下出现
+        let anim = if crate::ui::animations_enabled() {
+            crate::ui::widgets::enter_progress(
+                ctx,
+                egui::Id::new("htmcl_download_panel_anim"),
+                true,
+                0.18,
+            )
+        } else {
+            1.0
+        };
+        let shift = (1.0 - anim) * 18.0;
+
         egui::Area::new(egui::Id::new("htmcl_download_panel"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -20.0))
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                Vec2::new(-20.0 + shift, -20.0 + shift),
+            )
             .show(ctx, |ui| {
+                ui.set_opacity(anim);
                 egui::Frame::NONE
                     .fill(palette.surface)
                     .stroke(Stroke::new(1.0, palette.border))
@@ -223,7 +244,7 @@ fn task_card(ui: &mut egui::Ui, palette: &Palette, task: &TaskSnapshot, cancel: 
                 });
             });
             ui.add_space(6.0);
-            ui::progress(ui, palette, task.fraction, 6.0);
+            ui::progress(ui, palette, &format!("task-{}", task.id), task.fraction, 6.0);
             ui.add_space(5.0);
             ui.horizontal(|ui| {
                 if task.bytes_total > 0 {

@@ -229,7 +229,7 @@ fn add_account_card(app: &mut App, ui: &mut Ui) {
     ui::card(ui, &p, |ui| {
         let tabs = ["离线登录", "微软正版", "皮肤站"];
         let mut tab = app.accounts_ui.tab;
-        if ui::segmented(ui, &p, &mut tab, &tabs).clicked() {
+        if ui::segmented(ui, &p, "acc_tab", &mut tab, &tabs).clicked() {
             app.accounts_ui.tab = tab;
             app.accounts_ui.device_code = None;
             app.accounts_ui.ms_logging_in = false;
@@ -846,7 +846,7 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                             .color(p.text_weak),
                     );
                     let mut value = if model == SkinModel::Slim { 1 } else { 0 };
-                    if ui::segmented(ui, &p, &mut value, &["经典", "纤细"]).clicked() {
+                    if ui::segmented(ui, &p, "skin_model", &mut value, &["经典", "纤细"]).clicked() {
                         let new_model = if value == 1 {
                             SkinModel::Slim
                         } else {

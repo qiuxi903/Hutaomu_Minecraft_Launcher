@@ -545,6 +545,7 @@ impl App {
 
         ui::install_fonts(&cc.egui_ctx);
         ui::install_style(&cc.egui_ctx, &palette, cfg.ui.font_scale);
+        ui::set_animations_enabled(cfg.ui.animations);
         icons::warmup(&cc.egui_ctx, palette.text_weak, 16.0);
 
         let (tx, rx) = channel();
@@ -1935,7 +1936,7 @@ impl App {
                     });
                 });
                 ui.add_space(4.0);
-                ui::progress(ui, &palette, task.fraction, 6.0);
+                ui::progress(ui, &palette, &format!("task-{}", task.id), task.fraction, 6.0);
                 if !task.message.is_empty() {
                     ui.add_space(4.0);
                     ui.label(
@@ -2258,8 +2259,24 @@ impl eframe::App for App {
             Pos2::new(body.left() + 8.0, body.top()),
             Vec2::new(sidebar_width, body.height()),
         );
+
+        // 页面切换：淡入的同时略微上移，像是内容被推进来
+        if self.last_page != self.page {
+            self.last_page = self.page;
+            self.page_changed_at = now;
+        }
+        let page_t = if ui::animations_enabled() {
+            ui::ease_out(((now - self.page_changed_at) / 0.20) as f32)
+        } else {
+            1.0
+        };
+        if page_t < 1.0 {
+            ctx.request_repaint();
+        }
+        let page_offset = (1.0 - page_t) * 8.0;
+
         let content_rect = Rect::from_min_max(
-            Pos2::new(sidebar_rect.right() + 8.0, body.top()),
+            Pos2::new(sidebar_rect.right() + 8.0, body.top() + page_offset),
             Pos2::new(body.right() - 18.0, body.bottom()),
         );
 
@@ -2272,16 +2289,6 @@ impl eframe::App for App {
                 self.sidebar(ui);
             },
         );
-
-        // 页面切换淡入
-        if self.last_page != self.page {
-            self.last_page = self.page;
-            self.page_changed_at = now;
-        }
-        let page_t = ui::ease_out(((now - self.page_changed_at) / 0.18) as f32);
-        if page_t < 1.0 {
-            ctx.request_repaint();
-        }
 
         root.scope_builder(
             egui::UiBuilder::new()

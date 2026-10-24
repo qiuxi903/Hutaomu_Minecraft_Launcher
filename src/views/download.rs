@@ -230,7 +230,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
 
     ui.horizontal(|ui| {
         let mut tab = app.download.tab;
-        if ui::segmented(ui, &p, &mut tab, &TABS).clicked() {
+        if ui::segmented(ui, &p, "dl_tab", &mut tab, &TABS).clicked() {
             if tab != app.download.tab {
                 // 换标签时收起详情与安装弹窗，避免内容与新标签对不上
                 app.download.content_detail = None;
@@ -270,7 +270,7 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
         ui.add_space(6.0);
         let filters = ["正式版", "快照", "远古", "全部"];
         let mut filter = app.download.game_filter;
-        if ui::segmented(ui, &p, &mut filter, &filters).clicked() {
+        if ui::segmented(ui, &p, "game_filter", &mut filter, &filters).clicked() {
             app.download.game_filter = filter;
             app.download.game_limit = 60;
         }
@@ -467,7 +467,7 @@ fn install_modal(app: &mut App, ui: &mut Ui) {
         );
         ui.add_space(6.0);
         let mut kind_index = app.download.install_loader_index.min(4);
-        if ui::segmented(ui, &p, &mut kind_index, &loader_labels).clicked() {
+        if ui::segmented(ui, &p, "install_loader", &mut kind_index, &loader_labels).clicked() {
             app.download.install_loader_index = kind_index;
             app.download.install_loader_versions.clear();
             app.download.install_loader_version_index = 0;
@@ -518,7 +518,7 @@ fn install_modal(app: &mut App, ui: &mut Ui) {
                 ui.add_space(6.0);
                 let modes = ["自动选择", "手动选择"];
                 let mut mode = if app.download.install_loader_auto { 0 } else { 1 };
-                if ui::segmented(ui, &p, &mut mode, &modes).clicked() {
+                if ui::segmented(ui, &p, "install_mode", &mut mode, &modes).clicked() {
                     app.download.install_loader_auto = mode == 0;
                     if mode == 1 {
                         load_install_loader_versions(app, &mc, kind);
@@ -775,7 +775,7 @@ fn loader_tab(app: &mut App, ui: &mut Ui) {
                     .font(ui::font(13.0))
                     .color(p.text_weak),
             );
-            if ui::segmented(ui, &p, &mut kind_index, &kinds).clicked() {
+            if ui::segmented(ui, &p, "loader_kind", &mut kind_index, &kinds).clicked() {
                 app.download.loader_kind = kind_index;
                 app.download.loader_versions.clear();
                 app.download.loader_version_index = 0;

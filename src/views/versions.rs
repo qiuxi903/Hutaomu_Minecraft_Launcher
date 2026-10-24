@@ -159,7 +159,7 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         let mut filter = app.versions_ui.filter;
-        if ui::segmented(ui, &p, &mut filter, &FILTERS).clicked() {
+        if ui::segmented(ui, &p, "ver_filter", &mut filter, &FILTERS).clicked() {
             app.versions_ui.filter = filter;
         }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -182,7 +182,7 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
                 .color(p.text_weak),
         );
         let mut sort = app.versions_ui.sort;
-        if ui::segmented(ui, &p, &mut sort, &SORTS).clicked() {
+        if ui::segmented(ui, &p, "ver_sort", &mut sort, &SORTS).clicked() {
             app.versions_ui.sort = sort;
         }
     });
@@ -299,11 +299,30 @@ fn instance_card(
 
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(card_width, CARD_HEIGHT), Sense::click());
-    ui.painter().rect_filled(rect, p.corner_sm(), p.surface);
+    // 悬停时轻微上浮并把边框染上主色，让人知道这张卡能点
+    let hovered = response.hovered();
+    let lift = if hovered && ui::animations_enabled() { 1.5 } else { 0.0 };
+    let rect = rect.translate(Vec2::new(0.0, -lift));
+    let border = if is_current {
+        p.accent
+    } else if hovered {
+        widgets::lerp_color(p.border, p.accent, 0.55)
+    } else {
+        p.border
+    };
+    ui.painter().rect_filled(
+        rect,
+        p.corner_sm(),
+        if hovered {
+            widgets::lerp_color(p.surface, p.surface_alt, 0.6)
+        } else {
+            p.surface
+        },
+    );
     ui.painter().rect_stroke(
         rect,
         p.corner_sm(),
-        egui::Stroke::new(1.0, if is_current { p.accent } else { p.border }),
+        egui::Stroke::new(1.0, border),
         egui::StrokeKind::Inside,
     );
 

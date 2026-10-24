@@ -4,11 +4,25 @@ pub mod widgets;
 
 pub use widgets::*;
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::theme::Palette;
 
 static FONT_SCALE: AtomicU32 = AtomicU32::new(1000);
+/// 全局动效开关，跟「设置 - 动画」联动
+static ANIMATIONS: AtomicBool = AtomicBool::new(true);
+
+/// 开关所有动效
+///
+/// 关掉后控件直接跳到最终状态，不做任何过渡。
+pub fn set_animations_enabled(enabled: bool) {
+    ANIMATIONS.store(enabled, Ordering::Relaxed);
+}
+
+/// 当前是否开启动效
+pub fn animations_enabled() -> bool {
+    ANIMATIONS.load(Ordering::Relaxed)
+}
 
 pub fn set_font_scale(scale: f32) {
     FONT_SCALE.store((scale.clamp(0.8, 1.6) * 1000.0) as u32, Ordering::Relaxed);

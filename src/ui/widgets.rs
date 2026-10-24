@@ -329,12 +329,22 @@ pub fn button(ui: &mut Ui, p: &Palette, opts: ButtonOpts<'_>) -> Response {
     let radius = p.corner(-2);
 
     // 悬停与按压都做插值，避免颜色突变
-    let hover_t = ui
-        .ctx()
-        .animate_bool_with_time(response.id.with("hov"), hovered, 0.10);
-    let press_t = ui
-        .ctx()
-        .animate_bool_with_time(response.id.with("prs"), pressed, 0.06);
+    let hover_t = if super::animations_enabled() {
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("hov"), hovered, 0.10)
+    } else if hovered {
+        1.0
+    } else {
+        0.0
+    };
+    let press_t = if super::animations_enabled() {
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("prs"), pressed, 0.06)
+    } else if pressed {
+        1.0
+    } else {
+        0.0
+    };
 
     let (base, hover_bg, active_bg, fg, border) = match opts.kind {
         ButtonKind::Primary => (
@@ -436,9 +446,21 @@ pub fn icon_button(ui: &mut Ui, p: &Palette, name: &str, tip: &str) -> Response 
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
-        if hovered {
-            ui.painter()
-                .rect_filled(rect, p.corner(-2), p.surface_alt);
+        // 悬停底色淡入，不要啪地一下冒出来
+        let t = if super::animations_enabled() {
+            ui.ctx()
+                .animate_bool_with_time(response.id.with("hov"), hovered, 0.12)
+        } else if hovered {
+            1.0
+        } else {
+            0.0
+        };
+        if t > 0.001 {
+            ui.painter().rect_filled(
+                rect,
+                p.corner(-2),
+                alpha(p.surface_alt, (t * 255.0) as u8),
+            );
         }
         icons::paint(
             ui.ctx(),
@@ -462,12 +484,22 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, name: &str, label: &str, selected: boo
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
-        let hover_t = ui
-            .ctx()
-            .animate_bool_with_time(response.id.with("hov"), hovered, 0.12);
-        let sel_t = ui
-            .ctx()
-            .animate_bool_with_time(response.id.with("sel"), selected, 0.16);
+        let hover_t = if super::animations_enabled() {
+            ui.ctx()
+                .animate_bool_with_time(response.id.with("hov"), hovered, 0.12)
+        } else if hovered {
+            1.0
+        } else {
+            0.0
+        };
+        let sel_t = if super::animations_enabled() {
+            ui.ctx()
+                .animate_bool_with_time(response.id.with("sel"), selected, 0.16)
+        } else if selected {
+            1.0
+        } else {
+            0.0
+        };
         let hover_bg = if p.dark {
             alpha(Color32::WHITE, 8)
         } else {
@@ -645,9 +677,14 @@ pub fn toggle(ui: &mut Ui, p: &Palette, value: &mut bool) -> Response {
         *value = !*value;
         response.mark_changed();
     }
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(response.id.with("t"), *value, 0.14);
+    let t = if super::animations_enabled() {
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("t"), *value, 0.14)
+    } else if *value {
+        1.0
+    } else {
+        0.0
+    };
     let bg = lerp_color(p.surface_alt, p.accent, t);
     ui.painter().rect_filled(rect, CornerRadius::same(11), bg);
     if t < 0.5 {
@@ -668,7 +705,16 @@ pub fn toggle(ui: &mut Ui, p: &Palette, value: &mut bool) -> Response {
 
 // ---------------------------------------------------------------- 分段选择
 
-pub fn segmented(ui: &mut Ui, p: &Palette, index: &mut usize, labels: &[&str]) -> Response {
+/// 分段选择器
+///
+/// id_source 用来区分页面上的多个分段器，指示块的滑动动画按它记录状态。
+pub fn segmented(
+    ui: &mut Ui,
+    p: &Palette,
+    id_source: &str,
+    index: &mut usize,
+    labels: &[&str],
+) -> Response {
     let font_id = font(13.5);
     let widths: Vec<f32> = labels
         .iter()
@@ -687,6 +733,24 @@ pub fn segmented(ui: &mut Ui, p: &Palette, index: &mut usize, labels: &[&str]) -
     ui.painter()
         .rect_filled(rect, radius, p.surface_alt);
 
+    // 选中块在选项之间平滑滑动
+    let picked = (*index).min(labels.len().saturating_sub(1));
+    let target_x = rect.left() + 3.0 + widths[..picked].iter().sum::<f32>();
+    let target_w = widths[picked];
+    let (indicator_x, indicator_w) = if super::animations_enabled() {
+        let anim = Id::new(("htmcl_segmented", id_source));
+        (
+            ui.ctx().animate_value_with_time(anim.with("x"), target_x, 0.16),
+            ui.ctx().animate_value_with_time(anim.with("w"), target_w, 0.16),
+        )
+    } else {
+        (target_x, target_w)
+    };
+    let indicator = Rect::from_min_size(
+        Pos2::new(indicator_x, rect.top() + 3.0),
+        Vec2::new(indicator_w, height - 6.0),
+    );
+
     let mut x = rect.left() + 3.0;
     for (i, label) in labels.iter().enumerate() {
         let width = widths[i];
@@ -694,11 +758,15 @@ pub fn segmented(ui: &mut Ui, p: &Palette, index: &mut usize, labels: &[&str]) -
             Pos2::new(x, rect.top() + 3.0),
             Vec2::new(width, height - 6.0),
         );
-        let selected = i == *index;
+        // 文字颜色跟着滑动块走，滑过时两边的文字自然过渡
+        let overlap = (seg.right().min(indicator.right()) - seg.left().max(indicator.left()))
+            .max(0.0)
+            / seg.width().max(1.0);
+        let selected = i == picked;
         if selected {
-            ui.painter().rect_filled(seg, p.corner_sm(), p.surface);
+            ui.painter().rect_filled(indicator, p.corner_sm(), p.surface);
             ui.painter().rect_stroke(
-                seg,
+                indicator,
                 p.corner_sm(),
                 Stroke::new(1.0, p.border),
                 StrokeKind::Inside,
@@ -709,7 +777,7 @@ pub fn segmented(ui: &mut Ui, p: &Palette, index: &mut usize, labels: &[&str]) -
             Align2::CENTER_CENTER,
             *label,
             font_id.clone(),
-            if selected { p.text } else { p.text_weak },
+            lerp_color(p.text_weak, p.text, overlap),
         );
 
         if response.hovered()
@@ -1044,13 +1112,29 @@ pub fn fixed_card(
 
 // ---------------------------------------------------------------- 反馈
 
-pub fn progress(ui: &mut Ui, p: &Palette, fraction: f32, height: f32) -> Response {
+pub fn progress(
+    ui: &mut Ui,
+    p: &Palette,
+    id_source: &str,
+    fraction: f32,
+    height: f32,
+) -> Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
     let radius = CornerRadius::same((height / 2.0) as u8);
     ui.painter()
         .rect_filled(rect, radius, p.surface_alt);
-    let t = fraction.clamp(0.0, 1.0);
+    let target = fraction.clamp(0.0, 1.0);
+    // 进度平滑过渡，不要一格一格地跳
+    let t = if super::animations_enabled() {
+        ui.ctx().animate_value_with_time(
+            ui.make_persistent_id(id_source).with("htmcl_progress"),
+            target,
+            0.18,
+        )
+    } else {
+        target
+    };
     if t > 0.0 {
         let filled = Rect::from_min_size(
             rect.min,
@@ -1100,8 +1184,15 @@ pub fn spinner(ui: &mut Ui, p: &Palette, size: f32) -> Response {
 }
 
 pub fn empty_state(ui: &mut Ui, p: &Palette, icon_name: &str, title: &str, desc: &str) {
+    // 空状态出现时淡入，不要突然冒出来
+    let t = if super::animations_enabled() {
+        enter_progress(ui.ctx(), ui.id().with("htmcl_empty_state"), true, 0.22)
+    } else {
+        1.0
+    };
     ui.add_space(28.0);
     ui.vertical_centered(|ui| {
+        ui.set_opacity(t);
         ui.add_space(4.0);
         icon(ui, icon_name, 40.0, p.text_faint);
         ui.add_space(10.0);
@@ -1343,11 +1434,20 @@ pub fn modal(
 pub fn round_icon_button(ui: &mut Ui, p: &Palette, name: &str, size: f32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let hovered = response.hovered();
-    if hovered {
+    // 悬停时底色淡入
+    let t = if super::animations_enabled() {
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("hov"), hovered, 0.12)
+    } else if hovered {
+        1.0
+    } else {
+        0.0
+    };
+    if t > 0.001 {
         ui.painter().rect_filled(
             rect,
             CornerRadius::same((size / 2.0) as u8),
-            p.surface_alt,
+            alpha(p.surface_alt, (t * 255.0) as u8),
         );
     }
     icons::paint(
@@ -1408,4 +1508,78 @@ pub fn radio_row(ui: &mut Ui, p: &Palette, selected: bool, title: &str, subtitle
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     response.clicked()
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 入场进度必须真的往前走
+    ///
+    /// egui 的临时内存每帧会清空，如果只用临时内存记起始时间，
+    /// 进度会永远停在 0，动画就等于没有。
+    #[test]
+    fn enter_progress_advances_over_frames() {
+        let ctx = egui::Context::default();
+        let id = Id::new("htmcl_test_enter");
+        let mut last = 0.0f32;
+        for _ in 0..12 {
+            ctx.begin_pass(egui::RawInput::default());
+            let t = enter_progress(&ctx, id, true, 0.16);
+            assert!(t >= last, "入场进度应单调不减：{t} < {last}");
+            last = t;
+            ctx.end_pass();
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
+        assert!(last > 0.9, "入场进度最终应接近 1，实际 {last}");
+    }
+
+    /// 关掉动画时进度直接到位
+    #[test]
+    fn enter_progress_is_zero_when_inactive() {
+        let ctx = egui::Context::default();
+        let id = Id::new("htmcl_test_enter_off");
+        ctx.begin_pass(egui::RawInput::default());
+        assert_eq!(enter_progress(&ctx, id, false, 0.16), 0.0);
+        ctx.end_pass();
+    }
+
+    #[test]
+    fn ease_out_is_monotonic() {
+        let mut last = 0.0f32;
+        for i in 0..=10 {
+            let t = i as f32 / 10.0;
+            let v = ease_out(t);
+            assert!(v >= last);
+            assert!((0.0..=1.0).contains(&v));
+            last = v;
+        }
+        assert_eq!(ease_out(0.0), 0.0);
+        assert_eq!(ease_out(1.0), 1.0);
+    }
+    /// 数值动画确实会向目标推进，而不是一步跳到位
+    #[test]
+    fn animate_value_moves_towards_target() {
+        let ctx = egui::Context::default();
+        let id = Id::new("htmcl_test_anim");
+        let mut last = 0.0f32;
+        for _ in 0..12 {
+            ctx.begin_pass(egui::RawInput::default());
+            let v = ctx.animate_value_with_time(id, 100.0, 0.2);
+            assert!(v >= last, "动画值应单调不减：{v} < {last}");
+            assert!(v <= 100.0, "动画值不应超过目标：{v}");
+            last = v;
+            ctx.end_pass();
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        assert!(last > 40.0, "动画应明显向目标推进，实际 {last}");
+    }
+
+    /// 关掉动画后控件直接给最终状态
+    #[test]
+    fn animation_switch_is_global() {
+        super::super::set_animations_enabled(false);
+        assert!(!super::super::animations_enabled());
+        super::super::set_animations_enabled(true);
+        assert!(super::super::animations_enabled());
+    }
 }

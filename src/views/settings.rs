@@ -186,6 +186,7 @@ fn appearance(app: &mut App, ui: &mut Ui) {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::toggle(ui, &p, &mut animations).changed() {
                     app.cfg.ui.animations = animations;
+                    ui::set_animations_enabled(animations);
                     app.save_config();
                 }
             });
@@ -404,7 +405,7 @@ fn download_section(app: &mut App, ui: &mut Ui) {
                 .iter()
                 .position(|s| *s == app.cfg.download.source)
                 .unwrap_or(0);
-            if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+            if ui::segmented(ui, &p, "set_source", &mut index, &labels).clicked() {
                 app.cfg.download.source = sources[index];
                 app.save_config();
                 app.load_manifest();
@@ -491,7 +492,7 @@ fn loader_section(app: &mut App, ui: &mut Ui) {
                     Some(LoaderKind::Forge) => 3,
                     Some(LoaderKind::NeoForge) => 4,
                 };
-                if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+                if ui::segmented(ui, &p, "set_default_loader", &mut index, &labels).clicked() {
                     app.cfg.download.default_loader = match index {
                         1 => "fabric",
                         2 => "quilt",
@@ -526,7 +527,7 @@ fn loader_section(app: &mut App, ui: &mut Ui) {
                     .iter()
                     .position(|v| *v == app.cfg.download.loader_policy())
                     .unwrap_or(0);
-                if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+                if ui::segmented(ui, &p, "set_policy", &mut index, &labels).clicked() {
                     app.cfg.download.loader_policy = policies[index].id().to_string();
                     app.save_config();
                 }
@@ -559,7 +560,7 @@ fn loader_section(app: &mut App, ui: &mut Ui) {
                     .iter()
                     .position(|v| *v == app.cfg.download.loader_timing())
                     .unwrap_or(0);
-                if ui::segmented(ui, &p, &mut index, &labels).clicked() {
+                if ui::segmented(ui, &p, "set_timing", &mut index, &labels).clicked() {
                     app.cfg.download.loader_timing = timings[index].id().to_string();
                     app.save_config();
                 }
