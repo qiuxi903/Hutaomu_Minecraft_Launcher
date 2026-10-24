@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -181,48 +182,209 @@ pub fn list_versions(
             let prefix = format!("{mc_version}-");
             let mut versions: Vec<LoaderVersion> = extract_xml_versions(&xml)
                 .into_iter()
-                .filter_map(|v| v.strip_prefix(&prefix).map(|s| s.to_string()))
-                .map(|version| LoaderVersion {
-                    version,
-                    stable: false,
-                })
-                .collect();
-            versions.reverse();
-            Ok(versions)
-        }
-        LoaderKind::NeoForge => {
-            let (url, prefix) = neoforge_endpoint(dl, mc_version);
-            let xml = String::from_utf8_lossy(&dl.get_bytes_direct(&url)?).to_string();
-            let mut versions: Vec<LoaderVersion> = extract_xml_versions(&xml)
-                .into_iter()
                 .filter_map(|v| {
-                    let stripped = v.strip_prefix(&prefix)?.to_string();
+                    let rest = v.strip_prefix(&prefix)?.trim().to_string();
+                    if rest.is_empty() {
+                        return None;
+                    }
                     Some(LoaderVersion {
-                        version: stripped,
+                        version: rest,
                         stable: false,
                     })
                 })
                 .collect();
-            versions.reverse();
+            sort_versions_desc(&mut versions);
             Ok(versions)
+        }
+        LoaderKind::NeoForge => {
+            // 1.20.1 用的是过渡产物 net.neoforged:forge，其余版本用 net.neoforged:neoforge
+            let (url, artifact_prefix) = if mc_version == "1.20.1" {
+                (
+                    dl.source
+                        .neoforge_maven("net/neoforged/forge/maven-metadata.xml"),
+                    format!("{mc_version}-"),
+                )
+            } else {
+                (
+                    dl.source
+                        .neoforge_maven("net/neoforged/neoforge/maven-metadata.xml"),
+                    String::new(),
+                )
+            };
+            let xml = String::from_utf8_lossy(&dl.get_bytes_direct(&url)?).to_string();
+            Ok(filter_neoforge_versions(
+                extract_xml_versions(&xml),
+                mc_version,
+                &artifact_prefix,
+            ))
         }
     }
 }
 
-/// NeoForge 在 1.20.1 使用 net/neoforged/forge，之后使用 net/neoforged/neoforge
-fn neoforge_endpoint(dl: &Downloader, mc_version: &str) -> (String, String) {
-    if mc_version == "1.20.1" {
-        (
-            dl.source
-                .neoforge_maven("net/neoforged/forge/maven-metadata.xml"),
-            "1.20.1-".to_string(),
-        )
+/// 从 Maven 元数据里挑出某个 Minecraft 版本可用的 NeoForge 构建
+///
+/// `artifact_prefix` 非空表示用的是 1.20.1 的过渡产物 net.neoforged:forge，
+/// 版本号形如 `1.20.1-47.1.106`；否则用 net.neoforged:neoforge，
+/// 版本号形如 `20.4.253`，同一个仓库里混着各个 Minecraft 版本的构建。
+fn filter_neoforge_versions(
+    raw: Vec<String>,
+    mc_version: &str,
+    artifact_prefix: &str,
+) -> Vec<LoaderVersion> {
+    let mc_prefix = if artifact_prefix.is_empty() {
+        neoforge_version_prefix(mc_version)
     } else {
-        (
-            dl.source
-                .neoforge_maven("net/neoforged/neoforge/maven-metadata.xml"),
-            String::new(),
-        )
+        None
+    };
+    let mut versions: Vec<LoaderVersion> = raw
+        .into_iter()
+        .filter_map(|v| {
+            let v = v.trim().to_string();
+            if artifact_prefix.is_empty() {
+                // 必须按目标 Minecraft 版本过滤，否则自动选择会挑到给别的版本用的构建
+                let prefix = mc_prefix.as_ref()?;
+                if !v.starts_with(&format!("{prefix}.")) {
+                    return None;
+                }
+                // 预发布版本（带 - 后缀）不参与选择
+                if v.contains('-') {
+                    return None;
+                }
+                Some(v)
+            } else {
+                // 过渡产物的版本号形如 1.20.1-47.1.106，
+                // 先去掉前缀再看剩下的是不是预发布版本
+                let rest = v.strip_prefix(artifact_prefix)?.trim().to_string();
+                if rest.is_empty() || rest.contains('-') {
+                    return None;
+                }
+                Some(rest)
+            }
+        })
+        .map(|version| LoaderVersion {
+            version,
+            stable: false,
+        })
+        .collect();
+    sort_versions_desc(&mut versions);
+    versions
+}
+
+/// NeoForge 版本号的前两段对应 Minecraft 的次版本与补丁号
+///
+/// 1.20.4 → `20.4`，1.21 → `21.0`，1.21.1 → `21.1`，26.1 → `26.1`
+fn neoforge_version_prefix(mc_version: &str) -> Option<String> {
+    let rest = mc_version.strip_prefix("1.").unwrap_or(mc_version);
+    let mut parts = rest.split('.');
+    let major = parts.next()?.trim();
+    if major.is_empty() {
+        return None;
+    }
+    match parts.next().map(|s| s.trim()) {
+        Some(minor) if !minor.is_empty() => Some(format!("{major}.{minor}")),
+        _ => Some(format!("{major}.0")),
+    }
+}
+
+/// 版本号按数字逐段比较，从大到小排序
+fn sort_versions_desc(versions: &mut [LoaderVersion]) {
+    versions.sort_by(|a, b| compare_versions(&b.version, &a.version));
+}
+
+/// 比较两个版本号
+///
+/// 逐段比较：数字段按数值比，数字段大于非数字段（预发布），
+/// 段数多的一方更大，除非多出来的都是非数字段（此时它是预发布版本，更小）。
+fn compare_versions(a: &str, b: &str) -> Ordering {
+    let sa: Vec<&str> = a.split(['.', '-']).filter(|s| !s.is_empty()).collect();
+    let sb: Vec<&str> = b.split(['.', '-']).filter(|s| !s.is_empty()).collect();
+
+    let common = sa.len().min(sb.len());
+    for i in 0..common {
+        let x = sa[i];
+        let y = sb[i];
+        let ord = match (x.parse::<u64>(), y.parse::<u64>()) {
+            (Ok(p), Ok(q)) => p.cmp(&q),
+            (Ok(_), Err(_)) => Ordering::Greater,
+            (Err(_), Ok(_)) => Ordering::Less,
+            (Err(_), Err(_)) => x.cmp(y),
+        };
+        if ord != Ordering::Equal {
+            return ord;
+        }
+    }
+
+    if sa.len() == sb.len() {
+        return Ordering::Equal;
+    }
+    // 段数不同：多出来的那一段如果是预发布标记，说明带后缀的其实是更旧的版本
+    let longer_is_prerelease = if sa.len() > sb.len() {
+        sa[common..].iter().all(|s| s.parse::<u64>().is_err())
+    } else {
+        sb[common..].iter().all(|s| s.parse::<u64>().is_err())
+    };
+    let sa_longer = sa.len() > sb.len();
+    match (longer_is_prerelease, sa_longer) {
+        (true, true) => Ordering::Less,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Greater,
+        (false, false) => Ordering::Less,
+    }
+}
+
+/// 加载器安装器在 Maven 仓库中的坐标
+///
+/// 安装器文件名里用的是「Maven 版本号」，与安装完成后 versions 目录里的
+/// 版本 id 并不相同，把两者混为一谈会拼出 404 的地址：
+/// - Forge 1.12.2 + 14.23.0.2486 → Maven `1.12.2-14.23.0.2486`，版本 id `1.12.2-forge-14.23.0.2486`
+/// - NeoForge 1.20.1 + 47.1.106 → Maven `1.20.1-47.1.106`，版本 id `1.20.1-forge-47.1.106`
+/// - NeoForge 21.1.172 → Maven `21.1.172`，版本 id `neoforge-21.1.172`
+#[derive(Debug, Clone)]
+struct InstallerArtifact {
+    /// Maven 版本号
+    maven_version: String,
+    /// 安装完成后生成的版本 id
+    version_id: String,
+    /// 相对仓库根目录的路径
+    path: String,
+}
+
+fn installer_artifact(kind: LoaderKind, mc_version: &str, loader_version: &str) -> InstallerArtifact {
+    match kind {
+        LoaderKind::Forge => {
+            let maven_version = format!("{mc_version}-{loader_version}");
+            InstallerArtifact {
+                path: format!(
+                    "net/minecraftforge/forge/{maven_version}/forge-{maven_version}-installer.jar"
+                ),
+                version_id: format!("{mc_version}-forge-{loader_version}"),
+                maven_version,
+            }
+        }
+        LoaderKind::NeoForge if mc_version == "1.20.1" => {
+            // 1.20.1 走 net.neoforged:forge 过渡产物
+            let maven_version = format!("{mc_version}-{loader_version}");
+            InstallerArtifact {
+                path: format!(
+                    "net/neoforged/forge/{maven_version}/forge-{maven_version}-installer.jar"
+                ),
+                version_id: format!("{mc_version}-forge-{loader_version}"),
+                maven_version,
+            }
+        }
+        LoaderKind::NeoForge => {
+            let maven_version = loader_version.to_string();
+            InstallerArtifact {
+                path: format!(
+                    "net/neoforged/neoforge/{maven_version}/neoforge-{maven_version}-installer.jar"
+                ),
+                version_id: format!("neoforge-{loader_version}"),
+                maven_version,
+            }
+        }
+        LoaderKind::Fabric | LoaderKind::Quilt => {
+            unreachable!("Fabric / Quilt 不使用安装器")
+        }
     }
 }
 
@@ -270,29 +432,28 @@ pub fn install(
             progress,
             opts,
         ),
-        LoaderKind::Forge => {
-            let name = format!("{mc_version}-forge-{loader_version}");
-            let path = format!("net/minecraftforge/forge/{name}/forge-{name}-installer.jar");
-            let url = dl.source.forge_maven(&path);
-            run_installer(dl, &url, game_dir, java, progress, &name)
-        }
-        LoaderKind::NeoForge => {
-            let (path, expected) = if mc_version == "1.20.1" {
-                let name = format!("1.20.1-forge-{loader_version}");
-                (
-                    format!("net/neoforged/forge/{name}/forge-{name}-installer.jar"),
-                    name,
-                )
-            } else {
-                (
-                    format!(
-                        "net/neoforged/neoforge/{loader_version}/neoforge-{loader_version}-installer.jar"
-                    ),
-                    format!("neoforge-{loader_version}"),
-                )
+        LoaderKind::Forge | LoaderKind::NeoForge => {
+            let artifact = installer_artifact(kind, mc_version, loader_version);
+            let url = match kind {
+                LoaderKind::Forge => dl.source.forge_maven(&artifact.path),
+                _ => dl.source.neoforge_maven(&artifact.path),
             };
-            let url = dl.source.neoforge_maven(&path);
-            run_installer(dl, &url, game_dir, java, progress, &expected)
+            log::info!(
+                "下载 {} 安装器 {} -> {}",
+                kind.label(),
+                artifact.maven_version,
+                artifact.path
+            );
+            run_installer(
+                dl,
+                &url,
+                game_dir,
+                java,
+                progress,
+                &artifact.version_id,
+                loader_version,
+                mc_version,
+            )
         }
     }
 }
@@ -363,6 +524,8 @@ fn run_installer(
     java: &JavaInfo,
     progress: &Arc<DownloadProgress>,
     expected_id: &str,
+    keyword: &str,
+    mc_version: &str,
 ) -> Result<String> {
     paths::ensure_dir(game_dir)?;
     let cache = paths::cache_dir().join("installers");
@@ -381,10 +544,151 @@ fn run_installer(
             .with_context(|| format!("下载安装器失败: {url}"))?;
     }
 
+    // 1.7 ~ 1.16.5 的 Forge 安装器沿用官方启动器的安装逻辑，
+    // 必须先有 launcher_profiles.json，否则它会直接报错退出。
+    let mut prepared = false;
+    if needs_launcher_profiles(mc_version) {
+        ensure_launcher_profiles(game_dir)?;
+        prepared = true;
+    }
+
+    // 安装器会自己新建版本目录，跑之前先记下已有的版本，跑完再比对，
+    // 这样才能认出老版本 Forge 那种不规则的目录名。
+    let before = version::installed_versions(game_dir);
+
+    loop {
+        let (status, output) = spawn_installer(&jar, game_dir, java, progress)?;
+        if status.success() {
+            break;
+        }
+        // 安装器因为缺少启动器配置而失败时，补一份再试一次
+        if !prepared && output.contains("launcher profile") {
+            prepared = true;
+            log::warn!("安装器缺少启动器配置，补一份 launcher_profiles.json 后重试");
+            ensure_launcher_profiles(game_dir)?;
+            continue;
+        }
+        return Err(anyhow!(
+            "安装器执行失败（退出码 {:?}），请检查网络或改用其他 Java",
+            status.code()
+        ));
+    }
+
+    let after = version::installed_versions(game_dir);
+    detect_installed_version(&before, &after, expected_id, keyword)
+        .ok_or_else(|| anyhow!("安装器已结束，但未找到生成的版本目录"))
+}
+
+/// 该 Minecraft 版本是否需要 launcher_profiles.json
+///
+/// 1.7 ~ 1.16.5 的 Forge 安装器沿用官方启动器的安装逻辑，
+/// 少了这个文件会直接报错退出；1.17 起换了新的安装器，不再需要。
+fn needs_launcher_profiles(mc_version: &str) -> bool {
+    let parts: Vec<u32> = mc_version
+        .split(['.', '-'])
+        .filter_map(|p| p.parse().ok())
+        .collect();
+    match parts.as_slice() {
+        [1, minor, patch] => (*minor, *patch) <= (16, 5),
+        [1, minor] => *minor <= 16,
+        _ => false,
+    }
+}
+
+/// 补一份官方启动器格式的 launcher_profiles.json
+///
+/// 老版本 Forge 安装器靠它确认游戏目录有效，已存在时不动。
+fn ensure_launcher_profiles(game_dir: &Path) -> Result<()> {
+    let path = game_dir.join("launcher_profiles.json");
+    if path.is_file() {
+        return Ok(());
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let json = serde_json::json!({
+        "profiles": {},
+        "selectedProfile": null,
+        "clientToken": uuid::Uuid::new_v4().to_string(),
+        "authenticationDatabase": {},
+        "launcherVersion": {
+            "name": "htmcl",
+            "id": 21,
+            "user": "nobody",
+            "uuid": "00000000000000000000000000000000",
+            "version": "1.0",
+            "javaVersion": { "minimumLauncherVersion": 21 },
+            "created": { "date": now },
+            "lastUsed": { "date": now }
+        },
+        "clientSettings": {
+            "locale": "zh_cn",
+            "banner": "minecraft",
+            "username": "",
+            "showLauncherSkin": false,
+            "hasSeenDataTransferWarning": true,
+            "hasSeenMultiplayerWarning": true,
+            "hideServers": false
+        }
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&json)?)
+        .with_context(|| format!("写入 launcher_profiles.json 失败: {}", path.display()))?;
+    log::info!("已生成 launcher_profiles.json: {}", path.display());
+    Ok(())
+}
+
+/// 给安装器的 JVM 带上系统代理
+///
+/// 返回形如 `-Dhttp.proxyHost=127.0.0.1` 的参数。
+/// SOCKS 代理走 `socksProxyHost`，由 Java 统一接管所有连接。
+fn proxy_jvm_args() -> Vec<String> {
+    if !crate::core::download::use_system_proxy() {
+        return Vec::new();
+    }
+    let Some(proxy) = crate::core::download::system_proxy() else {
+        return Vec::new();
+    };
+    let Ok(url) = reqwest::Url::parse(&proxy) else {
+        return Vec::new();
+    };
+    let Some(host) = url.host_str() else {
+        return Vec::new();
+    };
+    let Some(port) = url.port_or_known_default() else {
+        return Vec::new();
+    };
+    let scheme = url.scheme();
+    if scheme.starts_with("socks") {
+        vec![
+            format!("-DsocksProxyHost={host}"),
+            format!("-DsocksProxyPort={port}"),
+            "-DsocksProxyVersion=5".to_string(),
+        ]
+    } else {
+        vec![
+            format!("-Dhttp.proxyHost={host}"),
+            format!("-Dhttp.proxyPort={port}"),
+            format!("-Dhttps.proxyHost={host}"),
+            format!("-Dhttps.proxyPort={port}"),
+        ]
+    }
+}
+
+/// 运行安装器，返回退出状态与它的输出
+fn spawn_installer(
+    jar: &Path,
+    game_dir: &Path,
+    java: &JavaInfo,
+    progress: &Arc<DownloadProgress>,
+) -> Result<(std::process::ExitStatus, String)> {
     progress.set_message("正在运行安装器（可能需要几分钟）...");
     let mut cmd = Command::new(&java.path);
+    // 安装器是独立的 Java 进程，不会继承启动器的代理设置，
+    // 直连 Maven 中央仓库会超时，导致「这些库下载失败」而安装中断。
+    // 这些是 JVM 参数，必须放在 -jar 之前。
+    for arg in proxy_jvm_args() {
+        cmd.arg(arg);
+    }
     cmd.arg("-jar")
-        .arg(&jar)
+        .arg(jar)
         .arg("--installClient")
         .arg(game_dir);
     cmd.stdout(Stdio::piped());
@@ -401,10 +705,14 @@ fn run_installer(
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
+    // 安装器的输出既用于显示进度，也要留着判断失败原因
+    let collected = Arc::new(std::sync::Mutex::new(String::new()));
     let progress_out = progress.clone();
-    let handle_out = stdout.map(|s| std::thread::spawn(move || stream_lines(s, progress_out)));
+    let out_text = collected.clone();
+    let handle_out = stdout.map(|s| std::thread::spawn(move || stream_lines(s, progress_out, out_text)));
     let progress_err = progress.clone();
-    let handle_err = stderr.map(|s| std::thread::spawn(move || stream_lines(s, progress_err)));
+    let err_text = collected.clone();
+    let handle_err = stderr.map(|s| std::thread::spawn(move || stream_lines(s, progress_err, err_text)));
 
     let status = child.wait().context("等待安装器结束失败")?;
     if let Some(h) = handle_out {
@@ -414,38 +722,46 @@ fn run_installer(
         let _ = h.join();
     }
 
-    if !status.success() {
-        return Err(anyhow!(
-            "安装器执行失败（退出码 {:?}），请检查网络或改用其他 Java",
-            status.code()
-        ));
-    }
+    let text = collected.lock().map(|t| t.clone()).unwrap_or_default();
+    Ok((status, text))
+}
 
-    let versions = version::installed_versions(game_dir);
-    if versions.iter().any(|v| v == expected_id) {
-        return Ok(expected_id.to_string());
+/// 从安装前后版本目录的差异里找出安装器生成的版本
+fn detect_installed_version(
+    before: &[String],
+    after: &[String],
+    expected_id: &str,
+    keyword: &str,
+) -> Option<String> {
+    let created: Vec<&String> = after.iter().filter(|v| !before.contains(v)).collect();
+
+    // 1. 新建的目录里精确命中期望的版本 id
+    if let Some(v) = created.iter().find(|v| v.eq_ignore_ascii_case(expected_id)) {
+        return Some((*v).clone());
     }
-    let keyword = expected_id
-        .to_lowercase()
-        .replace("neoforge-", "")
-        .replace("forge-", "");
-    if let Some(found) = versions
-        .iter()
-        .find(|v| {
-            let lower = v.to_lowercase();
-            lower.contains("forge") && lower.contains(&keyword)
-        })
-    {
-        return Ok(found.clone());
+    // 2. 新建的目录里包含加载器版本号。老版本 Forge 的目录名形如
+    //    `1.7.10-Forge10.13.4.1614-1.7.10`，与拼出来的 id 对不上，只能按版本号片段找
+    if !keyword.is_empty() {
+        if let Some(v) = created.iter().find(|v| v.contains(keyword)) {
+            return Some((*v).clone());
+        }
     }
-    versions
+    // 3. 安装器没有新建目录（之前装过同一个版本），回退到期望的版本 id
+    if let Some(v) = after.iter().find(|v| v.eq_ignore_ascii_case(expected_id)) {
+        return Some(v.clone());
+    }
+    // 4. 兜底：版本目录里带加载器名字的
+    after
         .iter()
         .find(|v| v.to_lowercase().contains("forge"))
         .cloned()
-        .ok_or_else(|| anyhow!("安装器已结束，但未找到生成的版本目录"))
 }
 
-fn stream_lines<R: std::io::Read + Send + 'static>(stream: R, progress: Arc<DownloadProgress>) {
+fn stream_lines<R: std::io::Read + Send + 'static>(
+    stream: R,
+    progress: Arc<DownloadProgress>,
+    collected: Arc<std::sync::Mutex<String>>,
+) {
     use std::io::BufRead;
     let reader = std::io::BufReader::new(stream);
     for line in reader.lines().map_while(Result::ok) {
@@ -456,6 +772,10 @@ fn stream_lines<R: std::io::Read + Send + 'static>(stream: R, progress: Arc<Down
         log::debug!("[installer] {trimmed}");
         let short: String = trimmed.chars().take(120).collect();
         progress.set_message(short);
+        if let Ok(mut buffer) = collected.lock() {
+            buffer.push_str(trimmed);
+            buffer.push('\n');
+        }
     }
 }
 
@@ -552,5 +872,194 @@ mod tests {
         }
         // 未知值回落到推荐稳定版
         assert_eq!(LoaderPolicy::from_id("unknown"), LoaderPolicy::Stable);
+    }
+
+    /// Forge 的安装器在 Maven 上是 `{mc}-{forge版本}`，
+    /// 拼成 `{mc}-forge-{forge版本}` 会得到 404
+    #[test]
+    fn forge_installer_uses_maven_version_layout() {
+        let artifact = installer_artifact(LoaderKind::Forge, "1.12.2", "14.23.0.2486");
+        assert_eq!(
+            artifact.path,
+            "net/minecraftforge/forge/1.12.2-14.23.0.2486/forge-1.12.2-14.23.0.2486-installer.jar"
+        );
+        assert_eq!(artifact.version_id, "1.12.2-forge-14.23.0.2486");
+        assert_eq!(artifact.maven_version, "1.12.2-14.23.0.2486");
+    }
+
+    #[test]
+    fn forge_installer_layout_holds_for_modern_versions() {
+        let artifact = installer_artifact(LoaderKind::Forge, "1.20.1", "47.3.0");
+        assert_eq!(
+            artifact.path,
+            "net/minecraftforge/forge/1.20.1-47.3.0/forge-1.20.1-47.3.0-installer.jar"
+        );
+        assert_eq!(artifact.version_id, "1.20.1-forge-47.3.0");
+    }
+
+    /// 1.20.1 的 NeoForge 走 net.neoforged:forge 过渡产物
+    #[test]
+    fn neoforge_1201_uses_forge_artifact() {
+        let artifact = installer_artifact(LoaderKind::NeoForge, "1.20.1", "47.1.106");
+        assert_eq!(
+            artifact.path,
+            "net/neoforged/forge/1.20.1-47.1.106/forge-1.20.1-47.1.106-installer.jar"
+        );
+        assert_eq!(artifact.version_id, "1.20.1-forge-47.1.106");
+    }
+
+    #[test]
+    fn neoforge_modern_uses_neoforge_artifact() {
+        let artifact = installer_artifact(LoaderKind::NeoForge, "1.21.1", "21.1.172");
+        assert_eq!(
+            artifact.path,
+            "net/neoforged/neoforge/21.1.172/neoforge-21.1.172-installer.jar"
+        );
+        assert_eq!(artifact.version_id, "neoforge-21.1.172");
+    }
+
+    #[test]
+    fn neoforge_version_prefix_maps_mc_versions() {
+        assert_eq!(neoforge_version_prefix("1.20.2").as_deref(), Some("20.2"));
+        assert_eq!(neoforge_version_prefix("1.20.4").as_deref(), Some("20.4"));
+        assert_eq!(neoforge_version_prefix("1.21").as_deref(), Some("21.0"));
+        assert_eq!(neoforge_version_prefix("1.21.1").as_deref(), Some("21.1"));
+        assert_eq!(neoforge_version_prefix("26.1").as_deref(), Some("26.1"));
+    }
+
+    #[test]
+    fn compare_versions_orders_numerically() {
+        assert_eq!(compare_versions("20.4.190", "20.4.189"), Ordering::Greater);
+        assert_eq!(compare_versions("26.3.0.95", "26.3.0.9"), Ordering::Greater);
+        assert_eq!(compare_versions("20.4.190", "21.0.167"), Ordering::Less);
+        assert_eq!(compare_versions("14.23.5.2860", "14.23.5.2860"), Ordering::Equal);
+    }
+
+    /// 预发布版本排在正式版之后（更小）
+    #[test]
+    fn compare_versions_treats_prerelease_as_older() {
+        assert_eq!(compare_versions("20.4.190-beta", "20.4.190"), Ordering::Less);
+    }
+
+    #[test]
+    fn sort_versions_desc_puts_newest_first() {
+        let mut list = vec![
+            LoaderVersion {
+                version: "20.4.151".into(),
+                stable: false,
+            },
+            LoaderVersion {
+                version: "20.4.253".into(),
+                stable: false,
+            },
+            LoaderVersion {
+                version: "20.4.190".into(),
+                stable: false,
+            },
+        ];
+        sort_versions_desc(&mut list);
+        assert_eq!(list[0].version, "20.4.253");
+        assert_eq!(list[1].version, "20.4.190");
+        assert_eq!(list[2].version, "20.4.151");
+    }
+
+    /// 老版本 Forge 生成的目录名不规则，要能认出来
+    #[test]
+    fn detects_legacy_forge_version_directory() {
+        let before = vec!["1.7.10".to_string()];
+        let after = vec![
+            "1.7.10".to_string(),
+            "1.7.10-Forge10.13.4.1614-1.7.10".to_string(),
+        ];
+        let found = detect_installed_version(
+            &before,
+            &after,
+            "1.7.10-forge-10.13.4.1614-1.7.10",
+            "10.13.4.1614-1.7.10",
+        );
+        assert_eq!(found.as_deref(), Some("1.7.10-Forge10.13.4.1614-1.7.10"));
+    }
+
+    #[test]
+    fn detects_exact_version_directory() {
+        let before = vec!["1.12.2".to_string()];
+        let after = vec![
+            "1.12.2".to_string(),
+            "1.12.2-forge-14.23.0.2486".to_string(),
+        ];
+        let found = detect_installed_version(
+            &before,
+            &after,
+            "1.12.2-forge-14.23.0.2486",
+            "14.23.0.2486",
+        );
+        assert_eq!(found.as_deref(), Some("1.12.2-forge-14.23.0.2486"));
+    }
+
+    /// 1.20.1 的过渡产物版本号带 - 前缀，不能被当成预发布版本筛掉
+    #[test]
+    fn neoforge_1201_transitional_artifact_is_kept() {
+        let raw = vec![
+            "1.20.1-47.1.106".to_string(),
+            "1.20.1-47.1.7".to_string(),
+            "1.20.1-47.2.0-beta".to_string(),
+        ];
+        let versions = filter_neoforge_versions(raw, "1.20.1", "1.20.1-");
+        assert_eq!(versions.len(), 2);
+        assert_eq!(versions[0].version, "47.1.106");
+        assert_eq!(versions[1].version, "47.1.7");
+    }
+
+    /// 同一个仓库里混着各个 Minecraft 版本的构建，必须按目标版本过滤
+    #[test]
+    fn neoforge_versions_are_filtered_by_mc_version() {
+        let raw = vec![
+            "20.4.253".to_string(),
+            "20.4.190-beta".to_string(),
+            "21.1.264".to_string(),
+            "26.3.0.97".to_string(),
+        ];
+        let versions = filter_neoforge_versions(raw, "1.20.4", "");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version, "20.4.253");
+    }
+
+    #[test]
+    fn neoforge_versions_for_26x_are_filtered() {
+        let raw = vec![
+            "26.3.0.97".to_string(),
+            "26.1.2.122".to_string(),
+            "21.1.264".to_string(),
+        ];
+        let versions = filter_neoforge_versions(raw, "26.1", "");
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version, "26.1.2.122");
+    }
+
+    /// 老版本 Forge 安装器（1.7 ~ 1.16.5）需要 launcher_profiles.json
+    #[test]
+    fn launcher_profiles_needed_only_for_legacy_forge() {        assert!(needs_launcher_profiles("1.7.10"));
+        assert!(needs_launcher_profiles("1.12.2"));
+        assert!(needs_launcher_profiles("1.16.5"));
+        assert!(!needs_launcher_profiles("1.17.1"));
+        assert!(!needs_launcher_profiles("1.20.1"));
+        assert!(!needs_launcher_profiles("26.1"));
+    }
+
+    /// 安装器没新建目录时（重复安装同一个版本）也要能找到
+    #[test]
+    fn detects_existing_version_directory() {
+        let before = vec!["1.12.2".to_string()];
+        let after = vec![
+            "1.12.2".to_string(),
+            "1.12.2-forge-14.23.0.2486".to_string(),
+        ];
+        let found = detect_installed_version(
+            &before,
+            &after,
+            "1.12.2-forge-14.23.0.2486",
+            "14.23.0.2486",
+        );
+        assert_eq!(found.as_deref(), Some("1.12.2-forge-14.23.0.2486"));
     }
 }
