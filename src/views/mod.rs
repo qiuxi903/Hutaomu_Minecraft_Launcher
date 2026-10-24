@@ -51,6 +51,15 @@ pub fn launch_game(app: &mut App) {
         return;
     };
 
+    // 皮肤站的令牌有效期不长，过期后启动会直接失败，
+    // 与其让游戏报一堆看不懂的错，不如先提示重新登录
+    if let crate::core::auth::Account::Authlib(a) = &account {
+        if a.expires_at > 0 && a.expires_at <= chrono::Utc::now().timestamp() {
+            app.error("皮肤站登录已过期，请到「账号」页面重新登录");
+            return;
+        }
+    }
+
     let game_dir = app.cfg.game_dir.clone();
     let mut resolved = match crate::core::minecraft::resolve(&game_dir, &version_id) {
         Ok(resolved) => resolved,

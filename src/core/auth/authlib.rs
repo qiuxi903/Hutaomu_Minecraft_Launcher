@@ -58,6 +58,57 @@ impl Default for YggdrasilResponse {
     }
 }
 
+/// 从 JWT 里取过期时间（秒级时间戳）
+///
+/// 皮肤站签发的 accessToken 是 JWT，过期时间在 `exp` 里。
+/// 不解析的话启动器不知道令牌什么时候失效。
+pub fn jwt_expires_at(token: &str) -> Option<i64> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    let json: serde_json::Value = serde_json::from_slice(&decoded).ok()?;
+    let exp = json.get("exp")?;
+    // exp 可能是整数，也可能是带小数的浮点时间戳
+    exp.as_i64()
+        .or_else(|| exp.as_f64().map(|f| f as i64))
+}
+
+/// 把角色 id 统一成带连字符的 36 位形式
+///
+/// 皮肤站的角色 id 可能在不同接口里格式不一致（有连字符的与没有的），
+/// 统一之后再发给服务端，避免服务端认不出角色。
+pub fn normalize_profile_id(id: &str) -> String {
+    let hex: String = id.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    if hex.len() != 32 {
+        return id.to_string();
+    }
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[0..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..32]
+    )
+}
+
+/// 从请求体里取出角色 id 的两种可能写法
+///
+/// 优先用原样，服务端不认再试另一种。
+fn profile_id_candidates(id: &str) -> Vec<String> {
+    let normalized = normalize_profile_id(id);
+    let plain: String = normalized.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let mut list = vec![id.to_string()];
+    if !normalized.is_empty() && !list.contains(&normalized) {
+        list.push(normalized);
+    }
+    if plain.len() == 32 && !list.contains(&plain) {
+        list.push(plain);
+    }
+    list
+}
+
 #[derive(Debug, Clone)]
 pub struct AuthlibAuth {
     pub access_token: String,
@@ -67,6 +118,8 @@ pub struct AuthlibAuth {
     pub server_url: String,
     pub skin_url: Option<String>,
     pub skin_model: String,
+    /// 访问令牌的过期时间（秒级时间戳），0 表示未知
+    pub expires_at: i64,
 }
 
 /// 登录后的会话，尚未选定角色
@@ -78,6 +131,8 @@ pub struct AuthlibSession {
     pub client_token: String,
     /// 该账号下的全部角色
     pub profiles: Vec<AuthlibProfile>,
+    /// 访问令牌的过期时间（秒级时间戳），0 表示未知
+    pub expires_at: i64,
 }
 
 /// 用账号密码换取访问令牌与角色列表
@@ -111,6 +166,7 @@ pub fn authenticate(
         .access_token
         .ok_or_else(|| anyhow!("皮肤站未返回访问令牌"))?;
     let client_token = resp.client_token.unwrap_or(client_token);
+    let expires_at = jwt_expires_at(&access_token).unwrap_or(0);
 
     // 角色列表：availableProfiles 为准，缺失时退回 selectedProfile
     let profiles = extract_profiles(resp.available_profiles, resp.selected_profile);
@@ -118,11 +174,24 @@ pub fn authenticate(
         return Err(anyhow!("该账号在皮肤站没有可用的角色"));
     }
 
+    log::info!(
+        "皮肤站登录成功：{} 个角色，令牌有效期到 {}",
+        profiles.len(),
+        if expires_at > 0 {
+            chrono::DateTime::from_timestamp(expires_at, 0)
+                .map(|t| t.with_timezone(&chrono::Local).to_string())
+                .unwrap_or_else(|| "未知".into())
+        } else {
+            "未知".into()
+        }
+    );
+
     Ok(AuthlibSession {
         server,
         access_token,
         client_token,
         profiles,
+        expires_at,
     })
 }
 
@@ -164,44 +233,58 @@ pub fn select_profile(
     profile: &AuthlibProfile,
 ) -> Result<AuthlibAuth> {
     let server = normalize_api_root(server_url);
-    let body = serde_json::json!({
-        "accessToken": access_token,
-        "clientToken": client_token,
-        "requestUser": true,
-        "selectedProfile": { "id": profile.id, "name": profile.name }
-    });
-    let resp = post_yggdrasil(dl, &format!("{server}/authserver/refresh"), &body)?;
+    let url = format!("{server}/authserver/refresh");
 
-    if let Some(err) = resp.error.clone() {
-        return Err(anyhow!("{}", translate_error(&resp.error_message.unwrap_or(err))));
+    // 角色 id 的格式在不同接口里可能不一致，服务端不认就换一种写法再试
+    let mut last_err: Option<String> = None;
+    for id in profile_id_candidates(&profile.id) {
+        let body = serde_json::json!({
+            "accessToken": access_token,
+            "clientToken": client_token,
+            "requestUser": true,
+            "selectedProfile": { "id": id, "name": profile.name }
+        });
+        let resp = post_yggdrasil(dl, &url, &body)?;
+        if let Some(err) = resp.error.clone() {
+            let message = resp.error_message.clone().unwrap_or(err);
+            let text = translate_error(&message);
+            last_err = Some(text);
+            continue;
+        }
+        let token = resp
+            .access_token
+            .ok_or_else(|| anyhow!("皮肤站未返回访问令牌"))?;
+        let client = resp.client_token.unwrap_or_else(|| client_token.to_string());
+        let expires_at = jwt_expires_at(&token).unwrap_or(0);
+
+        // refresh 返回的 selectedProfile 才是真正生效的角色
+        let chosen = resp
+            .selected_profile
+            .map(|p| AuthlibProfile {
+                id: p.id,
+                name: p.name,
+            })
+            .unwrap_or_else(|| profile.clone());
+
+        let (skin_url, skin_model) = fetch_skin(dl, &server, &chosen.id, &token)
+            .unwrap_or((None, "classic".into()));
+
+        log::info!("皮肤站登录成功：角色 {}（{}）", chosen.name, chosen.id);
+        return Ok(AuthlibAuth {
+            access_token: token,
+            client_token: client,
+            uuid: chosen.id,
+            name: chosen.name,
+            server_url: server,
+            skin_url,
+            skin_model,
+            expires_at,
+        });
     }
 
-    let access_token = resp
-        .access_token
-        .ok_or_else(|| anyhow!("皮肤站未返回访问令牌"))?;
-    let client_token = resp.client_token.unwrap_or_else(|| client_token.to_string());
-
-    // refresh 返回的 selectedProfile 才是真正生效的角色
-    let chosen = resp
-        .selected_profile
-        .map(|p| AuthlibProfile {
-            id: p.id,
-            name: p.name,
-        })
-        .unwrap_or_else(|| profile.clone());
-
-    let (skin_url, skin_model) = fetch_skin(dl, &server, &chosen.id, &access_token)
-        .unwrap_or((None, "classic".into()));
-
-    Ok(AuthlibAuth {
-        access_token,
-        client_token,
-        uuid: chosen.id,
-        name: chosen.name,
-        server_url: server,
-        skin_url,
-        skin_model,
-    })
+    let message = last_err.unwrap_or_else(|| "皮肤站没有接受这个角色".to_string());
+    log::warn!("皮肤站登录失败（角色 {}）：{message}", profile.name);
+    Err(anyhow!("{message}"))
 }
 
 /// 账号密码直接登录（只有一个角色时使用）
@@ -246,32 +329,36 @@ pub fn refresh(
     let resp = post_yggdrasil(dl, &format!("{server}/authserver/refresh"), &body)?;
 
     if let Some(err) = resp.error.clone() {
-        return Err(anyhow!("{}", resp.error_message.clone().unwrap_or(err)));
+        let message = resp.error_message.clone().unwrap_or(err);
+        return Err(anyhow!("{}", translate_error(&message)));
     }
 
-    let access_token = resp
+    let token = resp
         .access_token
         .ok_or_else(|| anyhow!("皮肤站未返回访问令牌"))?;
+    let expires_at = jwt_expires_at(&token).unwrap_or(0);
     // 优先沿用原角色，避免刷新后莫名其妙换了一个角色
     let profile = resp
         .available_profiles
         .unwrap_or_default()
         .into_iter()
-        .find(|p| keep_profile_id.map(|id| p.id == id).unwrap_or(false))
+        .find(|p| keep_profile_id.map(|id| p.id == id || normalize_profile_id(id) == normalize_profile_id(&p.id)).unwrap_or(false))
         .or_else(|| resp.selected_profile.clone())
         .ok_or_else(|| anyhow!("该账号在皮肤站没有可用的角色"))?;
 
-    let (skin_url, skin_model) = fetch_skin(dl, &server, &profile.id, &access_token)
+    let (skin_url, skin_model) = fetch_skin(dl, &server, &profile.id, &token)
         .unwrap_or((None, "classic".into()));
 
+    log::info!("皮肤站令牌已刷新：角色 {}", profile.name);
     Ok(AuthlibAuth {
-        access_token,
+        access_token: token,
         client_token: resp.client_token.unwrap_or_else(|| client_token.to_string()),
         uuid: profile.id,
         name: profile.name,
         server_url: server,
         skin_url,
         skin_model,
+        expires_at,
     })
 }
 
@@ -307,9 +394,19 @@ fn post_yggdrasil(
 
     let parsed: YggdrasilResponse = serde_json::from_str(&text).unwrap_or_default();
     if parsed.error.is_some() {
+        log::warn!(
+            "皮肤站返回错误 {}：{}",
+            parsed.error.clone().unwrap_or_default(),
+            parsed.error_message.clone().unwrap_or_default()
+        );
         return Ok(parsed);
     }
     if !status.is_success() {
+        log::warn!(
+            "皮肤站返回 HTTP {}：{}",
+            status.as_u16(),
+            crate::core::download::truncate(&text, 200)
+        );
         return Err(anyhow!(
             "皮肤站返回 HTTP {}：{}",
             status.as_u16(),
@@ -318,6 +415,10 @@ fn post_yggdrasil(
     }
     // 成功响应也必须能解析出 accessToken，否则视为接口不兼容
     if parsed.access_token.is_none() {
+        log::warn!(
+            "皮肤站返回的数据无法识别：{}",
+            crate::core::download::truncate(&text, 200)
+        );
         return Err(anyhow!(
             "皮肤站返回的数据无法识别：{}",
             crate::core::download::truncate(&text, 160)
@@ -328,7 +429,11 @@ fn post_yggdrasil(
 
 fn translate_error(message: &str) -> String {
     let lower = message.to_lowercase();
-    if lower.contains("invalid credentials") {
+    if lower.contains("invalid credentials")
+        || lower.contains("invalid username")
+        || lower.contains("invalid password")
+        || lower.contains("wrong password")
+    {
         return "用户名或密码错误".to_string();
     }
     if lower.contains("is not found") || lower.contains("not found") {
@@ -337,8 +442,20 @@ fn translate_error(message: &str) -> String {
     if lower.contains("token has expired") {
         return "登录已过期，请重新登录".to_string();
     }
+    if lower.contains("invalid accesstoken") || lower.contains("invalid access token") {
+        return "登录已失效，请重新登录".to_string();
+    }
     if lower.contains("forbidden operation for token") {
         return "登录状态已失效，请重新登录".to_string();
+    }
+    if lower.contains("too frequent requests") {
+        return "操作太频繁，请稍等片刻再试".to_string();
+    }
+    if lower.contains("already bound") || lower.contains("already logged in") {
+        return "该账号已在别处登录，请先在皮肤站退出".to_string();
+    }
+    if lower.contains("two factor") || lower.contains("2fa") || lower.contains("require captcha") {
+        return "该账号开启了两步验证，请先在皮肤站关闭或完成验证".to_string();
     }
     message.to_string()
 }
@@ -487,5 +604,63 @@ mod tests {
             "https://example.com/api/yggdrasil"
         );
         assert_eq!(normalize_api_root(""), DEFAULT_SERVER);
+    }
+    /// 皮肤站的令牌是 JWT，过期时间要从 exp 里解析出来
+    #[test]
+    fn parses_jwt_expiry() {
+        let token = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzdWIiOiI4ZWI1Y2NhZjExYzg1YWIzOGE1MDY1YTVkYTQxNDVmYSIsInlnZ3QiOiJkZmNkMWNjODQxZDE0N2NkOTk5YzA5YzVjMGYyNzY0NSIsImlzcyI6IllnZ2RyYXNpbC1BdXRoIiwiZXhwIjoxNzkyOTg4MTcxLjI2MDI3MywiaWF0IjoxNzkyNzI4OTcxLjI2MDI3M30.wqtvVov9oBT041XtGt3pQMMJvXANoCgiM9WB-uS2ZPE";
+        assert_eq!(jwt_expires_at(token), Some(1792988171));
+        // 不是 JWT 就返回 None，不能瞎猜
+        assert_eq!(jwt_expires_at("abc"), None);
+        assert_eq!(jwt_expires_at(""), None);
+    }
+
+    /// 角色 id 统一成带连字符的 36 位
+    #[test]
+    fn normalizes_profile_id() {
+        assert_eq!(
+            normalize_profile_id("f95cffca26ea339c91afc4c70b45edac"),
+            "f95cffca-26ea-339c-91af-c4c70b45edac"
+        );
+        // 本来就带连字符的不变
+        assert_eq!(
+            normalize_profile_id("f95cffca-26ea-339c-91af-c4c70b45edac"),
+            "f95cffca-26ea-339c-91af-c4c70b45edac"
+        );
+        // 不是 32 位的原样返回
+        assert_eq!(normalize_profile_id("abc"), "abc");
+    }
+
+    /// 角色 id 准备了几种写法，服务端不认就换一种
+    #[test]
+    fn profile_id_candidates_cover_both_formats() {
+        let plain = profile_id_candidates("f95cffca26ea339c91afc4c70b45edac");
+        assert!(plain.contains(&"f95cffca26ea339c91afc4c70b45edac".to_string()));
+        assert!(plain.contains(&"f95cffca-26ea-339c-91af-c4c70b45edac".to_string()));
+
+        let dashed = profile_id_candidates("f95cffca-26ea-339c-91af-c4c70b45edac");
+        assert!(dashed.contains(&"f95cffca26ea339c91afc4c70b45edac".to_string()));
+    }
+
+    #[test]
+    fn translates_common_skin_site_errors() {
+        assert_eq!(
+            translate_error("Invalid credentials."),
+            "用户名或密码错误"
+        );
+        assert_eq!(
+            translate_error("User foo is not found."),
+            "皮肤站上没有这个账号"
+        );
+        assert_eq!(
+            translate_error("Invalid AccessToken. Please re-login."),
+            "登录已失效，请重新登录"
+        );
+        assert_eq!(
+            translate_error("Too frequent requests. Please try after 1 seconds."),
+            "操作太频繁，请稍等片刻再试"
+        );
+        // 没见过的错误原样返回，不丢信息
+        assert_eq!(translate_error("Something odd"), "Something odd");
     }
 }

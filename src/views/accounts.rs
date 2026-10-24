@@ -177,7 +177,7 @@ impl AccountsState {
                     } else {
                         SkinModel::Classic
                     },
-                    expires_at: 0,
+                    expires_at: auth.expires_at,
                     skin_url: auth.skin_url,
                 });
                 accounts.upsert(account.clone());
@@ -606,6 +606,35 @@ fn start_authlib_login(app: &mut App) {
     });
 }
 
+/// 用已保存的令牌刷新皮肤站登录状态
+///
+/// 令牌过期后不用重新输密码，皮肤站允许拿旧令牌换一个新的。
+fn start_authlib_refresh(app: &mut App, account: AuthlibAccount) {
+    app.accounts_ui.authlib_logging_in = true;
+    app.accounts_ui.authlib_status = "正在刷新登录状态 ...".into();
+    let timeout = app.cfg.download.timeout_secs;
+
+    app.spawn("刷新皮肤站登录", true, move |job| {
+        let result = (|| -> anyhow::Result<AuthlibAuth> {
+            let dl = crate::core::download::Downloader::new(
+                crate::core::download::DownloadSource::Official,
+                timeout,
+            )?;
+            authlib::refresh(
+                &dl,
+                &account.server_url,
+                &account.access_token,
+                &account.client_token,
+                Some(&account.uuid),
+            )
+        })();
+        job.send(CoreEvent::AuthlibLogin(
+            result.map_err(|e| format!("{e}")),
+        ));
+        job.done(true, "");
+    });
+}
+
 /// 选定角色并完成登录
 fn start_authlib_select(app: &mut App, profile: AuthlibProfile) {
     let Some(session) = app.accounts_ui.authlib_session.clone() else {
@@ -835,6 +864,35 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                             .font(ui::font(11.0))
                             .color(p.text_faint),
                     );
+                }
+                // 皮肤站的令牌有时效，刷新一下就能继续用，不必重新输密码
+                if let Account::Authlib(a) = &account {
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui::button(
+                            ui,
+                            &p,
+                            ButtonOpts::secondary("刷新登录状态").icon("refresh"),
+                        )
+                        .clicked()
+                        {
+                            start_authlib_refresh(app, a.clone());
+                        }
+                        if a.expires_at > 0 {
+                            let until = chrono::DateTime::from_timestamp(a.expires_at, 0)
+                                .map(|t| {
+                                    t.with_timezone(&chrono::Local)
+                                        .format("%m-%d %H:%M")
+                                        .to_string()
+                                })
+                                .unwrap_or_else(|| "未知".into());
+                            ui.label(
+                                egui::RichText::new(format!("令牌有效期至 {until}"))
+                                    .font(ui::font(11.0))
+                                    .color(p.text_faint),
+                            );
+                        }
+                    });
                 }
                 ui.add_space(16.0);
 
