@@ -1121,6 +1121,13 @@ struct LocalContent {
     mcmod: Option<crate::core::content::mcmod::Entry>,
     /// 对应的 Modrinth slug（有则可跳转到 Modrinth 页面）
     modrinth_slug: Option<String>,
+    /// jar 自带的图标
+    icon: Option<Vec<u8>>,
+    /// 排序用的稳定键
+    ///
+    /// 词库是异步加载的，显示名会后到后变。
+    /// 排序按这个稳定的键走，名字补上时列表就不会整排跳位。
+    sort_key: String,
 }
 
 /// 列出某个实例下的内容
@@ -1162,7 +1169,11 @@ fn list_contents(app: &App, kind: ContentKind, game_dir: &Path) -> Vec<LocalCont
         let mut subtitle = String::new();
         let mut mcmod = None;
         let mut modrinth_slug = None;
+        let mut sort_key = file_name.clone();
         if let Some(meta) = &meta {
+            if !meta.mod_id.is_empty() {
+                sort_key = meta.mod_id.clone();
+            }
             // mod id 常常与 Modrinth slug 一致，先按 slug 查
             let entry = app
                 .mcmod_db
@@ -1202,10 +1213,13 @@ fn list_contents(app: &App, kind: ContentKind, game_dir: &Path) -> Vec<LocalCont
             display,
             subtitle,
             mcmod,
+            icon: meta.and_then(|m| m.icon),
             modrinth_slug,
+            sort_key,
         });
     }
-    items.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
+    // 按稳定键排序：词库后到时只改名字，不改顺序
+    items.sort_by(|a, b| a.sort_key.to_lowercase().cmp(&b.sort_key.to_lowercase()));
     items
 }
 
@@ -1506,17 +1520,52 @@ fn content_tab(
 
         ui::card_flat(ui, &p, |ui| {
             ui.horizontal(|ui| {
-                icons::paint(
-                    ui.ctx(),
-                    ui.painter(),
-                    kind.icon(),
-                    Rect::from_center_size(
-                        Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
-                        Vec2::splat(18.0),
-                    ),
-                    p.text_weak,
+                // 模组 jar 里大多自带一张图，用它当头像，没有才退回分类图标
+                let icon_key = format!(
+                    "{}|{}",
+                    item.path.display(),
+                    item.modified
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0)
                 );
-                ui.add_space(28.0);
+                let texture = item
+                    .icon
+                    .as_ref()
+                    .and_then(|bytes| app.mod_icon_texture(&icon_key, bytes));
+                match texture {
+                    Some(tex) => {
+                        let size = 30.0;
+                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+                        if ui.is_rect_visible(rect) {
+                            ui.painter().rect_filled(
+                                rect,
+                                p.corner_sm(),
+                                p.surface_alt,
+                            );
+                            ui.painter().image(
+                                tex.id(),
+                                rect.shrink(2.0),
+                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                egui::Color32::WHITE,
+                            );
+                        }
+                        ui.add_space(30.0);
+                    }
+                    None => {
+                        icons::paint(
+                            ui.ctx(),
+                            ui.painter(),
+                            kind.icon(),
+                            Rect::from_center_size(
+                                Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
+                                Vec2::splat(18.0),
+                            ),
+                            p.text_weak,
+                        );
+                        ui.add_space(28.0);
+                    }
+                }
                 ui.vertical(|ui| {
                     ui.label(
                         egui::RichText::new(&item.display)

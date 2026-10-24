@@ -500,6 +500,8 @@ pub struct App {
     pub versions_ui: views::versions::VersionsState,
 
     pub images: HashMap<String, egui::TextureHandle>,
+    /// 本地模组 jar 自带图标的纹理
+    pub mod_icons: HashMap<String, egui::TextureHandle>,
     images_pending: HashSet<String>,
     pub skin_cache: HashMap<String, SkinTexture>,
     pub skin_pending: HashSet<String>,
@@ -595,6 +597,7 @@ impl App {
             home_ui: Default::default(),
             versions_ui: Default::default(),
             images: HashMap::new(),
+            mod_icons: HashMap::new(),
             images_pending: HashSet::new(),
             skin_cache: HashMap::new(),
             skin_pending: HashSet::new(),
@@ -615,6 +618,8 @@ impl App {
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
+            page_changed_at: 0.0,
+            last_page: Page::Home,
             last_window_size: egui::vec2(1120.0, 720.0),
             image_tx,
             image_rx: image_rx.clone(),
@@ -1214,6 +1219,32 @@ impl App {
 
     pub fn image(&self, url: &str) -> Option<&egui::TextureHandle> {
         self.images.get(url)
+    }
+
+    /// 本地模组图标（jar 自带）的纹理
+    ///
+    /// 解码一次就缓存住，之后同一个模组直接拿纹理，不再重复解压图片。
+    pub fn mod_icon_texture(
+        &mut self,
+        key: &str,
+        bytes: &[u8],
+    ) -> Option<egui::TextureHandle> {
+        if let Some(texture) = self.mod_icons.get(key) {
+            return Some(texture.clone());
+        }
+        let decoded = image::load_from_memory(bytes).ok()?;
+        let rgba = decoded.to_rgba8();
+        let (w, h) = (rgba.width(), rgba.height());
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let texture = self.egui_ctx.load_texture(
+            format!("modicon:{key}"),
+            egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], rgba.as_raw()),
+            egui::TextureOptions::LINEAR,
+        );
+        self.mod_icons.insert(key.to_string(), texture.clone());
+        Some(texture)
     }
 
     /// 按需下载并缓存远程图片（项目图标等）。请求进入共享队列，

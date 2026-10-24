@@ -27,6 +27,12 @@ pub struct ModMeta {
     pub version: String,
     /// 加载器：fabric / quilt / forge / unknown
     pub loader: String,
+    /// jar 内图标的路径（元数据里写的相对路径）
+    pub icon_path: Option<String>,
+    /// jar 内自带图标的原始字节
+    ///
+    /// 模组大多会在 jar 里带一张图，拿到它就不用联网去找头像了。
+    pub icon: Option<Vec<u8>>,
 }
 
 /// 读取一个 jar 的模组元数据
@@ -36,28 +42,41 @@ pub fn read_meta(jar: &Path) -> Option<ModMeta> {
     let file = std::fs::File::open(jar).ok()?;
     let mut archive = zip::ZipArchive::new(file).ok()?;
 
-    // Fabric / Quilt
-    if let Some(meta) = read_json_entry(&mut archive, "fabric.mod.json") {
-        return fabric_meta(meta, "fabric");
-    }
-    if let Some(meta) = read_json_entry(&mut archive, "quilt.mod.json") {
-        return fabric_meta(meta, "quilt");
-    }
-    // Forge / NeoForge
-    for name in ["META-INF/mods.toml", "META-INF/neoforge.mods.toml"] {
-        if let Some(text) = read_text_entry(&mut archive, name) {
-            if let Some(meta) = parse_mods_toml(&text) {
-                return Some(meta);
+    // 先找出元数据和 jar 内图标的路径
+    //
+    // Forge 系的优先：有些模组在 jar 里会塞一份占位的 fabric.mod.json
+    // （id 后面带 -wrongloader），读它会拿到错误的模组 id。
+    let mut meta = {
+        let mut found = None;
+        for name in ["META-INF/mods.toml", "META-INF/neoforge.mods.toml"] {
+            if let Some(text) = read_text_entry(&mut archive, name) {
+                if let Some(meta) = parse_mods_toml(&text) {
+                    found = Some(meta);
+                    break;
+                }
             }
         }
-    }
-    // 旧版 Forge
-    if let Some(text) = read_text_entry(&mut archive, "mcmod.info") {
-        if let Some(meta) = parse_mcmod_info(&text) {
-            return Some(meta);
+        match found {
+            Some(meta) => Some(meta),
+            None => {
+                if let Some(value) = read_json_entry(&mut archive, "fabric.mod.json") {
+                    fabric_meta(value, "fabric")
+                } else if let Some(value) = read_json_entry(&mut archive, "quilt.mod.json") {
+                    fabric_meta(value, "quilt")
+                } else {
+                    // 旧版 Forge
+                    read_text_entry(&mut archive, "mcmod.info")
+                        .and_then(|text| parse_mcmod_info(&text))
+                }
+            }
         }
+    }?;
+
+    // 图标就在 jar 里，顺手读出来
+    if let Some(inner) = meta.icon_path.clone() {
+        meta.icon = read_binary_entry(&mut archive, &inner);
     }
-    None
+    Some(meta)
 }
 
 /// 读取 jar 内的文本条目
@@ -80,6 +99,17 @@ fn read_json_entry<R: std::io::Read + std::io::Seek>(
     serde_json::from_str(&text).ok()
 }
 
+/// 读取 jar 内的二进制条目
+fn read_binary_entry<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> Option<Vec<u8>> {
+    let mut file = archive.by_name(name).ok()?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).ok()?;
+    Some(data)
+}
+
 /// fabric.mod.json / quilt.mod.json 的字段
 #[derive(Debug, Deserialize, Default)]
 struct FabricJson {
@@ -91,11 +121,18 @@ struct FabricJson {
     version: String,
     #[serde(default)]
     description: String,
+    /// jar 内图标的相对路径，例如 `assets/sodium/icon.png`
+    #[serde(default)]
+    icon: String,
 }
 
 fn fabric_meta(value: serde_json::Value, loader: &str) -> Option<ModMeta> {
     let json: FabricJson = serde_json::from_value(value).ok()?;
     if json.id.is_empty() && json.name.is_empty() {
+        return None;
+    }
+    // 模组在别的加载器上塞的占位包，id 会带这个后缀
+    if json.id.ends_with("-wrongloader") {
         return None;
     }
     Some(ModMeta {
@@ -104,6 +141,12 @@ fn fabric_meta(value: serde_json::Value, loader: &str) -> Option<ModMeta> {
         description: json.description,
         version: json.version,
         loader: loader.to_string(),
+        icon_path: if json.icon.is_empty() {
+            None
+        } else {
+            Some(json.icon)
+        },
+        icon: None,
     })
 }
 
@@ -147,6 +190,7 @@ fn parse_mcmod_info(text: &str) -> Option<ModMeta> {
         description: entry.description,
         version: entry.version,
         loader: "forge".to_string(),
+        ..Default::default()
     })
 }
 
@@ -171,7 +215,8 @@ fn parse_mods_toml(text: &str) -> Option<ModMeta> {
         }
         // 段标题
         if line.starts_with('[') {
-            in_mods = line == "[[mods]]";
+            // 段标题后面也可能跟着注释，例如 `[[mods]] #mandatory`
+            in_mods = strip_comment(line) == "[[mods]]";
             in_desc = false;
             continue;
         }
@@ -193,7 +238,8 @@ fn parse_mods_toml(text: &str) -> Option<ModMeta> {
             continue;
         };
         let key = key.trim();
-        let value = value.trim();
+        // 值后面可能跟着注释，例如 `modId="jei" #mandatory`
+        let value = strip_comment(value.trim());
         match key {
             "modId" => {
                 meta.mod_id = unquote(value);
@@ -208,6 +254,13 @@ fn parse_mods_toml(text: &str) -> Option<ModMeta> {
             }
             "version" => {
                 meta.version = unquote(value);
+            }
+            // jar 内图标的相对路径，例如 `logo.png`
+            // Forge 写 logoFile，NeoForge 改成 iconFile，两个都认
+            "logoFile" | "iconFile" => {
+                if meta.icon_path.is_none() {
+                    meta.icon_path = Some(unquote(value));
+                }
             }
             "description" => {
                 if value.starts_with("'''") || value.starts_with("\"\"\"") {
@@ -235,6 +288,31 @@ fn parse_mods_toml(text: &str) -> Option<ModMeta> {
     } else {
         None
     }
+}
+
+/// 去掉 TOML 行尾的注释
+///
+/// 例如 `modId="jei" #mandatory` 里的 `#mandatory` 不是值的一部分。
+fn strip_comment(value: &str) -> &str {
+    // 引号里的 # 不是注释
+    let mut in_quote: Option<char> = None;
+    for (i, ch) in value.char_indices() {
+        match in_quote {
+            Some(q) => {
+                if ch == q {
+                    in_quote = None;
+                }
+            }
+            None => {
+                if ch == '"' || ch == '\'' {
+                    in_quote = Some(ch);
+                } else if ch == '#' {
+                    return value[..i].trim_end();
+                }
+            }
+        }
+    }
+    value
 }
 
 /// 去掉 TOML 字符串两端的引号
@@ -307,6 +385,34 @@ version="15.2.0"
         assert_eq!(meta.mod_id, "jei");
         assert_eq!(meta.name, "Just Enough Items");
         assert_eq!(meta.version, "15.2.0");
+    }
+
+    /// 官方元数据里字段后面常跟着注释，值不能把注释一起带进来
+    #[test]
+    fn ignores_trailing_comments_in_mods_toml() {
+        let toml = r#"
+[[mods]] #mandatory
+modId="jei" #mandatory
+version="31.14.0.72" #mandatory
+displayName="Just Enough Items" #mandatory
+iconFile="jei-icon.png"
+"#;
+        let meta = parse_mods_toml(toml).expect("应能解析");
+        assert_eq!(meta.mod_id, "jei");
+        assert_eq!(meta.name, "Just Enough Items");
+        assert_eq!(meta.version, "31.14.0.72");
+        // NeoForge 用 iconFile，Forge 用 logoFile，两个都认
+        assert_eq!(meta.icon_path.as_deref(), Some("jei-icon.png"));
+    }
+
+    /// 模组在别的加载器上塞的占位包，id 会带 -wrongloader
+    #[test]
+    fn rejects_placeholder_fabric_meta() {
+        let value: serde_json::Value = serde_json::from_str(
+            r#"{"id":"journeymap-wrongloader","version":"not a fabric mod","name":"Journeymap-Forge"}"#,
+        )
+        .unwrap();
+        assert!(fabric_meta(value, "fabric").is_none());
     }
 
     #[test]
