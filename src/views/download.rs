@@ -1787,12 +1787,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
         // ---- 安装位置 ----
         if let Some(id) = &instance_id {
             let dir = app.cfg.effective_game_dir(id);
-            let target = match kind {
-                ContentKind::Mod => dir.join("mods"),
-                ContentKind::Shader => dir.join("shaderpacks"),
-                ContentKind::ResourcePack => dir.join("resourcepacks"),
-                _ => dir,
-            };
+            let target = content_target_dir(&dir, kind);
             let path_text = target.display().to_string();
             ui.horizontal(|ui| {
                 ui.label(
@@ -2034,6 +2029,16 @@ fn ellipsize_path(path: &str, max_chars: usize) -> String {
     format!("{head}…{tail}")
 }
 
+/// 内容装到实例目录下的哪个位置
+fn content_target_dir(game_dir: &std::path::Path, kind: ContentKind) -> std::path::PathBuf {
+    match kind {
+        ContentKind::Mod => game_dir.join("mods"),
+        ContentKind::Shader => game_dir.join("shaderpacks"),
+        ContentKind::ResourcePack => game_dir.join("resourcepacks"),
+        _ => game_dir.to_path_buf(),
+    }
+}
+
 /// 安装内容到指定实例
 fn install_content(
     app: &mut App,
@@ -2219,5 +2224,25 @@ mod tests {
         assert!(short.ends_with("mods"));
         // 短路径原样返回
         assert_eq!(ellipsize_path("C:\\a", 20), "C:\\a");
+    }
+
+    /// 内容装到实例目录下的对应子目录
+    ///
+    /// 实例目录按 Minecraft 版本算，原版与加载器版本共用这一份。
+    #[test]
+    fn content_targets_instance_sub_dir() {
+        let game_dir = std::path::PathBuf::from("D:\\mc\\versions\\26.2");
+        assert_eq!(
+            content_target_dir(&game_dir, ContentKind::Mod),
+            game_dir.join("mods")
+        );
+        assert_eq!(
+            content_target_dir(&game_dir, ContentKind::Shader),
+            game_dir.join("shaderpacks")
+        );
+        assert_eq!(
+            content_target_dir(&game_dir, ContentKind::ResourcePack),
+            game_dir.join("resourcepacks")
+        );
     }
 }
