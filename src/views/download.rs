@@ -720,6 +720,8 @@ fn start_install(
     let policy = app.cfg.download.loader_policy();
     let timing = app.cfg.download.loader_timing();
     let mc = entry.id.clone();
+    // 实例目录：装完先给个默认语言，第一次启动就是中文
+    let instance_dir = app.cfg.effective_game_dir(&mc);
 
     app.spawn_download(format!("安装 {mc}"), move |dl, progress, job| {
         let req = bundle::InstallRequest {
@@ -734,6 +736,7 @@ fn start_install(
             opts,
         };
         let outcome = bundle::install_bundle(&dl, &req, &progress)?;
+        let _ = crate::core::minecraft::launch::ensure_default_lang(&instance_dir);
         let target = outcome
             .loader_id
             .clone()

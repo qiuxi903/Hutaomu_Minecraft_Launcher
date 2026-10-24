@@ -16,31 +16,26 @@ pub const LAUNCHER_NAME: &str = "HTMCL";
 /// 游戏默认语言，简体中文
 pub const DEFAULT_LANG: &str = "zh_cn";
 
-/// 把游戏语言固定成简体中文
+/// 游戏首次运行时给个默认语言
 ///
 /// Minecraft 的语言由游戏目录里 `options.txt` 的 `lang` 决定，
-/// 启动参数 `--lang` 并不管用（26.x 的参数表里没有它）。
-/// 其它设置原样保留，只改语言这一项。
-pub fn ensure_chinese_lang(game_dir: &Path) -> Result<()> {
+/// 启动参数 `--lang` 不管用（26.x 的参数表里没有它）。
+///
+/// 只在 `options.txt` 里还没有 `lang` 时才写入简体中文：
+/// 第一次启动是中文，用户之后自己改成别的语言，
+/// 下次启动仍然用用户选的那个，不会被改回去。
+/// 其它设置原样保留。
+pub fn ensure_default_lang(game_dir: &Path) -> Result<()> {
     let path = game_dir.join("options.txt");
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let mut lines: Vec<String> = Vec::new();
-    let mut found = false;
-    for line in text.lines() {
-        if line.starts_with("lang:") {
-            if !found {
-                lines.push(format!("lang:{DEFAULT_LANG}"));
-                found = true;
-            }
-            continue;
-        }
-        lines.push(line.to_string());
+    if text.lines().any(|line| line.starts_with("lang:")) {
+        return Ok(());
     }
-    if !found {
-        lines.push(format!("lang:{DEFAULT_LANG}"));
-    }
+    let mut lines: Vec<String> = text.lines().map(|line| line.to_string()).collect();
+    lines.push(format!("lang:{DEFAULT_LANG}"));
     std::fs::write(&path, lines.join("\n") + "\n")
         .with_context(|| format!("写入语言设置失败: {}", path.display()))?;
+    log::info!("游戏语言默认设为简体中文：{}", path.display());
     Ok(())
 }
 pub const LAUNCHER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -548,20 +543,19 @@ pub fn ensure_authlib_injector(dl: &crate::core::download::Downloader) -> Result
 mod tests {
     use super::*;
 
-    /// 语言固定简体中文，其它设置不能被弄丢
+    /// 第一次启动给默认中文，其它设置不能被弄丢
     #[test]
-    fn chinese_lang_is_written_to_options() {
+    fn default_lang_is_written_when_missing() {
         let dir = std::env::temp_dir().join("htmcl-lang-test");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("应能建目录");
         let opts = dir.join("options.txt");
-        std::fs::write(&opts, "version:3955\nlang:en_us\nfov:0.0\n").expect("应能写文件");
+        std::fs::write(&opts, "version:3955\nfov:0.0\n").expect("应能写文件");
 
-        ensure_chinese_lang(&dir).expect("应能设置语言");
+        ensure_default_lang(&dir).expect("应能设置语言");
 
         let text = std::fs::read_to_string(&opts).expect("应能读文件");
-        assert!(text.contains("lang:zh_cn"), "语言应改成简体中文：{text}");
-        assert!(!text.contains("en_us"), "不该残留旧语言：{text}");
+        assert!(text.contains("lang:zh_cn"), "应写入默认语言：{text}");
         // 其它设置要留着
         assert!(text.contains("version:3955"));
         assert!(text.contains("fov:0.0"));
@@ -569,14 +563,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 用户自己改过的语言不能被改回去
+    #[test]
+    fn existing_lang_is_left_alone() {
+        let dir = std::env::temp_dir().join("htmcl-lang-test-keep");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("应能建目录");
+        let opts = dir.join("options.txt");
+        std::fs::write(&opts, "lang:en_us\nfov:0.0\n").expect("应能写文件");
+
+        ensure_default_lang(&dir).expect("应能设置语言");
+
+        let text = std::fs::read_to_string(&opts).expect("应能读文件");
+        assert!(text.contains("lang:en_us"), "用户选的语言要保留：{text}");
+        assert!(!text.contains("zh_cn"), "不该改成中文：{text}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 没有 options.txt 时也能建一个
     #[test]
-    fn chinese_lang_creates_missing_options() {
+    fn default_lang_creates_missing_options() {
         let dir = std::env::temp_dir().join("htmcl-lang-test-new");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("应能建目录");
 
-        ensure_chinese_lang(&dir).expect("应能设置语言");
+        ensure_default_lang(&dir).expect("应能设置语言");
 
         let text = std::fs::read_to_string(dir.join("options.txt")).expect("应能读文件");
         assert!(text.contains("lang:zh_cn"), "应写入语言：{text}");
