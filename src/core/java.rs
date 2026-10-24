@@ -452,6 +452,9 @@ pub fn sort_javas(list: &mut [JavaInfo]) {
 }
 
 /// 该 Minecraft 版本建议的 Java 主版本
+///
+/// 这只是没有版本 JSON 时的兜底估算，
+/// 真正的要求以版本 JSON 里的 `javaVersion.majorVersion` 为准。
 pub fn required_major(mc_version: &str) -> u32 {
     let parts: Vec<u32> = mc_version
         .split(['.', '-'])
@@ -461,9 +464,11 @@ pub fn required_major(mc_version: &str) -> u32 {
     if parts.is_empty() {
         return 8;
     }
-    // 2026 起的 26.x 版本号方案对应现代 Java
+    // 2026 起的 26.x 版本号方案对应 Java 25，
+    // 这些版本会带上 --sun-misc-unsafe-memory-access 这类新参数，
+    // 用低版本 Java 启动会直接报「Unrecognized option」。
     if parts[0] != 1 {
-        return 21;
+        return 25;
     }
     if parts.len() < 2 {
         return 8;
@@ -483,12 +488,11 @@ pub fn required_major(mc_version: &str) -> u32 {
     }
 }
 
-/// 从候选列表中挑选最合适的 Java
-pub fn pick_for(mc_version: &str, javas: &[JavaInfo]) -> Option<JavaInfo> {
+/// 从候选列表中挑选满足最低主版本要求的 Java
+pub fn pick_for_major(required: u32, javas: &[JavaInfo]) -> Option<JavaInfo> {
     if javas.is_empty() {
         return None;
     }
-    let required = required_major(mc_version);
     let mut best: Option<&JavaInfo> = None;
     for java in javas {
         if java.major < required {
@@ -509,4 +513,28 @@ pub fn pick_for(mc_version: &str, javas: &[JavaInfo]) -> Option<JavaInfo> {
     }
     best.or_else(|| javas.iter().max_by_key(|j| (j.bits, j.major)))
         .cloned()
+}
+
+/// 从候选列表中挑选最合适的 Java
+pub fn pick_for(mc_version: &str, javas: &[JavaInfo]) -> Option<JavaInfo> {
+    pick_for_major(required_major(mc_version), javas)
+}
+
+/// 按最低主版本要求挑选 Java，手动指定的路径优先
+///
+/// 手动指定的路径最优先：用户明确指定过就不该被自动选择覆盖。
+pub fn pick_for_version(
+    required: u32,
+    manual_path: Option<&std::path::Path>,
+    javas: &[JavaInfo],
+) -> Option<JavaInfo> {
+    if let Some(path) = manual_path {
+        if let Some(found) = javas.iter().find(|j| j.path == path) {
+            return Some(found.clone());
+        }
+        if let Some(probed) = probe(path) {
+            return Some(probed);
+        }
+    }
+    pick_for_major(required, javas)
 }

@@ -66,7 +66,20 @@ pub fn launch_game(app: &mut App) {
         &resolved.json,
     );
 
-    let Some(java) = app.java_for(&mc_version) else {
+    // 版本 JSON 里的 javaVersion 是 Mojang 官方声明的要求，
+    // 比按版本号估算的表准（26.x 要求 Java 25）
+    let required_major = resolved
+        .json
+        .java_version
+        .as_ref()
+        .map(|v| v.major_version)
+        .unwrap_or_else(|| crate::core::java::required_major(&mc_version));
+
+    let Some(java) = crate::core::java::pick_for_version(
+        required_major,
+        app.cfg.java.path.as_deref(),
+        &app.javas,
+    ) else {
         app.error("没有找到可用的 Java，请到「设置 - Java」搜索或手动指定");
         return;
     };
@@ -83,16 +96,17 @@ pub fn launch_game(app: &mut App) {
     }
 
     let identity = account.to_identity();
-    let memory = app.cfg.effective_memory(&version_id);
-    let jvm_args = app.cfg.effective_jvm_args(&version_id);
+    let memory = app.cfg.effective_memory(&mc_version);
+    let jvm_args = app.cfg.effective_jvm_args(&mc_version);
     let extra_args = app.cfg.launch.extra_args.clone();
     let fullscreen = app.cfg.launch.fullscreen;
     let width = app.cfg.launch.width;
     let height = app.cfg.launch.height;
     let authlib_jar = app.authlib_jar.clone();
 
-    // 版本隔离：把游戏目录指向 versions/<id>
-    let effective_dir = app.cfg.effective_game_dir(&version_id);
+    // 版本隔离：游戏目录指向该 Minecraft 版本的实例目录，
+    // 原版与各加载器版本共用这一份，模组与存档不会各分一份
+    let effective_dir = app.cfg.effective_game_dir(&mc_version);
     if let Err(err) = paths::ensure_dir(&effective_dir) {
         app.error(format!("创建游戏目录失败：{err}"));
         return;
@@ -142,8 +156,8 @@ pub fn launch_game(app: &mut App) {
 }
 
 /// 打开版本对应的游戏目录
-pub fn open_version_dir(app: &mut App, version_id: &str) {
-    let dir = app.cfg.effective_game_dir(version_id);
+pub fn open_version_dir(app: &mut App, mc_version: &str) {
+    let dir = app.cfg.effective_game_dir(mc_version);
     let _ = paths::ensure_dir(&dir);
     paths::reveal(&dir);
 }
