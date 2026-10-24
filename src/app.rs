@@ -77,7 +77,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 24;
+pub const SHOT_SCENES: usize = 26;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -202,6 +202,22 @@ impl App {
                         name: "铁匠阿福".into(),
                     },
                 ];
+            }
+            24 => {
+                // 版本详情 - 模组自带的蓝图（机械动力）
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = "create_schematic";
+                }
+            }
+            25 => {
+                // 版本详情 - 模组自带的投影蓝图
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = "litematic";
+                }
             }
             12 => {
                 // 触发一次真实下载，用于检查下载中心面板
@@ -454,6 +470,10 @@ pub struct App {
     pub local_versions: Vec<LocalVersion>,
     /// 按 Minecraft 版本聚合出的游戏实例（原版与各加载器版本合成一条）
     pub instances: Vec<crate::core::minecraft::GameInstance>,
+    /// 各实例装了哪些已适配的模组（按 Minecraft 版本索引）
+    ///
+    /// 装了机械动力、投影这类模组后，实例里才会多出它们自己的内容入口。
+    pub mod_features: HashMap<String, Vec<crate::core::content::modfeature::ModFeature>>,
     pub javas: Vec<JavaInfo>,
     pub java_searching: bool,
     pub java_search_message: String,
@@ -549,6 +569,7 @@ impl App {
             manifest_error: None,
             local_versions: Vec::new(),
             instances: Vec::new(),
+            mod_features: HashMap::new(),
             javas: Vec::new(),
             java_searching: false,
             java_search_message: String::new(),
@@ -901,6 +922,19 @@ impl App {
             &self.local_versions,
             self.cfg.selected_version.as_deref(),
         );
+        self.refresh_mod_features();
+    }
+
+    /// 扫描各实例装了什么模组，决定左侧导航要多出哪些内容入口
+    fn refresh_mod_features(&mut self) {
+        self.mod_features.clear();
+        for inst in &self.instances {
+            let game_dir = self.cfg.effective_game_dir(&inst.mc_version);
+            let features = crate::core::content::modfeature::detect(&game_dir);
+            if !features.is_empty() {
+                self.mod_features.insert(inst.mc_version.clone(), features);
+            }
+        }
     }
 
     /// 旧布局把实例目录放在版本目录里，现在统一按 Minecraft 版本存放
@@ -2359,6 +2393,8 @@ fn shot_scene_label(scene: usize) -> &'static str {
         20 => "版本管理-模组",
         21 => "版本管理-光影",
         22 => "版本管理-资源包",
+        24 => "版本管理-蓝图",
+        25 => "版本管理-投影蓝图",
         _ => "账号-皮肤站",
     }
 }

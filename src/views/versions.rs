@@ -72,19 +72,27 @@ const SORTS: [&str; 3] = ["最近修改", "名称", "占用空间"];
 /// 详情页左侧导航
 ///
 /// 原版没有加载器，既装不了模组也用不上光影，这两项就不列出来。
-fn sections_for(inst: &crate::core::minecraft::GameInstance) -> Vec<(&'static str, &'static str)> {
-    let mut list: Vec<(&'static str, &'static str)> = vec![
-        ("info", "概览"),
-        ("sliders", "设置"),
-        ("world", "存档"),
-        ("image", "截图"),
+/// 装了机械动力、投影这类模组的实例，还会多出模组自己的内容入口。
+fn sections_for(
+    inst: &crate::core::minecraft::GameInstance,
+    features: &[crate::core::content::modfeature::ModFeature],
+) -> Vec<(&'static str, &'static str, &'static str)> {
+    let mut list: Vec<(&'static str, &'static str, &'static str)> = vec![
+        ("info", "概览", "info"),
+        ("sliders", "设置", "sliders"),
+        ("world", "存档", "world"),
+        ("image", "截图", "image"),
     ];
     let has_loader = inst.variants.iter().any(|v| v.loader.is_some());
     if has_loader {
-        list.push(("mod", "模组"));
-        list.push(("shader", "光影"));
+        list.push(("mod", "模组", "mod"));
+        list.push(("shader", "光影", "shader"));
     }
-    list.push(("resourcepack", "资源包"));
+    list.push(("resourcepack", "资源包", "resourcepack"));
+    // 模组自带的内容放在最后，视觉上像是补充项
+    for feature in features {
+        list.push((feature.section, feature.label, feature.icon));
+    }
     list
 }
 
@@ -391,10 +399,16 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
     };
     let is_current = app.cfg.selected_version.as_deref() == Some(active.id.as_str());
 
-    // 左侧导航：原版没有加载器，模组与光影不列出来
-    let sections = sections_for(&inst);
+    // 左侧导航：原版没有加载器，模组与光影不列出来；
+    // 装了机械动力、投影这类模组的实例会多出模组自己的内容入口
+    let features = app
+        .mod_features
+        .get(&inst.mc_version)
+        .cloned()
+        .unwrap_or_default();
+    let sections = sections_for(&inst, &features);
     // 切换加载器后当前分区可能已经不在列表里，退回概览
-    if !sections.iter().any(|(id, _)| *id == app.versions_ui.section) {
+    if !sections.iter().any(|(id, _, _)| *id == app.versions_ui.section) {
         app.versions_ui.section = "info";
     }
 
@@ -514,16 +528,22 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
         ui.spacing_mut().item_spacing.x = 12.0;
         ui.vertical(|ui| {
             ui.set_width(150.0);
-            ui::card_padded(ui, &p, 8, |ui| {
-                ui.set_width(134.0);
-                for (icon, label) in sections.iter() {
-                    let selected = app.versions_ui.section == *icon;
-                    if ui::nav_item(ui, &p, icon, label, selected).clicked() {
-                        app.versions_ui.section = icon;
-                    }
-                    ui.add_space(2.0);
-                }
-            });
+            // 导航项会随安装的模组变多，装不下时滚动，别把后面的项挤出去
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .max_height(ui.available_height())
+                .show(ui, |ui| {
+                    ui::card_padded(ui, &p, 8, |ui| {
+                        ui.set_width(134.0);
+                        for (id, label, icon) in sections.iter() {
+                            let selected = app.versions_ui.section == *id;
+                            if ui::nav_item(ui, &p, icon, label, selected).clicked() {
+                                app.versions_ui.section = id;
+                            }
+                            ui.add_space(2.0);
+                        }
+                    });
+                });
         });
         ui.vertical(|ui| {
             let width = ui.available_width();
@@ -537,7 +557,10 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                 "resourcepack" => {
                     content_tab(app, ui, &inst, ContentKind::ResourcePack, "resourcepack")
                 }
-                _ => overview_tab(app, ui, &inst, &active),
+                section => match features.iter().find(|f| f.section == section) {
+                    Some(feature) => mod_feature_tab(app, ui, &inst, feature),
+                    None => overview_tab(app, ui, &inst, &active),
+                },
             }
         });
     });
@@ -1303,7 +1326,10 @@ mod tests {
             variants: vec![make("26.2", None)],
             active: "26.2".into(),
         };
-        let ids: Vec<&str> = sections_for(&vanilla).iter().map(|(id, _)| *id).collect();
+        let ids: Vec<&str> = sections_for(&vanilla, &[])
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect();
         assert!(!ids.contains(&"mod"));
         assert!(!ids.contains(&"shader"));
         assert!(ids.contains(&"resourcepack"));
@@ -1314,9 +1340,53 @@ mod tests {
             variants: vec![make("26.2", None), make("fabric-loader-0.20.1-26.2", Some("Fabric"))],
             active: "fabric-loader-0.20.1-26.2".into(),
         };
-        let ids: Vec<&str> = sections_for(&fabric).iter().map(|(id, _)| *id).collect();
+        let ids: Vec<&str> = sections_for(&fabric, &[])
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect();
         assert!(ids.contains(&"mod"));
         assert!(ids.contains(&"shader"));
+    }
+
+    /// 装了机械动力、投影这类模组后，导航里多出模组自己的内容入口
+    #[test]
+    fn mod_features_add_their_own_sections() {        let inst = crate::core::minecraft::GameInstance {
+            mc_version: "26.2".into(),
+            variants: vec![],
+            active: String::new(),
+        };
+        let features = vec![
+            crate::core::content::modfeature::MOD_FEATURES[0],
+            crate::core::content::modfeature::MOD_FEATURES[1],
+        ];
+        let ids: Vec<&str> = sections_for(&inst, &features)
+            .iter()
+            .map(|(id, _, _)| *id)
+            .collect();
+        assert!(ids.contains(&"create_schematic"));
+        assert!(ids.contains(&"litematic"));
+    }
+
+    /// 蓝图目录里的子文件夹也要列出来，方便按分类管理
+    #[test]
+    fn feature_files_include_sub_folders() {
+        let root = std::env::temp_dir().join("htmcl-feature-files-test");
+        let _ = std::fs::remove_dir_all(&root);
+        let sub = root.join("分类A");
+        std::fs::create_dir_all(&sub).expect("应能建目录");
+        std::fs::write(root.join("顶层.nbt"), b"x").expect("应能写文件");
+        std::fs::write(sub.join("建筑.nbt"), b"x").expect("应能写文件");
+        std::fs::write(sub.join("无关.txt"), b"x").expect("应能写文件");
+
+        let mut files = Vec::new();
+        list_feature_files(&root, &["nbt"], &mut files);
+        let names: Vec<String> = files.iter().map(|f| f.rel.clone()).collect();
+        assert!(names.contains(&"顶层.nbt".to_string()));
+        assert!(names.contains(&"分类A/建筑.nbt".to_string()));
+        // 后缀不匹配的不要
+        assert!(!names.iter().any(|n| n.ends_with(".txt")));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -1468,6 +1538,174 @@ fn content_tab(
             });
         });
         ui.add_space(6.0);
+    }
+}
+
+/// 模组自带的内容区：列出该模组目录下的文件
+///
+/// 机械动力的蓝图、投影的蓝图都放在游戏目录的 `blueprints` 下，
+/// 模组自己实际读的是 `schematics`，两个位置都列出来。
+/// 目录里可以再分子文件夹分类，这里一并列出来。
+fn mod_feature_tab(
+    app: &mut App,
+    ui: &mut Ui,
+    inst: &crate::core::minecraft::GameInstance,
+    feature: &crate::core::content::modfeature::ModFeature,
+) {
+    let p = app.palette;
+    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+
+    let mut files: Vec<FeatureFile> = Vec::new();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for sub in feature.dirs {
+        let dir = game_dir.join(sub);
+        list_feature_files(&dir, feature.exts, &mut files);
+        dirs.push(dir);
+    }
+    files.sort_by(|a, b| a.rel.to_lowercase().cmp(&b.rel.to_lowercase()));
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{} 个{}", files.len(), feature.label))
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
+                // 优先打开已经存在的目录，没有就建第一个
+                let target = dirs
+                    .iter()
+                    .find(|d| d.is_dir())
+                    .cloned()
+                    .unwrap_or_else(|| dirs[0].clone());
+                let _ = paths::ensure_dir(&target);
+                paths::reveal(&target);
+            }
+        });
+    });
+    ui.add_space(10.0);
+
+    if files.is_empty() {
+        let tip = format!(
+            "把文件放进 {} 即可生效，目录里可以再分子文件夹分类",
+            dirs.first()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default()
+        );
+        ui::empty_state(ui, &p, feature.icon, &format!("还没有{}", feature.label), &tip);
+        return;
+    }
+
+    for file in &files {
+        ui::card_flat(ui, &p, |ui| {
+            ui.horizontal(|ui| {
+                icons::paint(
+                    ui.ctx(),
+                    ui.painter(),
+                    feature.icon,
+                    Rect::from_center_size(
+                        Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
+                        Vec2::splat(18.0),
+                    ),
+                    p.text_weak,
+                );
+                ui.add_space(28.0);
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(&file.name)
+                            .font(ui::font(13.0))
+                            .color(p.text)
+                            .strong(),
+                    );
+                    // 副标题带上子文件夹，看得出分类
+                    let sub = if file.rel.contains('/') {
+                        format!("{} · ", file.rel)
+                    } else {
+                        String::new()
+                    };
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}{} · {}",
+                            sub,
+                            file.ext,
+                            paths::format_size(file.size)
+                        ))
+                        .font(ui::font(11.0))
+                        .color(p.text_faint),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui::ghost(ui, &p, "打开位置").clicked() {
+                        paths::reveal(&file.path);
+                    }
+                });
+            });
+        });
+        ui.add_space(6.0);
+    }
+}
+
+/// 模组内容目录里的一个文件
+struct FeatureFile {
+    name: String,
+    /// 相对目录的路径，含子文件夹
+    rel: String,
+    path: PathBuf,
+    size: u64,
+    ext: String,
+}
+
+/// 递归列出目录里指定后缀的文件
+///
+/// 子文件夹也要进去，这样用户可以自己按分类整理蓝图。
+fn list_feature_files(root: &Path, exts: &[&str], out: &mut Vec<FeatureFile>) {
+    collect_feature_files(root, root, exts, 0, out);
+}
+
+/// 递归收集一层，最多往下走 4 层
+fn collect_feature_files(
+    root: &Path,
+    dir: &Path,
+    exts: &[&str],
+    depth: usize,
+    out: &mut Vec<FeatureFile>,
+) {
+    if depth > 4 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_feature_files(root, &path, exts, depth + 1, out);
+            continue;
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if !exts.contains(&ext.as_str()) {
+            continue;
+        }
+        let rel = path
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        out.push(FeatureFile {
+            name,
+            rel,
+            path,
+            size,
+            ext,
+        });
     }
 }
 
