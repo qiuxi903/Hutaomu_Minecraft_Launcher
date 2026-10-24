@@ -12,7 +12,7 @@ use crate::core::minecraft::install;
 use crate::core::minecraft::version::{self, ResolvedVersion};
 use crate::core::paths;
 
-pub const LAUNCHER_NAME: &str = "htmcl";
+pub const LAUNCHER_NAME: &str = "HTMCL";
 /// 游戏默认语言，简体中文
 pub const DEFAULT_LANG: &str = "zh_cn";
 

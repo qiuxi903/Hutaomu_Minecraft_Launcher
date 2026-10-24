@@ -1765,6 +1765,25 @@ impl App {
 
                 // 底部：账号与折叠按钮
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                    // 最下方：品牌标识，跟 HMCL 一样把名字放在左下角
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("HTMCL")
+                                .font(ui::font(11.5))
+                                .color(self.palette.text_faint)
+                                .strong(),
+                        );
+                        if !collapsed {
+                            ui.label(
+                                egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                    .font(ui::font(10.0))
+                                    .color(self.palette.text_faint),
+                            );
+                        }
+                    });
+                    ui.add_space(6.0);
+
                     ui.add_space(10.0);
                     if ui::icon_button(
                         ui,
