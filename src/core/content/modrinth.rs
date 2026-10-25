@@ -474,13 +474,27 @@ pub fn install(
     Ok(dest)
 }
 
-/// 安装整合包（.mrpack）
-pub fn install_modpack(
+/// 整合包声明的 Minecraft 版本与加载器
+#[derive(Debug, Clone, Default)]
+pub struct ModpackDeps {
+    /// Minecraft 版本
+    pub minecraft: String,
+    /// 加载器名，如 fabric
+    pub loader: Option<String>,
+    /// 加载器版本号，如 0.20.1
+    pub loader_version: Option<String>,
+}
+
+/// 下载并解压整合包，返回解压目录与它声明的依赖
+///
+/// 整合包是一个**独立实例**，不能铺进现有实例的目录里，
+/// 否则两个整合包的模组会互相串。这里只把内容准备好，
+/// 装到哪个目录由调用方决定。
+pub fn fetch_modpack(
     dl: &Downloader,
     version: &Version,
-    game_dir: &Path,
     progress: &Arc<DownloadProgress>,
-) -> Result<()> {
+) -> Result<(PathBuf, ModpackDeps)> {
     let file = version
         .primary_file()
         .ok_or_else(|| anyhow!("该整合包没有可下载的文件"))?;
@@ -508,16 +522,29 @@ pub fn install_modpack(
     let mut archive = zip::ZipArchive::new(archive_file)?;
     archive.extract(&extract_dir)?;
 
-    let index_path = extract_dir.join("modrinth.index.json");
-    let index_text = std::fs::read_to_string(&index_path)
-        .context("整合包缺少 modrinth.index.json")?;
-    let index: MrpackIndex = serde_json::from_str(&index_text)?;
+    let index = read_index(&extract_dir)?;
+    let deps = deps_from_index(&index);
+    Ok((extract_dir, deps))
+}
 
-    // 下载整合包内文件
+/// 把整合包里的文件装到目标目录
+///
+/// 目标目录就是整合包自己的实例目录，
+/// 模组、配置、脚本都落在里面，不影响别的实例。
+pub fn install_modpack_files(
+    dl: &Downloader,
+    extract_dir: &Path,
+    target_dir: &Path,
+    progress: &Arc<DownloadProgress>,
+) -> Result<()> {
+    let index = read_index(extract_dir)?;
+
+    // 下载整合包内文件，全部放进这个实例自己的目录
+    paths::ensure_dir(target_dir)?;
     let mut tasks: Vec<FileTask> = Vec::new();
     let mut total = 0u64;
     for entry in &index.files {
-        let dest = game_dir.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
+        let dest = target_dir.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
         let url = entry.downloads.first().cloned().unwrap_or_default();
         if url.is_empty() {
             continue;
@@ -541,18 +568,62 @@ pub fn install_modpack(
     for name in ["overrides", "client-overrides"] {
         let src = extract_dir.join(name);
         if src.is_dir() {
-            copy_dir(&src, game_dir)?;
+            copy_dir(&src, target_dir)?;
         }
     }
-
-    let _ = std::fs::remove_dir_all(&extract_dir);
     Ok(())
+}
+
+/// 读取整合包里的索引文件
+fn read_index(extract_dir: &Path) -> Result<MrpackIndex> {
+    let index_path = extract_dir.join("modrinth.index.json");
+    let index_text = std::fs::read_to_string(&index_path)
+        .context("整合包缺少 modrinth.index.json")?;
+    Ok(serde_json::from_str(&index_text)?)
+}
+
+/// 从索引里取出 Minecraft 版本与加载器
+fn deps_from_index(index: &MrpackIndex) -> ModpackDeps {
+    let d = &index.dependencies;
+    let (loader, loader_version) = if let Some(v) = &d.fabric {
+        (Some("fabric"), Some(v.clone()))
+    } else if let Some(v) = &d.neoforge {
+        (Some("neoforge"), Some(v.clone()))
+    } else if let Some(v) = &d.forge {
+        (Some("forge"), Some(v.clone()))
+    } else if let Some(v) = &d.quilt {
+        (Some("quilt"), Some(v.clone()))
+    } else {
+        (None, None)
+    };
+    ModpackDeps {
+        minecraft: d.minecraft.clone(),
+        loader: loader.map(|l| l.to_string()),
+        loader_version,
+    }
 }
 
 #[derive(Debug, Deserialize)]
 struct MrpackIndex {
     #[serde(default)]
     files: Vec<MrpackFile>,
+    #[serde(default)]
+    dependencies: MrpackDependencies,
+}
+
+/// 整合包声明的 Minecraft 版本与加载器
+#[derive(Debug, Default, Deserialize)]
+struct MrpackDependencies {
+    #[serde(default)]
+    minecraft: String,
+    #[serde(default)]
+    fabric: Option<String>,
+    #[serde(default)]
+    quilt: Option<String>,
+    #[serde(default)]
+    forge: Option<String>,
+    #[serde(default)]
+    neoforge: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -661,5 +732,40 @@ mod tests {
         assert_eq!(category_label("fabric"), "Fabric");
         // 未收录的分类原样返回
         assert_eq!(category_label("some-new-tag"), "some-new-tag");
+    }
+
+    /// 整合包索引里能读出 Minecraft 版本与加载器
+    #[test]
+    fn reads_modpack_dependencies() {
+        let index: MrpackIndex = serde_json::from_str(
+            r#"{
+                "files": [],
+                "dependencies": {
+                    "minecraft": "1.20.1",
+                    "fabric": "0.15.11"
+                }
+            }"#,
+        )
+        .unwrap();
+        let deps = deps_from_index(&index);
+        assert_eq!(deps.minecraft, "1.20.1");
+        assert_eq!(deps.loader.as_deref(), Some("fabric"));
+        assert_eq!(deps.loader_version.as_deref(), Some("0.15.11"));
+    }
+
+    /// 原版整合包没有加载器
+    #[test]
+    fn reads_modpack_without_loader() {
+        let index: MrpackIndex = serde_json::from_str(
+            r#"{
+                "files": [],
+                "dependencies": { "minecraft": "1.20.1" }
+            }"#,
+        )
+        .unwrap();
+        let deps = deps_from_index(&index);
+        assert_eq!(deps.minecraft, "1.20.1");
+        assert!(deps.loader.is_none());
+        assert!(deps.loader_version.is_none());
     }
 }

@@ -89,7 +89,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 27;
+pub const SHOT_SCENES: usize = 28;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -288,6 +288,13 @@ impl App {
                 // 设置页新增的加载器选项
                 self.page = Page::Settings;
                 self.settings_ui.tab = 1;
+            }
+            27 => {
+                // 整合包详情：安装成独立实例
+                self.page = Page::Download;
+                self.download.tab = 5;
+                self.download.content_loaded_tab = Some(5);
+                views::download::open_project(self, "compsmp", "CompSMP-OptionalModpack");
             }
             _ => {
                 // 提示条位置与动效检查
@@ -1704,12 +1711,27 @@ impl App {
                     }
                 }
                 CoreEvent::Installed(version) => {
+                    // 整合包实例一定要有自己的目录，
+                    // 不然它的模组会跟原版实例混在一起
+                    let inst_dir =
+                        crate::core::minecraft::version::version_dir(&self.cfg.game_dir, &version);
+                    if crate::core::minecraft::modpack::is_instance(&inst_dir) {
+                        let ov = self.cfg.version_overrides.entry(version.clone()).or_default();
+                        ov.isolation = Some(true);
+                        self.save_config();
+                    }
                     self.refresh_local_versions();
+                    let label = self
+                        .instances
+                        .iter()
+                        .find(|i| i.is_modpack && i.variants.iter().any(|v| v.id == version))
+                        .map(|i| i.display_name.clone())
+                        .unwrap_or_else(|| version.clone());
                     if self.cfg.download.auto_select_after_install {
                         self.cfg.selected_version = Some(version.clone());
                         self.save_config();
                     }
-                    self.success(format!("{version} 已安装完成"));
+                    self.success(format!("{label} 已安装完成"));
                 }
                 CoreEvent::GameExited { version, code } => {
                     if code == 0 {
@@ -2794,6 +2816,7 @@ fn shot_scene_wait(scene: usize) -> f64 {
         21 => 2.5,
         22 => 2.5,
         23 => 2.0,
+        27 => 5.0,
         _ => 1.8,
     }
 }
@@ -2826,6 +2849,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         24 => "版本管理-蓝图",
         25 => "版本管理-投影蓝图",
         26 => "版本管理-存档",
+        27 => "下载-整合包详情",
         _ => "账号-皮肤站",
     }
 }

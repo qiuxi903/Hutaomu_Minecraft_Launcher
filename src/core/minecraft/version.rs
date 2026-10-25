@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::core::minecraft::modpack::{self, ModpackInfo};
 use crate::core::paths;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -504,7 +505,7 @@ pub fn installed_versions(game_dir: &Path) -> Vec<String> {
     ids
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LocalVersion {
     pub id: String,
     pub version_type: String,
@@ -516,6 +517,8 @@ pub struct LocalVersion {
     pub last_modified: Option<std::time::SystemTime>,
     pub has_jar: bool,
     pub icon_data_url: Option<String>,
+    /// 整合包实例的信息，普通版本为 None
+    pub modpack: Option<ModpackInfo>,
 }
 
 /// 扫描本地已安装版本，并推断加载器类型与对应 MC 版本
@@ -526,15 +529,25 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             Ok(j) => j,
             Err(_) => continue,
         };
-        let loader = detect_loader(&id, &json);
-        let mc_version = detect_mc_version(game_dir, &id, &json);
-        let loader_version = json
-            .loader
-            .as_ref()
-            .map(|l| l.version.clone())
-            .filter(|v| !v.is_empty())
-            .or_else(|| loader_version_from_id(&id, &mc_version));
         let dir = version_dir(game_dir, &id);
+        // 整合包实例有自己的目录与名字，跟普通版本分开
+        let marker = modpack::read_marker(&dir);
+        let loader = marker
+            .as_ref()
+            .and_then(|m| m.loader.clone())
+            .or_else(|| detect_loader(&id, &json));
+        let mc_version = detect_mc_version(game_dir, &id, &json);
+        let loader_version = marker
+            .as_ref()
+            .and_then(|m| m.loader_version.clone())
+            .filter(|v| !v.is_empty())
+            .or_else(|| {
+                json.loader
+                    .as_ref()
+                    .map(|l| l.version.clone())
+                    .filter(|v| !v.is_empty())
+            })
+            .or_else(|| loader_version_from_id(&id, &mc_version));
         let size = paths::dir_size(&dir);
         let last_modified = std::fs::metadata(dir.join(format!("{id}.json")))
             .and_then(|m| m.modified())
@@ -551,6 +564,7 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             last_modified,
             has_jar,
             icon_data_url: None,
+            modpack: marker,
         });
     }
     result.sort_by(|a, b| {
@@ -608,14 +622,23 @@ impl LocalVersion {
 ///
 /// 版本列表按实例展示：原版与各加载器版本合成一条，
 /// 模组、光影、存档都挂在这个实例上，不再各占一份。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct GameInstance {
     /// Minecraft 版本号，如 26.2
+    ///
+    /// 整合包实例这里放的是整合包自己的实例 id，
+    /// 它跟 Minecraft 版本号无关，纯粹用来区分实例。
     pub mc_version: String,
     /// 该实例下的变体，对应真实的版本目录
     pub variants: Vec<LocalVersion>,
     /// 当前使用的变体 id
     pub active: String,
+    /// 实例的显示名
+    ///
+    /// 普通实例显示 Minecraft 版本号，整合包实例显示整合包名字。
+    pub display_name: String,
+    /// 是不是整合包实例
+    pub is_modpack: bool,
 }
 
 impl GameInstance {
@@ -691,6 +714,12 @@ pub fn group_instances(versions: &[LocalVersion], selected: Option<&str>) -> Vec
                         .unwrap_or_default()
                 });
             Some(GameInstance {
+                display_name: variants
+                    .iter()
+                    .find_map(|v| v.modpack.as_ref().map(|m| m.name.clone()))
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| mc.clone()),
+                is_modpack: variants.iter().any(|v| v.modpack.is_some()),
                 mc_version: mc,
                 variants,
                 active,
@@ -732,6 +761,11 @@ fn detect_loader(id: &str, json: &VersionJson) -> Option<String> {    let lower 
 }
 
 pub fn detect_mc_version(game_dir: &Path, id: &str, json: &VersionJson) -> String {
+    // 整合包实例虽然继承原版版本，但它是一个独立实例，
+    // 不能按继承链归到原版那个实例里去
+    if modpack::is_instance(&version_dir(game_dir, id)) {
+        return id.to_string();
+    }
     if json.inherits_from.is_some() {
         // 沿继承链找到最底层版本
         let mut current = json.inherits_from.clone();
@@ -868,6 +902,7 @@ mod tests {
             last_modified: None,
             has_jar: true,
             icon_data_url: None,
+            ..Default::default()
         };
         let versions = vec![
             make("26.2", None, "26.2"),
@@ -902,6 +937,7 @@ mod tests {
             last_modified: Some(std::time::SystemTime::UNIX_EPOCH),
             has_jar: true,
             icon_data_url: None,
+            ..Default::default()
         };
         let mut fabric = LocalVersion {
             id: "fabric-loader-0.20.1-26.2".to_string(),
@@ -913,6 +949,7 @@ mod tests {
             last_modified: Some(std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(60)),
             has_jar: true,
             icon_data_url: None,
+            ..Default::default()
         };
         vanilla.last_modified = Some(std::time::SystemTime::UNIX_EPOCH);
         fabric.last_modified =
@@ -960,6 +997,67 @@ mod tests {
         write_local_json(&dir, &json).unwrap();
         let saved = read_local_json(&dir, "26.2").unwrap();
         assert_eq!(saved.name, "1.0");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 整合包实例自己成一条，不跟同 Minecraft 版本的原版合并
+    #[test]
+    fn modpack_instance_stays_separate() {
+        let dir = std::env::temp_dir().join(format!("htmcl-modpack-scan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // 原版版本
+        write_local_json(
+            &dir,
+            &VersionJson {
+                id: "26.2".into(),
+                version_type: "release".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // 整合包实例：自己的版本描述 + 标记文件
+        let pack_dir = version_dir(&dir, "my-pack");
+        crate::core::paths::ensure_dir(&pack_dir).unwrap();
+        write_local_json(
+            &dir,
+            &VersionJson {
+                id: "my-pack".into(),
+                inherits_from: Some("26.2".into()),
+                version_type: "release".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::core::minecraft::modpack::write_marker(
+            &pack_dir,
+            &ModpackInfo {
+                name: "我的整合包".into(),
+                mc_version: "26.2".into(),
+                loader: Some("Fabric".into()),
+                loader_version: Some("0.20.1".into()),
+                project_id: None,
+            },
+        )
+        .unwrap();
+
+        let versions = scan_local(&dir);
+        assert_eq!(versions.len(), 2);
+
+        let pack = versions.iter().find(|v| v.id == "my-pack").unwrap();
+        // 关键：整合包的 mc_version 是自己的 id，因此不会跟 26.2 归到一起
+        assert_eq!(pack.mc_version, "my-pack");
+        assert_eq!(pack.loader.as_deref(), Some("Fabric"));
+        assert_eq!(pack.loader_version.as_deref(), Some("0.20.1"));
+        assert!(pack.modpack.is_some());
+
+        let instances = group_instances(&versions, None);
+        assert_eq!(instances.len(), 2);
+        let pack_inst = instances.iter().find(|i| i.is_modpack).unwrap();
+        assert_eq!(pack_inst.mc_version, "my-pack");
+        assert_eq!(pack_inst.display_name, "我的整合包");
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1632,6 +1632,12 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
 
 /// 安装区：选择实例、筛选兼容版本并安装
 fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind: ContentKind) {
+    // 整合包自带一整套内容，装进来就是独立实例，不选目标实例
+    if kind == ContentKind::Modpack {
+        install_card_modpack(app, ui, p, project);
+        return;
+    }
+
     // ---- 实例列表 ----
     // 按 Minecraft 版本聚合，原版与各加载器版本是同一个实例
     let instances: Vec<(String, Option<String>, String)> = app
@@ -2017,6 +2023,272 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
     });
 }
 
+/// 整合包的安装区
+///
+/// 整合包不是装进某个实例，而是自己变成一个实例：
+/// 它带着一整套模组、配置与脚本，铺进已有实例会跟原来的内容混在一起。
+fn install_card_modpack(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project) {
+    let all_versions = app.download.content_versions.clone();
+    // 当前实例的 Minecraft 版本，用来筛掉用不上的整合包版本
+    let instance_mc = app.selected_version().map(|v| v.mc_version.clone());
+
+    // 整合包往往有几十个版本，按 Minecraft 版本筛一遍才好选
+    let mut game_options: Vec<String> = Vec::new();
+    for v in &all_versions {
+        for g in &v.game_versions {
+            if !game_options.contains(g) {
+                game_options.push(g.clone());
+            }
+        }
+    }
+    game_options.sort_by(|a, b| version_key(b).cmp(&version_key(a)));
+
+    let mut game_filter = app.download.content_game_filter.clone();
+    let filtered: Vec<Version> = all_versions
+        .iter()
+        .filter(|v| match game_filter.as_str() {
+            "" => match &instance_mc {
+                // 没选实例就全给出来
+                None => true,
+                Some(mc) => v.game_versions.iter().any(|g| g == mc),
+            },
+            "*" => true,
+            g => v.game_versions.iter().any(|x| x == g),
+        })
+        .cloned()
+        .collect();
+
+    ui::card(ui, p, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("安装为独立实例")
+                    .font(ui::font(14.5))
+                    .color(p.text)
+                    .strong(),
+            );
+            if app.download.content_versions_loading {
+                ui::spinner(ui, p, 14.0);
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("{} 个可用版本", filtered.len()))
+                        .font(ui::font(12.0))
+                        .color(p.text_faint),
+                );
+            });
+        });
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("整合包会新建一个独立实例，自带模组、配置与脚本，不影响已有实例")
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        ui.add_space(12.0);
+
+        if app.download.content_versions_loading {
+            ui.label(
+                egui::RichText::new("正在获取版本列表 ...")
+                    .font(ui::font(12.5))
+                    .color(p.text_faint),
+            );
+            return;
+        }
+        if all_versions.is_empty() {
+            ui.label(
+                egui::RichText::new("该项目没有可安装的版本")
+                    .font(ui::font(12.5))
+                    .color(p.text_weak),
+            );
+            return;
+        }
+
+        // ---- Minecraft 版本筛选 ----
+        if game_options.len() > 1 {
+            let mut labels: Vec<String> = vec![match instance_mc.clone() {
+                Some(mc) => format!("跟随当前（{mc}）"),
+                None => "全部".to_string(),
+            }];
+            labels.push("全部".to_string());
+            for g in game_options.iter().take(18) {
+                labels.push(g.clone());
+            }
+            let current = if game_filter.is_empty() {
+                labels[0].clone()
+            } else if game_filter == "*" {
+                "全部".to_string()
+            } else {
+                game_filter.clone()
+            };
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new("Minecraft 版本")
+                        .font(ui::font(13.0))
+                        .color(p.text_weak),
+                );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if let Some(index) = ui::dropdown(ui, p, "modpack_game", &current, &labels, 190.0)
+                    {
+                        game_filter = if index == 0 {
+                            String::new()
+                        } else if index == 1 {
+                            "*".to_string()
+                        } else {
+                            labels[index].clone()
+                        };
+                        app.download.content_game_filter = game_filter.clone();
+                        app.download.content_version_index = 0;
+                    }
+                });
+            });
+            ui.add_space(10.0);
+        }
+
+        if filtered.is_empty() {
+            ui.label(
+                egui::RichText::new("当前 Minecraft 版本下没有这个整合包，可以把筛选调成「全部」")
+                    .font(ui::font(12.5))
+                    .color(p.text_weak),
+            );
+            return;
+        }
+
+        // ---- 实例目录 ----
+        let taken = crate::core::minecraft::version::installed_versions(&app.cfg.game_dir);
+        let inst_id = crate::core::minecraft::modpack::unique_id(
+            &crate::core::minecraft::modpack::sanitize_id(&project.slug),
+            &taken,
+        );
+        let inst_dir = crate::core::minecraft::version::version_dir(&app.cfg.game_dir, &inst_id);
+        let path_text = inst_dir.display().to_string();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("实例目录")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let width = ((ui.available_width() - 60.0).max(120.0) / 7.0) as usize;
+                let short = ellipsize_path(&path_text, width);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(short)
+                            .font(ui::font(12.0))
+                            .color(p.text_faint),
+                    )
+                    .truncate(),
+                );
+                if ui
+                    .add(egui::Label::new(
+                        egui::RichText::new("完整路径")
+                            .font(ui::font(12.0))
+                            .color(p.text_faint),
+                    ))
+                    .on_hover_text(&path_text)
+                    .clicked()
+                {
+                    let _ = crate::core::paths::reveal(&inst_dir);
+                }
+            });
+        });
+        ui.add_space(10.0);
+
+        // ---- 版本选择 ----
+        let labels: Vec<String> = filtered.iter().map(version_label).collect();
+        let mut index = app.download.content_version_index.min(labels.len() - 1);
+        let current = labels[index].clone();
+        if let Some(selected) = ui::dropdown(ui, p, "modpack_version", &current, &labels, 520.0) {
+            index = selected;
+            app.download.content_version_index = selected;
+        }
+        ui.add_space(12.0);
+
+        // ---- 安装按钮 ----
+        let version = filtered[index].clone();
+        ui.horizontal(|ui| {
+            if ui::button(
+                ui,
+                p,
+                ButtonOpts::primary("下载并安装为独立实例").icon("download-arrow"),
+            )
+            .clicked()
+            {
+                install_modpack(app, version.clone(), project.clone());
+            }
+            if let Some(file) = version.primary_file() {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} · {}",
+                        file.filename,
+                        crate::core::paths::format_size(file.size)
+                    ))
+                    .font(ui::font(11.5))
+                    .color(p.text_faint),
+                );
+            }
+        });
+    });
+}
+
+/// 版本下拉里的显示文字
+fn version_label(v: &Version) -> String {
+    let games = if v.game_versions.is_empty() {
+        "通用".to_string()
+    } else {
+        v.game_versions
+            .iter()
+            .take(3)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let date = short_date(&v.date_published);
+    if date.is_empty() {
+        format!("{} · {} · {}", v.version_number, v.loader_label(), games)
+    } else {
+        format!(
+            "{} · {} · {} · {}",
+            v.version_number,
+            v.loader_label(),
+            games,
+            date
+        )
+    }
+}
+
+/// 安装整合包，生成一个独立实例
+fn install_modpack(app: &mut App, version: Version, project: Project) {
+    let game_dir = app.cfg.game_dir.clone();
+    // 整合包声明的 Minecraft 版本要等下载后才知道，
+    // 这里先用项目版本里标着的游戏版本挑一个合适的 Java，
+    // 挑不到就按 Java 8 兜底，Forge 安装器够用
+    let mc_hint = version.game_versions.first().cloned().unwrap_or_default();
+    let java = app.java_for(&mc_hint);
+    let opts = app.cfg.download.install_options();
+    let slug = project.slug.clone();
+    let project_id = project.id.clone();
+    let title = project.title.clone();
+
+    app.spawn_download(format!("安装 {title}"), move |dl, progress, job| {
+        let installed = crate::core::content::modpack::install_instance(
+            &dl,
+            &project_id,
+            &title,
+            &slug,
+            &version,
+            &game_dir,
+            java,
+            &progress,
+            opts,
+        )?;
+        let loader_text = installed.loader.clone().unwrap_or_else(|| "原版".into());
+        job.send(CoreEvent::Installed(installed.instance_id.clone()));
+        Ok(format!(
+            "{title} 已装成独立实例（{} · {loader_text}）",
+            installed.mc_version
+        ))
+    });
+}
+
 /// 版本号排序键：让 1.20.1 排在 1.9 前面
 fn version_key(version: &str) -> Vec<u32> {
     version
@@ -2071,10 +2343,6 @@ fn install_content(
 
     app.spawn_download(format!("安装 {title}"), move |dl, progress, _job| {
         crate::core::paths::ensure_dir(&game_dir)?;
-        if kind == ContentKind::Modpack {
-            modrinth::install_modpack(&dl, &version, &game_dir, &progress)?;
-            return Ok(format!("{title} 整合包安装完成"));
-        }
         let path = modrinth::install(&dl, kind, &version, &game_dir, &progress)?;
         if auto_deps && kind == ContentKind::Mod {
             let deps = modrinth::required_dependencies(

@@ -218,6 +218,7 @@ fn filtered_instances(app: &App) -> Vec<crate::core::minecraft::GameInstance> {
         .filter(|inst| {
             keyword.is_empty()
                 || inst.mc_version.to_lowercase().contains(&keyword)
+                || inst.display_name.to_lowercase().contains(&keyword)
                 || inst
                     .variants
                     .iter()
@@ -345,7 +346,13 @@ fn instance_card(
     icons::paint(
         ui.ctx(),
         ui.painter(),
-        if has_loader { "layers" } else { "cube" },
+        if inst.is_modpack {
+            "modpack"
+        } else if has_loader {
+            "layers"
+        } else {
+            "cube"
+        },
         icon_rect.shrink(6.0),
         p.text_weak,
     );
@@ -353,7 +360,7 @@ fn instance_card(
     // 标题：自行截断，保证不超出卡片
     let text_x = icon_rect.right() + 8.0;
     let avail = (rect.right() - PAD - text_x).max(40.0);
-    let title = widgets::ellipsize(&inst.mc_version, avail, 13.0);
+    let title = widgets::ellipsize(&inst.display_name, avail, 13.0);
     ui.painter().text(
         Pos2::new(text_x, icon_rect.center().y),
         egui::Align2::LEFT_CENTER,
@@ -458,7 +465,13 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             icons::paint(
                 ui.ctx(),
                 ui.painter(),
-                if active.loader.is_some() { "layers" } else { "cube" },
+                if inst.is_modpack {
+                    "modpack"
+                } else if active.loader.is_some() {
+                    "layers"
+                } else {
+                    "cube"
+                },
                 rect.shrink(10.0),
                 p.text_weak,
             );
@@ -466,7 +479,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(&inst.mc_version)
+                        egui::RichText::new(&inst.display_name)
                             .font(ui::font(18.0))
                             .color(p.text)
                             .strong(),
@@ -636,8 +649,19 @@ fn overview_tab(
     let stat = app.cfg.stat_of(&active.id);
     let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
 
-    widgets::key_value(ui, &p, "Minecraft 版本", &inst.mc_version);
+    // 整合包实例的 id 是自己的名字，Minecraft 版本要看标记文件里记的
+    let mc_version = active
+        .modpack
+        .as_ref()
+        .map(|m| m.mc_version.clone())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| inst.mc_version.clone());
+    widgets::key_value(ui, &p, "Minecraft 版本", &mc_version);
     ui.add_space(6.0);
+    if let Some(info) = &active.modpack {
+        widgets::key_value(ui, &p, "整合包", &info.name);
+        ui.add_space(6.0);
+    }
     widgets::key_value(
         ui,
         &p,
@@ -1378,12 +1402,14 @@ mod tests {
             last_modified: None,
             has_jar: true,
             icon_data_url: None,
+            ..Default::default()
         };
 
         let vanilla = crate::core::minecraft::GameInstance {
             mc_version: "26.2".into(),
             variants: vec![make("26.2", None)],
             active: "26.2".into(),
+            ..Default::default()
         };
         let ids: Vec<&str> = sections_for(&vanilla, &[])
             .iter()
@@ -1398,6 +1424,7 @@ mod tests {
             mc_version: "26.2".into(),
             variants: vec![make("26.2", None), make("fabric-loader-0.20.1-26.2", Some("Fabric"))],
             active: "fabric-loader-0.20.1-26.2".into(),
+            ..Default::default()
         };
         let ids: Vec<&str> = sections_for(&fabric, &[])
             .iter()
@@ -1413,6 +1440,7 @@ mod tests {
             mc_version: "26.2".into(),
             variants: vec![],
             active: String::new(),
+            ..Default::default()
         };
         let features = vec![
             crate::core::content::modfeature::MOD_FEATURES[0],
