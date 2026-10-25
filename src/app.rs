@@ -558,6 +558,8 @@ pub struct App {
     pub game_start_at: f64,
     /// 悬浮球模式：游戏在跑，主界面收成一个圆球
     pub overlay_mode: bool,
+    /// 在启动器主界面里显示游戏日志
+    pub show_game_log_page: bool,
     /// authlib-injector 是否正在下载
     pub authlib_jar_loading: bool,
     /// authlib-injector 上一次准备失败的原因
@@ -655,6 +657,7 @@ impl App {
             game_start_at: 0.0,
             window_handle: None,
             overlay_mode: false,
+            show_game_log_page: false,
             authlib_jar_loading: false,
             authlib_jar_error: None,
             dwm_applied: false,
@@ -1737,11 +1740,12 @@ impl App {
                 });
                 // 异常退出：把日志摊开给用户看
                 if code != 0 {
-                    self.game_log_open = true;
+                    self.show_game_log_page = true;
                 } else if self.cfg.launch.show_game_log {
-                    self.game_log_open = true;
+                    self.show_game_log_page = true;
                 }
                 self.game_starting = false;
+                self.show_game_log_page = false;
                 self.leave_overlay_mode();
                 self.refresh_local_versions();
                 // 游戏结束了，按设置把启动器恢复回来
@@ -2305,22 +2309,82 @@ impl App {
         }
     }
 
-    /// 悬浮球：游戏在跑的时候，启动器收成右下角一个小圆点
+    /// 启动器内的游戏日志页
+    fn game_log_page(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
+        let lines = self
+            .game
+            .as_ref()
+            .map(|g| g.log.snapshot(self.cfg.ui.max_log_lines.clamp(500, 20000)))
+            .unwrap_or_default();
+        ui.horizontal(|ui| {
+            if ui::ghost(ui, &palette, "返回").clicked() {
+                self.show_game_log_page = false;
+            }
+            ui.label(
+                egui::RichText::new("游戏日志")
+                    .font(ui::font(16.0))
+                    .color(palette.text)
+                    .strong(),
+            );
+            ui.label(
+                egui::RichText::new(format!("共 {} 行", lines.len()))
+                    .font(ui::font(12.0))
+                    .color(palette.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::ghost(ui, &palette, "打开日志文件夹").clicked() {
+                    paths::reveal(&paths::logs_dir());
+                }
+                if ui::ghost(ui, &palette, "清空显示").clicked() {
+                    if let Some(game) = self.game.as_ref() {
+                        let _ = game.log.snapshot(0);
+                    }
+                }
+            });
+        });
+        ui.add_space(10.0);
+        egui::Frame::NONE
+            .fill(palette.surface_alt)
+            .corner_radius(palette.corner_sm())
+            .inner_margin(Margin::same(10))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(520.0)
+                    .auto_shrink([false, false])
+                    .stick_to_bottom(true)
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        for line in &lines {
+                            ui.label(
+                                egui::RichText::new(line)
+                                    .font(ui::mono(11.5))
+                                    .color(palette.text),
+                            );
+                        }
+                    });
+            });
+    }
+
+    /// 悬浮球：游戏在跑的时候，启动器右下角显示一个小圆点
     ///
-    /// 点一下就展开游戏日志，游戏退出后主界面自动回来。
+    /// 点一下就在启动器里展开游戏日志。
     fn draw_overlay_ball(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
         let now = ctx.input(|i| i.time);
         let full = root.max_rect();
         let palette = self.palette;
 
-        let size = 52.0;
-        let center = Pos2::new(full.right() - size / 2.0 - 8.0, full.bottom() - size / 2.0 - 8.0);
+        let size = 46.0;
+        // 贴在内容区右下角，避开下载中心面板
+        let center = Pos2::new(
+            full.right() - size / 2.0 - 26.0,
+            full.bottom() - size / 2.0 - 26.0,
+        );
         // 呼吸动画：提示游戏正在跑
         let breathe = 1.0 + 0.04 * (now * 2.0).sin();
         let rect = Rect::from_center_size(center, Vec2::splat(size * breathe as f32));
 
-        // 圆形按钮
         let response = root.interact(rect, egui::Id::new("htmcl_overlay_ball"), Sense::click());
         let hovered = response.hovered();
         let fill = if hovered {
@@ -2340,13 +2404,12 @@ impl App {
             &ctx,
             root.painter(),
             "terminal",
-            Rect::from_center_size(rect.center(), Vec2::splat(22.0)),
+            Rect::from_center_size(rect.center(), Vec2::splat(20.0)),
             palette.on_accent,
         );
         if response.clicked() {
-            // 小窗里放不下日志，先把窗口恢复正常再展开
-            self.leave_overlay_mode();
-            self.game_log_open = true;
+            // 在启动器内直接展开日志页
+            self.show_game_log_page = true;
         }
         if response.hovered() {
             response.on_hover_ui(|ui| {
@@ -2366,8 +2429,6 @@ impl App {
         }
         self.overlay_mode = true;
         let ctx = self.egui_ctx.clone();
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(64.0, 64.0)));
-        move_window_to_bottom_right(self.window_handle);
     }
     /// 退出悬浮球：窗口恢复原来的大小
     fn leave_overlay_mode(&mut self) {
@@ -2377,10 +2438,6 @@ impl App {
         self.overlay_mode = false;
         let size = self.last_window_size;
         let ctx = self.egui_ctx.clone();
-        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
-            size.x.max(960.0),
-            size.y.max(640.0),
-        )));
     }
 
     /// 启动动画：游戏正在拉起时的过场
@@ -2420,6 +2477,21 @@ impl App {
             ui::font(11.5),
             palette.text_faint,
         );
+        // 已经拿到的日志先摆出来，让人知道确实在动
+        let recent = self
+            .game
+            .as_ref()
+            .map(|g| g.log.snapshot(3))
+            .unwrap_or_default();
+        for (i, line) in recent.iter().enumerate() {
+            root.painter().text(
+                Pos2::new(center.x, center.y + 112.0 + i as f32 * 18.0),
+                egui::Align2::CENTER_CENTER,
+                line.clone(),
+                ui::mono(11.0),
+                palette.text_faint,
+            );
+        }
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
@@ -2569,21 +2641,11 @@ impl eframe::App for App {
             .rect_filled(full, CornerRadius::ZERO, self.palette.bg);
         self.draw_background(root, full);
 
-        // 游戏在跑：主界面收成右下角的悬浮球
-        if self.overlay_mode && self.game.is_some() {
-            self.draw_overlay_ball(root);
-            self.game_log_modal(&ctx);
-            return;
-        }
-
         // 正在启动：放一段过场动画
         if self.game_starting {
             let elapsed = now - self.game_start_at;
-            if elapsed > 1.6 {
+            if elapsed > 2.6 {
                 self.game_starting = false;
-                if self.game.is_some() {
-                    self.enter_overlay_mode();
-                }
             } else {
                 let version = self
                     .game
@@ -2658,13 +2720,17 @@ impl eframe::App for App {
                         ui.add_space(6.0);
                         ui.set_max_width(content_rect.width() - 14.0);
                         ui.set_width(content_rect.width() - 14.0);
-                        match self.page {
-                            Page::Home => views::home::ui(self, ui),
-                            Page::Download => views::download::ui(self, ui),
-                            Page::Versions => views::versions::ui(self, ui),
-                            Page::Accounts => views::accounts::ui(self, ui),
-                            Page::Settings => views::settings::ui(self, ui),
-                            Page::About => views::about::ui(self, ui),
+                        if self.show_game_log_page && self.game.is_some() {
+                            self.game_log_page(ui);
+                        } else {
+                            match self.page {
+                                Page::Home => views::home::ui(self, ui),
+                                Page::Download => views::download::ui(self, ui),
+                                Page::Versions => views::versions::ui(self, ui),
+                                Page::Accounts => views::accounts::ui(self, ui),
+                                Page::Settings => views::settings::ui(self, ui),
+                                Page::About => views::about::ui(self, ui),
+                            }
                         }
                         ui.add_space(24.0);
                     });
@@ -2674,6 +2740,10 @@ impl eframe::App for App {
         views::home_config::game_config_modal(self, &ctx);
         self.game_log_modal(&ctx);
         self.download_panel(&ctx);
+        // 游戏在跑：右下角挂一个圆球，点开看日志
+        if self.game.is_some() && !self.show_game_log_page {
+            self.draw_overlay_ball(root);
+        }
         // 提示条固定在右下角，下载中心展开时自动上移避让
         let active_tasks = self.tasks.iter().filter(|t| !t.done).count();
         let panel_offset = if self.download_panel_open && active_tasks > 0 {

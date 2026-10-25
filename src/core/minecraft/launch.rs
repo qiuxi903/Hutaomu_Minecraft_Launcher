@@ -406,10 +406,9 @@ pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
+        // 无论如何都不弹出黑色命令行窗口
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        if spec.no_javaw {
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
+        cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
     Ok(cmd)
