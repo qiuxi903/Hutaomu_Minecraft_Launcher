@@ -34,6 +34,11 @@ pub struct ModpackInfo {
     /// Modrinth 项目 id
     #[serde(default)]
     pub project_id: Option<String>,
+    /// Modrinth 上的整合包版本 id
+    ///
+    /// 记下来才能在版本管理里对同一个整合包重新安装。
+    #[serde(default)]
+    pub pack_version_id: Option<String>,
 }
 
 /// 标记文件在版本目录下的位置
@@ -170,6 +175,7 @@ mod tests {
             loader: Some("Fabric".into()),
             loader_version: Some("0.20.1".into()),
             project_id: Some("abc".into()),
+            pack_version_id: Some("ver1".into()),
         };
         write_marker(&dir, &info).unwrap();
         let read = read_marker(&dir).unwrap();

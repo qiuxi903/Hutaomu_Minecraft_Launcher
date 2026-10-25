@@ -35,6 +35,10 @@ pub struct InstalledModpack {
 ///
 /// `slug` 是项目在 Modrinth 上的短名，用它生成实例目录名；
 /// 目录已经存在时自动加序号，不会覆盖之前装好的整合包。
+///
+/// `target_instance` 传了实例 id 时就地重装到那个实例，
+/// 用来修装坏了的实例或更新整合包；传 None 则新建实例。
+#[allow(clippy::too_many_arguments)]
 pub fn install_instance(
     dl: &Downloader,
     project_id: &str,
@@ -45,6 +49,7 @@ pub fn install_instance(
     java: Option<JavaInfo>,
     progress: &Arc<DownloadProgress>,
     opts: InstallOptions,
+    target_instance: Option<String>,
 ) -> Result<InstalledModpack> {
     // 1. 先把整合包下载解开，拿到它声明的 Minecraft 版本与加载器
     let (extract_dir, deps) = modrinth::fetch_modpack(dl, pack_version, progress)?;
@@ -60,6 +65,8 @@ pub fn install_instance(
         java,
         progress,
         opts,
+        target_instance,
+        pack_version.id.clone(),
     );
 
     // 解压目录只是中转，装完就清掉
@@ -79,6 +86,8 @@ fn install_inner(
     java: Option<JavaInfo>,
     progress: &Arc<DownloadProgress>,
     opts: InstallOptions,
+    target_instance: Option<String>,
+    pack_version_id: String,
 ) -> Result<InstalledModpack> {
     if deps.minecraft.trim().is_empty() {
         return Err(anyhow!("整合包没有声明 Minecraft 版本"));
@@ -115,8 +124,14 @@ fn install_inner(
         .unwrap_or_else(|| outcome.game_id.clone());
 
     // 3. 建整合包自己的实例目录
-    let taken = version::installed_versions(game_dir);
-    let instance_id = modpack::unique_id(&modpack::sanitize_id(slug), &taken);
+    //    重装时沿用原来的实例 id，不会多出一个副本
+    let instance_id = match target_instance {
+        Some(id) => id,
+        None => {
+            let taken = version::installed_versions(game_dir);
+            modpack::unique_id(&modpack::sanitize_id(slug), &taken)
+        }
+    };
     let inst_dir = version::version_dir(game_dir, &instance_id);
     paths::ensure_dir(&inst_dir)?;
 
@@ -152,6 +167,7 @@ fn install_inner(
             loader: loader_kind.map(|k| k.label().to_string()),
             loader_version: deps.loader_version.clone(),
             project_id: Some(project_id.to_string()),
+            pack_version_id: Some(pack_version_id),
         },
     )?;
 

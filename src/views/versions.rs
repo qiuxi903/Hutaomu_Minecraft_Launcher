@@ -427,6 +427,51 @@ fn instance_card(
     response
 }
 
+/// 重新安装整合包
+///
+/// 装坏了的实例（缺加载器、版本描述不对）或者整合包更新了，
+/// 都可以在这里重装一次。已经下过的文件会跳过，不会重新下几百兆。
+fn reinstall_modpack(app: &mut App, instance_id: &str) {
+    let dir = version::version_dir(&app.cfg.game_dir, instance_id);
+    let Some(info) = crate::core::minecraft::modpack::read_marker(&dir) else {
+        app.error("这个实例没有整合包信息，无法重新安装");
+        return;
+    };
+    let (Some(project_id), Some(version_id)) =
+        (info.project_id.clone(), info.pack_version_id.clone())
+    else {
+        app.error("这个整合包没有记录来源与版本，无法重新安装");
+        return;
+    };
+    let name = info.name.clone();
+    let game_dir = app.cfg.game_dir.clone();
+    let opts = app.cfg.download.install_options();
+    let java = app.java_for(&info.mc_version);
+    let target = instance_id.to_string();
+
+    app.spawn_download(format!("重新安装 {name}"), move |dl, progress, job| {
+        let versions =
+            crate::core::content::modrinth::versions(&dl, &project_id, None, None).unwrap_or_default();
+        let Some(version) = versions.into_iter().find(|v| v.id == version_id) else {
+            return Err(anyhow::anyhow!("找不到整合包对应的版本"));
+        };
+        let installed = crate::core::content::modpack::install_instance(
+            &dl,
+            &project_id,
+            &name,
+            &target,
+            &version,
+            &game_dir,
+            java,
+            &progress,
+            opts,
+            Some(target.clone()),
+        )?;
+        job.send(CoreEvent::Installed(installed.instance_id.clone()));
+        Ok(format!("{name} 已重新安装"))
+    });
+}
+
 // ------------------------------------------------------------------ 二级：版本详情
 
 /// 打开某个实例的详情页
@@ -482,6 +527,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
         .custom_icon
         .as_ref()
         .and_then(|path| app.file_icon_texture(path));
+    let mut reinstall: Option<String> = None;
 
 
     ui::card(ui, &p, |ui| {
@@ -555,11 +601,22 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                         app.refresh_local_versions();
                     }
                 }
+                // 整合包可以重新装一次：装坏了的实例（缺加载器、版本描述不对）
+                // 或者整合包更新了，都从这里重来
+                if inst.is_modpack
+                    && ui::button(ui, &p, ButtonOpts::secondary("重新安装").icon("refresh"))
+                        .clicked()
+                {
+                    reinstall = Some(inst.mc_version.clone());
+                }
                 if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
                     views::open_version_dir(app, &inst.mc_version);
                 }
             });
         });
+        if let Some(id) = reinstall {
+            reinstall_modpack(app, &id);
+        }
         ui.add_space(12.0);
 
         // ---------- 加载器变体切换 ----------

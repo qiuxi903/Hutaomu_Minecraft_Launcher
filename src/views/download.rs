@@ -2311,6 +2311,7 @@ fn install_modpack(app: &mut App, version: Version, project: Project) {
             java,
             &progress,
             opts,
+            None,
         )?;
         let loader_text = installed.loader.clone().unwrap_or_else(|| "原版".into());
         job.send(CoreEvent::Installed(installed.instance_id.clone()));
