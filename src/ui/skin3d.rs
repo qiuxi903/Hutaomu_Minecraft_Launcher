@@ -144,12 +144,18 @@ struct Part {
     swing: f32,
     /// 是否为第二层
     overlay: bool,
+    /// 是否不画底面
+    ///
+    /// 帽子层在皮肤贴图里只有五个面，底面是空的，
+    /// 照着第一层画底面的话，脑袋下面会多出一块不该有的颜色。
+    no_bottom: bool,
 }
 
-fn inflate(size: V3) -> V3 {
-    // Minecraft 第二层向外扩张 0.5 像素
-    V3::new(size.x + 1.0, size.y + 1.0, size.z + 1.0)
-}
+/// 帽子层放大比例
+///
+/// Minecraft 只放大帽子（12.5%），外套、袖子、裤子的第二层与第一层同尺寸，
+/// 靠 alpha 区分。全部放大的话袖子会粗一圈，看着整个都错位。
+const HAT_SCALE: f32 = 1.125;
 
 fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
     let arm_w = if slim { 3.0 } else { 4.0 };
@@ -165,6 +171,7 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
             uv: UvRect { u: 0.0, v: 0.0, w: 8.0, h: 8.0 },
             swing: 0.0,
             overlay: false,
+            no_bottom: false,
         },
         // 身体
         Part {
@@ -174,6 +181,7 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
             uv: UvRect { u: 16.0, v: 16.0, w: 8.0, h: 12.0 },
             swing: 0.0,
             overlay: false,
+            no_bottom: false,
         },
         // 右臂（角色右侧，屏幕左侧）
         Part {
@@ -183,6 +191,7 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
             uv: UvRect { u: 40.0, v: 16.0, w: arm_w, h: 12.0 },
             swing: idle,
             overlay: false,
+            no_bottom: false,
         },
         // 左臂
         Part {
@@ -192,6 +201,7 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
             uv: UvRect { u: 32.0, v: 48.0, w: arm_w, h: 12.0 },
             swing: -idle,
             overlay: false,
+            no_bottom: false,
         },
         // 右腿
         Part {
@@ -201,6 +211,7 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
             uv: UvRect { u: 0.0, v: 16.0, w: 4.0, h: 12.0 },
             swing: 0.0,
             overlay: false,
+            no_bottom: false,
         },
         // 左腿
         Part {
@@ -210,64 +221,73 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
             uv: UvRect { u: 16.0, v: 48.0, w: 4.0, h: 12.0 },
             swing: 0.0,
             overlay: false,
+            no_bottom: false,
         },
     ];
 
     if has_overlay {
+        // 帽子层：Minecraft 里放大 12.5%，底面是空的
+        let hat = 8.0 * HAT_SCALE;
         let overlays = [
             // 帽子层 (32,0)
             Part {
-                center: V3::new(0.0, 28.0, 0.0),
-                size: inflate(V3::new(8.0, 8.0, 8.0)),
+                center: V3::new(0.0, 28.375, 0.0),
+                size: V3::new(hat, hat, hat),
                 uv_size: V3::new(8.0, 8.0, 8.0),
                 uv: UvRect { u: 32.0, v: 0.0, w: 8.0, h: 8.0 },
                 swing: 0.0,
                 overlay: true,
+                no_bottom: true,
             },
-            // 外套层 (16,32)
+            // 外套层 (16,32)：与第一层同尺寸
             Part {
                 center: V3::new(0.0, 18.0, 0.0),
-                size: inflate(V3::new(8.0, 12.0, 4.0)),
+                size: V3::new(8.0, 12.0, 4.0),
                 uv_size: V3::new(8.0, 12.0, 4.0),
                 uv: UvRect { u: 16.0, v: 32.0, w: 8.0, h: 12.0 },
                 swing: 0.0,
                 overlay: true,
+                no_bottom: false,
             },
             // 右臂外层 (40,32)
             Part {
                 center: V3::new(-arm_x, 18.0, 0.0),
-                size: inflate(V3::new(arm_w, 12.0, 4.0)),
+                size: V3::new(arm_w, 12.0, 4.0),
                 uv_size: V3::new(arm_w, 12.0, 4.0),
                 uv: UvRect { u: 40.0, v: 32.0, w: arm_w, h: 12.0 },
                 swing: idle,
                 overlay: true,
+                no_bottom: false,
             },
             // 左臂外层 (48,48)
             Part {
                 center: V3::new(arm_x, 18.0, 0.0),
-                size: inflate(V3::new(arm_w, 12.0, 4.0)),
+                size: V3::new(arm_w, 12.0, 4.0),
                 uv_size: V3::new(arm_w, 12.0, 4.0),
                 uv: UvRect { u: 48.0, v: 48.0, w: arm_w, h: 12.0 },
                 swing: -idle,
                 overlay: true,
+                no_bottom: false,
             },
             // 右腿外层 (0,32)
             Part {
                 center: V3::new(-2.0, 6.0, 0.0),
-                size: inflate(V3::new(4.0, 12.0, 4.0)),
+                size: V3::new(4.0, 12.0, 4.0),
                 uv_size: V3::new(4.0, 12.0, 4.0),
                 uv: UvRect { u: 0.0, v: 32.0, w: 4.0, h: 12.0 },
                 swing: 0.0,
                 overlay: true,
+                no_bottom: false,
             },
             // 左腿外层 (0,48)
             Part {
                 center: V3::new(2.0, 6.0, 0.0),
-                size: inflate(V3::new(4.0, 12.0, 4.0)),
+                size: V3::new(4.0, 12.0, 4.0),
                 uv_size: V3::new(4.0, 12.0, 4.0),
                 uv: UvRect { u: 0.0, v: 48.0, w: 4.0, h: 12.0 },
                 swing: 0.0,
                 overlay: true,
+                no_bottom: false,
             },
         ];
         parts.extend_from_slice(&overlays);
@@ -282,6 +302,7 @@ pub fn skin_preview(
     ui: &mut Ui,
     p: &Palette,
     texture: Option<&egui::TextureHandle>,
+    cutout: Option<&egui::TextureHandle>,
     model: SkinModel,
     has_overlay: bool,
     yaw: &mut f32,
@@ -299,9 +320,7 @@ pub fn skin_preview(
         *yaw += response.drag_delta().x * 0.012;
     }
     if animate {
-        if !response.dragged() {
-            *yaw += 0.0035;
-        }
+        // 只在拖动时转，不自己转圈：默认就停在斜侧的角度
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_millis(33));
     }
@@ -347,7 +366,14 @@ pub fn skin_preview(
     let mut faces: Vec<(f32, egui::Mesh)> = Vec::new();
 
     for part in &parts {
-        for face in box_faces(part.size, part.uv_size, part.uv, 64.0) {
+        for (index, face) in box_faces(part.size, part.uv_size, part.uv, 64.0)
+            .into_iter()
+            .enumerate()
+        {
+            // 帽子层没有底面
+            if part.no_bottom && index == 5 {
+                continue;
+            }
             let mut corners = face.corners;
             let mut normal = face.normal;
             if part.swing.abs() > 0.0001 {
@@ -369,7 +395,12 @@ pub fn skin_preview(
                 continue;
             }
 
-            let mut mesh = egui::Mesh::with_texture(texture.id());
+            let mut mesh = egui::Mesh::with_texture(if part.overlay {
+                // 第二层用镂空纹理：半透明像素丢掉，不和第一层混色
+                cutout.map(|t| t.id()).unwrap_or_else(|| texture.id())
+            } else {
+                texture.id()
+            });
             let mut depth = 0.0;
             for (i, corner) in world.iter().enumerate() {
                 let pos = Pos2::new(
@@ -384,6 +415,10 @@ pub fn skin_preview(
                 });
             }
             depth /= 4.0;
+            // 第二层稍微靠前一点，保证盖在第一层之上
+            if part.overlay {
+                depth += 0.02;
+            }
             mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
             faces.push((depth, mesh));
         }
@@ -426,6 +461,7 @@ pub fn head_preview(ui: &mut Ui, texture: Option<&egui::TextureHandle>, yaw: f32
         uv: UvRect { u: 0.0, v: 0.0, w: 8.0, h: 8.0 },
         swing: 0.0,
         overlay: false,
+        no_bottom: false,
     };
     let scale = size / 14.0;
     let center = rect.center();

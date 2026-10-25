@@ -454,6 +454,8 @@ pub struct SkinTexture {
     pub texture: egui::TextureHandle,
     /// 8x8 头部（含帽子叠加层）放大后的头像纹理
     pub head: egui::TextureHandle,
+    /// 第二层专用的镂空纹理（半透明像素已被抹掉）
+    pub cutout: egui::TextureHandle,
     pub model: SkinModel,
     pub source: SkinSource,
     /// 是否为 64x64 皮肤（有第二层）
@@ -517,6 +519,9 @@ pub struct App {
     images_pending: HashSet<String>,
     pub skin_cache: HashMap<String, SkinTexture>,
     pub skin_pending: HashSet<String>,
+    /// 皮肤预览的朝向
+    ///
+    /// 默认停在斜侧的角度（像角色侧着身看屏幕），拖动才会转。
     pub preview_yaw: f32,
 
     pub background_frames: Vec<egui::TextureHandle>,
@@ -610,7 +615,7 @@ impl App {
             images_pending: HashSet::new(),
             skin_cache: HashMap::new(),
             skin_pending: HashSet::new(),
-            preview_yaw: 0.6,
+            preview_yaw: -0.55,
             background_frames: Vec::new(),
             background_delays: Vec::new(),
             background_index: 0,
@@ -1212,11 +1217,18 @@ impl App {
             image.head_icon(64),
             egui::TextureOptions::NEAREST,
         );
+        // 第二层用镂空版本，避免半透明像素和第一层混色
+        let cutout = self.egui_ctx.load_texture(
+            format!("skin_cutout:{account_id}"),
+            image.to_cutout_color_image(),
+            egui::TextureOptions::NEAREST,
+        );
         self.skin_cache.insert(
             account_id.to_string(),
             SkinTexture {
                 texture,
                 head,
+                cutout,
                 model,
                 source,
                 has_overlay: image.height >= 64,

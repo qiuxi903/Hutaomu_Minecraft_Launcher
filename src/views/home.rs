@@ -440,6 +440,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
     let skin = account_id.as_ref().and_then(|id| app.skin_of(id));
     let model = skin.map(|s| s.model).unwrap_or_default();
     let texture = skin.map(|s| s.texture.clone());
+    let cutout = skin.map(|s| s.cutout.clone());
     let has_overlay = skin.map(|s| s.has_overlay).unwrap_or(false);
 
     ui::card(ui, &p, |ui| {
@@ -460,6 +461,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
             ui,
             &p,
             texture.as_ref(),
+            cutout.as_ref(),
             model,
             has_overlay,
             &mut app.preview_yaw,

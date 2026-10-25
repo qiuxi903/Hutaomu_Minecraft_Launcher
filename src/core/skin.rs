@@ -88,6 +88,21 @@ impl SkinImage {
         )
     }
 
+    /// 第二层专用的「镂空」版本
+    ///
+    /// Minecraft 渲染皮肤第二层用的是 cutout：alpha 低于阈值的像素直接丢掉，
+    /// 不做半透明混合。直接画原图的话，第二层的半透明像素会和第一层混在一起，
+    /// 整个模型看着发灰。这里把半透明像素抹成全透明，还原游戏里的效果。
+    pub fn to_cutout_color_image(&self) -> egui::ColorImage {
+        let mut rgba = self.rgba.clone();
+        for px in rgba.chunks_exact_mut(4) {
+            if px[3] < 128 {
+                px[3] = 0;
+            }
+        }
+        egui::ColorImage::from_rgba_unmultiplied([self.width as usize, self.height as usize], &rgba)
+    }
+
     /// 头像：8x8 脸部 + 帽子叠加层，最近邻放大
     pub fn head_icon(&self, size: u32) -> egui::ColorImage {
         let mut out = egui::ColorImage::new(
