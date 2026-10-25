@@ -86,6 +86,13 @@ fn install_inner(
 
     // 2. 装 Minecraft 本体与整合包要求的加载器
     let loader_kind = deps.loader.as_deref().and_then(loaders::LoaderKind::from_id);
+    // 整合包声明了加载器却没认出来时，宁可报错也不能悄悄按原版装，
+    // 否则装出来的实例少了整套模组环境，症状还很难查
+    if let Some(loader) = deps.loader.as_deref() {
+        if loader_kind.is_none() {
+            return Err(anyhow!("整合包声明的加载器 {loader} 暂不支持"));
+        }
+    }
     let manifest_data = manifest::fetch_manifest(dl.source)?;
     let entry = manifest::find(&manifest_data, &deps.minecraft)
         .cloned()

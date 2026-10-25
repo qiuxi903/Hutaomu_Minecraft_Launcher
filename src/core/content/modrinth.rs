@@ -543,7 +543,13 @@ pub fn install_modpack_files(
     paths::ensure_dir(target_dir)?;
     let mut tasks: Vec<FileTask> = Vec::new();
     let mut total = 0u64;
+    let mut skipped = 0usize;
     for entry in &index.files {
+        // 服务端专用的文件客户端用不上，装进来只是白占磁盘
+        if !entry.for_client() {
+            skipped += 1;
+            continue;
+        }
         let dest = target_dir.join(entry.path.replace('/', std::path::MAIN_SEPARATOR_STR));
         let url = entry.downloads.first().cloned().unwrap_or_default();
         if url.is_empty() {
@@ -555,6 +561,9 @@ pub fn install_modpack_files(
                 .with_size(entry.file_size)
                 .with_optional_sha1(entry.hashes.sha1.clone()),
         );
+    }
+    if skipped > 0 {
+        log::info!("整合包里有 {skipped} 个服务端专用文件，客户端不装");
     }
     progress.set_message(format!("正在下载整合包内容（{} 个文件）...", tasks.len()));
     progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
@@ -585,19 +594,38 @@ fn read_index(extract_dir: &Path) -> Result<MrpackIndex> {
 /// 从索引里取出 Minecraft 版本与加载器
 fn deps_from_index(index: &MrpackIndex) -> ModpackDeps {
     let d = &index.dependencies;
-    let (loader, loader_version) = if let Some(v) = &d.fabric {
-        (Some("fabric"), Some(v.clone()))
-    } else if let Some(v) = &d.neoforge {
-        (Some("neoforge"), Some(v.clone()))
-    } else if let Some(v) = &d.forge {
-        (Some("forge"), Some(v.clone()))
-    } else if let Some(v) = &d.quilt {
-        (Some("quilt"), Some(v.clone()))
-    } else {
-        (None, None)
+    let mc = d.minecraft.clone();
+    let pick = |value: &Option<String>| -> Option<String> {
+        let raw = value.as_ref()?.trim();
+        if raw.is_empty() {
+            return None;
+        }
+        // 有时加载器版本号会带上 Minecraft 版本前缀，例如 1.20.1-47.2.0
+        let stripped = raw
+            .strip_prefix(&format!("{mc}-"))
+            .unwrap_or(raw)
+            .trim();
+        if stripped.is_empty() {
+            None
+        } else {
+            Some(stripped.to_string())
+        }
     };
+
+    let (loader, loader_version): (Option<&str>, Option<String>) =
+        if let Some(v) = pick(&d.fabric) {
+            (Some("fabric"), Some(v))
+        } else if let Some(v) = pick(&d.neoforge) {
+            (Some("neoforge"), Some(v))
+        } else if let Some(v) = pick(&d.forge) {
+            (Some("forge"), Some(v))
+        } else if let Some(v) = pick(&d.quilt) {
+            (Some("quilt"), Some(v))
+        } else {
+            (None, None)
+        };
     ModpackDeps {
-        minecraft: d.minecraft.clone(),
+        minecraft: mc,
         loader: loader.map(|l| l.to_string()),
         loader_version,
     }
@@ -612,18 +640,31 @@ struct MrpackIndex {
 }
 
 /// 整合包声明的 Minecraft 版本与加载器
+///
+/// 加载器字段的写法不统一：Modrinth 规范用 `fabric`，
+/// 但不少整合包（多是从 CurseForge 转过来的）写成 `fabric-loader`，
+/// 两种都要认，不然会把整合包当成原版装。
 #[derive(Debug, Default, Deserialize)]
 struct MrpackDependencies {
     #[serde(default)]
     minecraft: String,
-    #[serde(default)]
+    #[serde(default, alias = "fabric-loader")]
     fabric: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "quilt-loader")]
     quilt: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "forge-loader")]
     forge: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "neoforge-loader")]
     neoforge: Option<String>,
+}
+
+/// 整合包里单个文件的适用环境
+#[derive(Debug, Default, Deserialize)]
+struct MrpackEnv {
+    #[serde(default)]
+    client: String,
+    #[serde(default)]
+    server: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -636,6 +677,18 @@ struct MrpackFile {
     downloads: Vec<String>,
     #[serde(default, rename = "fileSize")]
     file_size: u64,
+    #[serde(default)]
+    env: MrpackEnv,
+}
+
+impl MrpackFile {
+    /// 这个文件要不要装进客户端
+    ///
+    /// 写了 `client: unsupported` 的是服务端专用文件，客户端用不上，
+    /// 装进来只是白占磁盘。
+    fn for_client(&self) -> bool {
+        self.env.client != "unsupported"
+    }
 }
 
 fn copy_dir(src: &Path, dest: &Path) -> Result<()> {
@@ -767,5 +820,63 @@ mod tests {
         assert_eq!(deps.minecraft, "1.20.1");
         assert!(deps.loader.is_none());
         assert!(deps.loader_version.is_none());
+    }
+
+    /// 不少整合包把加载器写成 fabric-loader，认不出来就会被装成原版
+    #[test]
+    fn reads_modpack_loader_alias() {
+        let index: MrpackIndex = serde_json::from_str(
+            r#"{
+                "files": [],
+                "dependencies": {
+                    "minecraft": "26.3",
+                    "fabric-loader": "0.19.5"
+                }
+            }"#,
+        )
+        .unwrap();
+        let deps = deps_from_index(&index);
+        assert_eq!(deps.minecraft, "26.3");
+        assert_eq!(deps.loader.as_deref(), Some("fabric"));
+        assert_eq!(deps.loader_version.as_deref(), Some("0.19.5"));
+    }
+
+    /// 加载器版本号带 Minecraft 版本前缀时要拆开
+    #[test]
+    fn strips_mc_prefix_from_loader_version() {
+        let index: MrpackIndex = serde_json::from_str(
+            r#"{
+                "files": [],
+                "dependencies": {
+                    "minecraft": "1.20.1",
+                    "forge": "1.20.1-47.2.0"
+                }
+            }"#,
+        )
+        .unwrap();
+        let deps = deps_from_index(&index);
+        assert_eq!(deps.loader.as_deref(), Some("forge"));
+        assert_eq!(deps.loader_version.as_deref(), Some("47.2.0"));
+    }
+
+    /// 服务端专用的文件客户端不该装
+    #[test]
+    fn skips_server_only_files() {
+        let index: MrpackIndex = serde_json::from_str(
+            r#"{
+                "files": [
+                    { "path": "mods/a.jar", "fileSize": 1 },
+                    { "path": "mods/b.jar", "fileSize": 1,
+                      "env": { "client": "unsupported", "server": "required" } },
+                    { "path": "mods/c.jar", "fileSize": 1,
+                      "env": { "client": "required", "server": "unsupported" } }
+                ],
+                "dependencies": { "minecraft": "26.3" }
+            }"#,
+        )
+        .unwrap();
+        assert!(index.files[0].for_client());
+        assert!(!index.files[1].for_client());
+        assert!(index.files[2].for_client());
     }
 }
