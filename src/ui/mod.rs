@@ -100,6 +100,13 @@ pub fn install_style(ctx: &egui::Context, p: &Palette, font_scale: f32) {
     style.spacing.scroll.bar_width = 8.0;
     style.spacing.scroll.floating = true;
     style.animation_time = 0.12;
+    // 文字默认不可选
+    //
+    // 可选的文字会自己吃掉鼠标点击，卡片里点了标题反而进不去详情，
+    // 必须点标题旁边的空白才行。输入框是 TextEdit，不受这个影响，
+    // 需要选字复制的地方照常能选。
+    style.interaction.selectable_labels = false;
+    style.interaction.multi_widget_text_select = false;
     style.text_styles = [
         (egui::TextStyle::Heading, font(20.0)),
         (egui::TextStyle::Body, font(14.0)),

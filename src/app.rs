@@ -2405,10 +2405,14 @@ impl App {
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         for line in &lines {
-                            ui.label(
-                                egui::RichText::new(line)
-                                    .font(ui::mono(11.5))
-                                    .color(palette.text),
+                            // 日志要能选中复制，所以这里单独打开可选
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(line)
+                                        .font(ui::mono(11.5))
+                                        .color(palette.text),
+                                )
+                                .selectable(true),
                             );
                         }
                     });
