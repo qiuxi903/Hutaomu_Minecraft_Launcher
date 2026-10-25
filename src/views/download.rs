@@ -1010,30 +1010,35 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
     ui.add_space(10.0);
 
     // 过滤条件
-    ui.horizontal(|ui| {
-        let mut use_filter = app.download.use_version_filter;
-        if ui::toggle(ui, &p, &mut use_filter).changed() {
-            app.download.use_version_filter = use_filter;
-        }
-        ui.label(
-            egui::RichText::new("只显示与当前版本兼容的内容")
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
-        if let Some(version) = app.selected_version() {
-            widgets::badge(ui, &p, &version.mc_version, p.accent);
-            if let Some(loader) = &version.loader {
-                widgets::badge(ui, &p, loader, views::loader_color(Some(loader)));
+    //
+    // 整合包自带 Minecraft 版本，按当前实例过滤会把大部分整合包筛掉，
+    // 所以这一页不显示这个开关，也不按当前版本搜。
+    if kind != ContentKind::Modpack {
+        ui.horizontal(|ui| {
+            let mut use_filter = app.download.use_version_filter;
+            if ui::toggle(ui, &p, &mut use_filter).changed() {
+                app.download.use_version_filter = use_filter;
             }
-        } else {
             ui.label(
-                egui::RichText::new("（未选择游戏版本）")
-                    .font(ui::font(12.0))
-                    .color(p.text_faint),
+                egui::RichText::new("只显示与当前版本兼容的内容")
+                    .font(ui::font(12.5))
+                    .color(p.text_weak),
             );
-        }
-    });
-    ui.add_space(12.0);
+            if let Some(version) = app.selected_version() {
+                widgets::badge(ui, &p, &version.mc_version, p.accent);
+                if let Some(loader) = &version.loader {
+                    widgets::badge(ui, &p, loader, views::loader_color(Some(loader)));
+                }
+            } else {
+                ui.label(
+                    egui::RichText::new("（未选择游戏版本）")
+                        .font(ui::font(12.0))
+                        .color(p.text_faint),
+                );
+            }
+        });
+        ui.add_space(12.0);
+    }
 
     if let Some(err) = app.download.content_error.clone() {
         ui::inset(ui, &p, |ui| {
@@ -1257,7 +1262,9 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
 pub(crate) fn run_search(app: &mut App) {
     let kind = app.download.content_kind();
     let query = app.download.content_query.clone();
-    let (mc, loader) = if app.download.use_version_filter {
+    // 整合包自带 Minecraft 版本，不按当前实例过滤
+    let filter_by_version = app.download.use_version_filter && kind != ContentKind::Modpack;
+    let (mc, loader) = if filter_by_version {
         match app.selected_version() {
             Some(v) => (Some(v.mc_version.clone()), v.loader.clone()),
             None => (None, None),
@@ -1352,7 +1359,10 @@ pub(crate) fn open_project(app: &mut App, project_id: &str, author: &str) {
     let id = project_id.to_string();
     let source = app.cfg.download.source;
     let timeout = app.cfg.download.timeout_secs;
-    let (mc, loader) = if app.download.use_version_filter {
+    // 整合包不带版本筛选
+    let filter_by_version = app.download.use_version_filter
+        && app.download.content_kind() != ContentKind::Modpack;
+    let (mc, loader) = if filter_by_version {
         match app.selected_version() {
             Some(v) => (Some(v.mc_version.clone()), v.loader.as_ref().map(|l| l.to_lowercase())),
             None => (None, None),
