@@ -89,7 +89,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 28;
+pub const SHOT_SCENES: usize = 29;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -295,6 +295,13 @@ impl App {
                 self.download.tab = 5;
                 self.download.content_loaded_tab = Some(5);
                 views::download::open_project(self, "compsmp", "CompSMP-OptionalModpack");
+            }
+            28 => {
+                // 整合包实例详情：独立实例与重新安装入口
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_modpack_instance_id() {
+                    views::versions::open_detail(self, &id);
+                }
             }
             _ => {
                 // 提示条位置与动效检查
@@ -1037,6 +1044,14 @@ impl App {
         self.instances
             .iter()
             .find(|i| i.variants.iter().any(|v| v.loader.is_some()))
+            .map(|i| i.mc_version.clone())
+    }
+
+    /// 界面自检要打开的整合包实例
+    fn shot_modpack_instance_id(&self) -> Option<String> {
+        self.instances
+            .iter()
+            .find(|i| i.is_modpack)
             .map(|i| i.mc_version.clone())
     }
 
@@ -2889,6 +2904,7 @@ fn shot_scene_wait(scene: usize) -> f64 {
         22 => 2.5,
         23 => 2.0,
         27 => 5.0,
+        28 => 2.0,
         _ => 1.8,
     }
 }
@@ -2922,6 +2938,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         25 => "版本管理-投影蓝图",
         26 => "版本管理-存档",
         27 => "下载-整合包详情",
+        28 => "版本管理-整合包",
         _ => "账号-皮肤站",
     }
 }
