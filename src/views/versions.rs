@@ -29,6 +29,8 @@ pub struct VersionsState {
     pub content_slugs: HashMap<String, String>,
     /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
     pub content_lookup_section: Option<&'static str>,
+    /// 展开了官网菜单的内容条目下标
+    pub content_menu: Option<usize>,
     pub detail_memory: f32,
     pub detail_java: usize,
     pub detail_jvm: String,
@@ -52,6 +54,7 @@ impl Default for VersionsState {
             section: "info",
             content_slugs: HashMap::new(),
             content_lookup_section: None,
+            content_menu: None,
             detail_memory: 4096.0,
             detail_java: 0,
             detail_jvm: String::new(),
@@ -1523,111 +1526,175 @@ fn content_tab(
         return;
     }
 
-    for (index, item) in items.iter().enumerate() {
-        // 逐项淡入，一长串卡片像依次落位，而不是整片糊上来
-        let delay = ui::anim::stagger(index, 0.022);
-        let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("content", index)), delay);
-        ui.set_opacity(appear);
-        // 在线页面：模组用 MCMod 词库里的 slug，光影与资源包用后台反查的结果
-        let modrinth_slug = item
-            .modrinth_slug
-            .clone()
-            .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
+    // 网格排布：每张卡片限宽，不让一行拉满整个内容区
+    let width = ui.available_width();
+    let columns = if width > 980.0 {
+        3
+    } else if width > 640.0 {
+        2
+    } else {
+        1
+    };
+    let card_width = (width - 12.0 * (columns as f32 - 1.0)) / columns as f32;
 
-        ui::card_flat(ui, &p, |ui| {
-            ui.horizontal(|ui| {
-                // 模组 jar 里大多自带一张图，用它当头像，没有才退回分类图标
-                let icon_key = format!(
-                    "{}|{}",
-                    item.path.display(),
-                    item.modified
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                        .unwrap_or(0)
-                );
-                let texture = item
-                    .icon
-                    .as_ref()
-                    .and_then(|bytes| app.mod_icon_texture(&icon_key, bytes));
-                match texture {
-                    Some(tex) => {
-                        let size = 30.0;
-                        let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
-                        if ui.is_rect_visible(rect) {
-                            ui.painter().rect_filled(
-                                rect,
-                                p.corner_sm(),
-                                p.surface_alt,
-                            );
-                            ui.painter().image(
-                                tex.id(),
-                                rect.shrink(2.0),
-                                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                                egui::Color32::WHITE,
-                            );
-                        }
-                        ui.add_space(30.0);
-                    }
-                    None => {
-                        icons::paint(
-                            ui.ctx(),
-                            ui.painter(),
-                            kind.icon(),
-                            Rect::from_center_size(
-                                Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
-                                Vec2::splat(18.0),
-                            ),
-                            p.text_weak,
+    let mut index = 0usize;
+    for chunk in items.chunks(columns) {
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = 12.0;
+            for item in chunk {
+                let current = index;
+                index += 1;
+                // 逐项淡入，一长串卡片像依次落位，而不是整片糊上来
+                let delay = ui::anim::stagger(current, 0.022);
+                let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("content", current)), delay);
+                ui.set_opacity(appear);
+                // 在线页面：模组用 MCMod 词库里的 slug，光影与资源包用后台反查的结果
+                let modrinth_slug = item
+                    .modrinth_slug
+                    .clone()
+                    .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
+                let menu_open = app.versions_ui.content_menu == Some(current);
+
+                ui.allocate_ui_with_layout(
+                    Vec2::new(card_width, 0.0),
+                    Layout::top_down(Align::Min),
+                    |ui| {
+                ui::card_flat(ui, &p, |ui| {
+                    // 卡片总宽 = 内容宽 + 卡片内边距（左右各 16）
+                    ui.set_width(card_width - 32.0);
+                    ui.horizontal(|ui| {
+                        // 模组 jar 里大多自带一张图，用它当头像，没有才退回分类图标
+                        let icon_key = format!(
+                            "{}|{}",
+                            item.path.display(),
+                            item.modified
+                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0)
                         );
-                        ui.add_space(28.0);
+                        let texture = item
+                            .icon
+                            .as_ref()
+                            .and_then(|bytes| app.mod_icon_texture(&icon_key, bytes));
+                        match texture {
+                            Some(tex) => {
+                                let size = 30.0;
+                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
+                                if ui.is_rect_visible(rect) {
+                                    ui.painter().rect_filled(
+                                        rect,
+                                        p.corner_sm(),
+                                        p.surface_alt,
+                                    );
+                                    ui.painter().image(
+                                        tex.id(),
+                                        rect.shrink(2.0),
+                                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                                        egui::Color32::WHITE,
+                                    );
+                                }
+                                ui.add_space(30.0);
+                            }
+                            None => {
+                                icons::paint(
+                                    ui.ctx(),
+                                    ui.painter(),
+                                    kind.icon(),
+                                    Rect::from_center_size(
+                                        Pos2::new(ui.cursor().left() + 10.0, ui.cursor().center().y),
+                                        Vec2::splat(18.0),
+                                    ),
+                                    p.text_weak,
+                                );
+                                ui.add_space(28.0);
+                            }
+                        }
+                        ui.vertical(|ui| {
+                            // 标题、版本信息、文件名分三层排开，不再挤在一起
+                            // 文字过长时截断，免得把卡片撑出格子
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&item.display)
+                                        .font(ui::font(13.5))
+                                        .color(p.text)
+                                        .strong(),
+                                )
+                                .truncate(),
+                            );
+                            ui.add_space(3.0);
+                            if !item.subtitle.is_empty() {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&item.subtitle)
+                                            .font(ui::font(11.5))
+                                            .color(p.text_weak),
+                                    )
+                                    .truncate(),
+                                );
+                                ui.add_space(2.0);
+                            }
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!(
+                                        "{} · {}",
+                                        item.file_name,
+                                        paths::format_size(item.size)
+                                    ))
+                                    .font(ui::font(10.5))
+                                    .color(p.text_faint),
+                                )
+                                .truncate(),
+                            );
+                        });
+                    });
+                    ui.add_space(6.0);
+                    ui.horizontal(|ui| {
+                        if ui::ghost(ui, &p, "打开位置").clicked() {
+                            paths::reveal(&item.path);
+                        }
+                        // 两个官网合到一个按钮里，展开后再选
+                        if modrinth_slug.is_some() || item.mcmod.is_some() {
+                            let label = if menu_open { "官网 ▴" } else { "官网 ▾" };
+                            if ui::ghost(ui, &p, label).clicked() {
+                                app.versions_ui.content_menu = if menu_open {
+                                    None
+                                } else {
+                                    Some(current)
+                                };
+                            }
+                        }
+                    });
+                });
+                });
+                ui.set_opacity(1.0);
+            }
+        });
+        ui.add_space(10.0);
+    }
+
+    // 展开的官网选项画在列表下方，避免被滚动区域裁掉
+    if let Some(index) = app.versions_ui.content_menu {
+        if let Some(item) = items.get(index) {
+            let modrinth_slug = item
+                .modrinth_slug
+                .clone()
+                .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
+            ui.horizontal(|ui| {
+                ui.add_space(46.0);
+                if let Some(slug) = &modrinth_slug {
+                    if ui::ghost(ui, &p, "打开 Modrinth").clicked() {
+                        let _ = open::that(format!("https://modrinth.com/{}", slug));
+                        app.versions_ui.content_menu = None;
                     }
                 }
-                ui.vertical(|ui| {
-                    // 标题、版本信息、文件名分三层排开，不再挤在一起
-                    ui.label(
-                        egui::RichText::new(&item.display)
-                            .font(ui::font(13.5))
-                            .color(p.text)
-                            .strong(),
-                    );
-                    ui.add_space(3.0);
-                    if !item.subtitle.is_empty() {
-                        ui.label(
-                            egui::RichText::new(&item.subtitle)
-                                .font(ui::font(11.5))
-                                .color(p.text_weak),
-                        );
-                        ui.add_space(2.0);
+                if let Some(entry) = &item.mcmod {
+                    if ui::ghost(ui, &p, "打开 MC 百科").clicked() {
+                        let _ = open::that(entry.url());
+                        app.versions_ui.content_menu = None;
                     }
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} · {}",
-                            item.file_name,
-                            paths::format_size(item.size)
-                        ))
-                        .font(ui::font(10.5))
-                        .color(p.text_faint),
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if let Some(slug) = &modrinth_slug {
-                        if ui::ghost(ui, &p, "打开 Modrinth").clicked() {
-                            let _ = open::that(format!("https://modrinth.com/{}", slug));
-                        }
-                    }
-                    if let Some(entry) = &item.mcmod {
-                        if ui::ghost(ui, &p, "打开 MCMod").clicked() {
-                            let _ = open::that(entry.url());
-                        }
-                    }
-                    if ui::ghost(ui, &p, "打开位置").clicked() {
-                        paths::reveal(&item.path);
-                    }
-                });
+                }
             });
-        });
-        ui.set_opacity(1.0);
-        ui.add_space(8.0);
+        }
     }
 }
 
