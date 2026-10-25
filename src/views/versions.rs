@@ -12,6 +12,7 @@ use crate::app::{App, CoreEvent, Page};
 use crate::core::minecraft::version;
 use crate::core::paths;
 use crate::icons;
+use crate::theme::Palette;
 use crate::ui::{self, widgets, ButtonOpts};
 use crate::views;
 
@@ -29,8 +30,8 @@ pub struct VersionsState {
     pub content_slugs: HashMap<String, String>,
     /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
     pub content_lookup_section: Option<&'static str>,
-    /// 展开了官网菜单的内容条目下标
-    pub content_menu: Option<usize>,
+    /// 内容列表每行放几个（1 或 2）
+    pub content_columns: usize,
     pub detail_memory: f32,
     pub detail_java: usize,
     pub detail_jvm: String,
@@ -54,7 +55,7 @@ impl Default for VersionsState {
             section: "info",
             content_slugs: HashMap::new(),
             content_lookup_section: None,
-            content_menu: None,
+            content_columns: 2,
             detail_memory: 4096.0,
             detail_java: 0,
             detail_jvm: String::new(),
@@ -1471,6 +1472,42 @@ mod tests {
     }
 }
 
+/// 这个内容对应的网站名
+fn site_labels(
+    modrinth_slug: &Option<String>,
+    mcmod_url: &Option<String>,
+) -> Vec<String> {
+    let mut names = Vec::new();
+    if modrinth_slug.is_some() {
+        names.push("Modrinth".to_string());
+    }
+    if mcmod_url.is_some() {
+        names.push("MC 百科".to_string());
+    }
+    names
+}
+
+/// 卡片下方的堆叠纸边
+///
+/// 列表项一层压一层，看起来像一叠卡片而不是平铺的清单。
+fn paint_stacked_edges(ui: &Ui, p: &Palette, rect: &Rect) {
+    let radius = p.corner(0);
+    for layer in 1..=3u8 {
+        let offset = layer as f32 * 4.0;
+        let edge = Rect::from_min_max(
+            Pos2::new(rect.left() + offset, rect.bottom() + offset - 4.0),
+            Pos2::new(rect.right() - offset, rect.bottom() + offset),
+        );
+        ui.painter().rect_filled(edge, radius, p.surface_alt);
+        ui.painter().rect_stroke(
+            edge,
+            radius,
+            egui::Stroke::new(1.0, p.border_strong),
+            egui::StrokeKind::Inside,
+        );
+    }
+}
+
 /// 内容区：模组 / 光影 / 资源包
 fn content_tab(
     app: &mut App,
@@ -1503,6 +1540,18 @@ fn content_tab(
                 let _ = paths::ensure_dir(&dir);
                 paths::reveal(&dir);
             }
+            // 每行放一个还是两个
+            let mut columns = app.versions_ui.content_columns.clamp(1, 2);
+            if ui::button(
+                ui,
+                &p,
+                ButtonOpts::ghost(if columns == 1 { "一行一个" } else { "一行两个" }),
+            )
+            .clicked()
+            {
+                columns = if columns == 1 { 2 } else { 1 };
+                app.versions_ui.content_columns = columns;
+            }
             let download_label = format!("去下载{}", kind.label());
             if ui::button(ui, &p, ButtonOpts::secondary(&download_label).icon("download")).clicked() {
                 // 跳到下载页并定位到对应标签
@@ -1528,12 +1577,17 @@ fn content_tab(
 
     // 网格排布：每张卡片限宽，不让一行拉满整个内容区
     let width = ui.available_width();
-    let columns = if width > 980.0 {
-        3
-    } else if width > 640.0 {
-        2
-    } else {
-        1
+    let columns = match app.versions_ui.content_columns {
+        1 => 1,
+        _ => {
+            if width > 980.0 {
+                2
+            } else if width > 640.0 {
+                2
+            } else {
+                1
+            }
+        }
     };
     let card_width = (width - 12.0 * (columns as f32 - 1.0)) / columns as f32;
 
@@ -1553,13 +1607,11 @@ fn content_tab(
                     .modrinth_slug
                     .clone()
                     .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
-                let menu_open = app.versions_ui.content_menu == Some(current);
-
                 ui.allocate_ui_with_layout(
                     Vec2::new(card_width, 0.0),
                     Layout::top_down(Align::Min),
                     |ui| {
-                ui::card_flat(ui, &p, |ui| {
+                let response = ui::card_flat(ui, &p, |ui| {
                     // 卡片总宽 = 内容宽 + 卡片内边距（左右各 16）
                     ui.set_width(card_width - 32.0);
                     ui.horizontal(|ui| {
@@ -1593,7 +1645,6 @@ fn content_tab(
                                         egui::Color32::WHITE,
                                     );
                                 }
-                                ui.add_space(30.0);
                             }
                             None => {
                                 icons::paint(
@@ -1606,12 +1657,13 @@ fn content_tab(
                                     ),
                                     p.text_weak,
                                 );
-                                ui.add_space(28.0);
+                                ui.add_space(26.0);
                             }
                         }
                         ui.vertical(|ui| {
                             // 标题、版本信息、文件名分三层排开，不再挤在一起
                             // 文字过长时截断，免得把卡片撑出格子
+                            ui.set_width((card_width - 96.0).max(120.0));
                             ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(&item.display)
@@ -1646,55 +1698,106 @@ fn content_tab(
                                 .truncate(),
                             );
                         });
+                        // 右上角一个角标，点开外部浏览器看项目主页
+                        let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
+                        if modrinth_slug.is_some() || mcmod_url.is_some() {
+                            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                                let badge = ui::round_icon_button(ui, &p, "external-link", 22.0);
+                                if badge.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    if let Some(slug) = &modrinth_slug {
+                                        badge.clone().on_hover_ui(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!("在 Modrinth 打开 {}", slug))
+                                                    .font(ui::font(11.0)),
+                                            );
+                                        });
+                                    } else if mcmod_url.is_some() {
+                                        badge.clone().on_hover_ui(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("在 MC 百科打开")
+                                                    .font(ui::font(11.0)),
+                                            );
+                                        });
+                                    }
+                                }
+                                if badge.clicked() {
+                                    if let Some(slug) = &modrinth_slug {
+                                        let _ = open::that(format!("https://modrinth.com/{}", slug));
+                                    } else if let Some(url) = &mcmod_url {
+                                        let _ = open::that(url);
+                                    }
+                                }
+                            });
+                        }
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(5.0);
+                    // 底行：左边是文件位置，右边是相关网站与外链角标
                     ui.horizontal(|ui| {
-                        if ui::ghost(ui, &p, "打开位置").clicked() {
+                        let path_width = (card_width - 170.0).max(60.0);
+                        let path_label = ui.add_sized(
+                            [path_width, 16.0],
+                            egui::Label::new(
+                                egui::RichText::new(item.path.display().to_string())
+                                    .font(ui::font(10.0))
+                                    .color(p.text_faint),
+                            )
+                            .truncate(),
+                        );
+                        if path_label.clicked() {
                             paths::reveal(&item.path);
                         }
-                        // 两个官网合到一个按钮里，展开后再选
-                        if modrinth_slug.is_some() || item.mcmod.is_some() {
-                            let label = if menu_open { "官网 ▴" } else { "官网 ▾" };
-                            if ui::ghost(ui, &p, label).clicked() {
-                                app.versions_ui.content_menu = if menu_open {
-                                    None
-                                } else {
-                                    Some(current)
-                                };
-                            }
+                        if path_label.hovered() {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                            path_label.clone().on_hover_ui(|ui| {
+                                ui.label(
+                                    egui::RichText::new(item.path.display().to_string())
+                                        .font(ui::font(11.0)),
+                                );
+                            });
                         }
+                        // 相关网站：有词条就标出来，角标直接引到外部浏览器
+                        let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
+                        let site_names = site_labels(&modrinth_slug, &mcmod_url);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if modrinth_slug.is_some() || mcmod_url.is_some() {
+                                let badge = ui::round_icon_button(ui, &p, "external-link", 20.0);
+                                if badge.hovered() {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    let tip = if modrinth_slug.is_some() {
+                                        "在浏览器里打开 Modrinth"
+                                    } else {
+                                        "在浏览器里打开 MC 百科"
+                                    };
+                                    badge.clone().on_hover_ui(|ui| {
+                                        ui.label(egui::RichText::new(tip).font(ui::font(11.0)));
+                                    });
+                                }
+                                if badge.clicked() {
+                                    if let Some(slug) = &modrinth_slug {
+                                        let _ = open::that(format!("https://modrinth.com/{}", slug));
+                                    } else if let Some(url) = &mcmod_url {
+                                        let _ = open::that(url);
+                                    }
+                                }
+                            }
+                            if !site_names.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(site_names.join(" · "))
+                                        .font(ui::font(10.5))
+                                        .color(p.text_weak),
+                                );
+                            }
+                        });
                     });
                 });
+                // 堆叠：卡片下面露出几层纸边
+                paint_stacked_edges(ui, &p, &response.rect);
                 });
                 ui.set_opacity(1.0);
             }
         });
-        ui.add_space(10.0);
-    }
-
-    // 展开的官网选项画在列表下方，避免被滚动区域裁掉
-    if let Some(index) = app.versions_ui.content_menu {
-        if let Some(item) = items.get(index) {
-            let modrinth_slug = item
-                .modrinth_slug
-                .clone()
-                .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
-            ui.horizontal(|ui| {
-                ui.add_space(46.0);
-                if let Some(slug) = &modrinth_slug {
-                    if ui::ghost(ui, &p, "打开 Modrinth").clicked() {
-                        let _ = open::that(format!("https://modrinth.com/{}", slug));
-                        app.versions_ui.content_menu = None;
-                    }
-                }
-                if let Some(entry) = &item.mcmod {
-                    if ui::ghost(ui, &p, "打开 MC 百科").clicked() {
-                        let _ = open::that(entry.url());
-                        app.versions_ui.content_menu = None;
-                    }
-                }
-            });
-        }
+        ui.add_space(12.0);
     }
 }
 
