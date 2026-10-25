@@ -762,7 +762,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameI
     ui.add_space(16.0);
 
     let mut memory = app.versions_ui.detail_memory;
-    if ui::slider(ui, &p, "最大内存", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
+    if ui::slider(ui, &p, "最大内存", "分配给游戏进程的堆内存上限", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
         app.versions_ui.detail_memory = memory;
     }
     ui.add_space(6.0);

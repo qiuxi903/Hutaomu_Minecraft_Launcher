@@ -990,30 +990,44 @@ pub fn slider(
     ui: &mut Ui,
     p: &Palette,
     label: &str,
+    desc: &str,
     value: &mut f32,
     min: f32,
     max: f32,
     step: f32,
     suffix: &str,
 ) -> Response {
-    let height = 30.0;
+    // 标题与说明在左，滑块在右，和开关、下拉的排版一致
+    let height = if desc.is_empty() { 30.0 } else { 38.0 };
     let width = ui.available_width();
     let (rect, mut response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
 
-    let label_width = if label.is_empty() { 0.0 } else { 92.0 };
     let value_width = 74.0;
+    let track_width = 150.0;
     let track = Rect::from_min_max(
-        Pos2::new(rect.left() + label_width, rect.center().y - 2.0),
+        Pos2::new(
+            (rect.right() - value_width - track_width).max(rect.left() + 120.0),
+            rect.center().y - 2.0,
+        ),
         Pos2::new(rect.right() - value_width, rect.center().y + 2.0),
     );
 
     if !label.is_empty() {
         ui.painter().text(
-            Pos2::new(rect.left(), rect.center().y),
-            Align2::LEFT_CENTER,
+            Pos2::new(rect.left(), rect.top() + 9.0),
+            Align2::LEFT_TOP,
             label,
-            font(13.5),
-            p.text_weak,
+            font(13.0),
+            p.text,
+        );
+    }
+    if !desc.is_empty() {
+        ui.painter().text(
+            Pos2::new(rect.left(), rect.top() + 22.0),
+            Align2::LEFT_TOP,
+            desc,
+            font(11.0),
+            p.text_faint,
         );
     }
 
@@ -1238,6 +1252,57 @@ pub fn empty_state(ui: &mut Ui, p: &Palette, icon_name: &str, title: &str, desc:
         }
         ui.add_space(20.0);
     });
+}
+
+/// 设置项一行：左边标题与说明，右边控件
+///
+/// 设置页所有项都用这个排版，看的时候能对上「这一项是干什么的」，
+/// 控件也统一靠右，不会东一个西一个。
+pub fn setting_row(
+    ui: &mut Ui,
+    p: &Palette,
+    title: &str,
+    desc: &str,
+    control: impl FnOnce(&mut Ui),
+) {
+    ui.horizontal_top(|ui| {
+        ui.vertical(|ui| {
+            let width = (ui.available_width() - 180.0).max(120.0);
+            ui.set_width(width);
+            ui.label(
+                egui::RichText::new(title)
+                    .font(font(13.0))
+                    .color(p.text),
+            );
+            if !desc.is_empty() {
+                ui.add_space(2.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(desc)
+                            .font(font(11.0))
+                            .color(p.text_faint),
+                    )
+                    .wrap(),
+                );
+            }
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+            control(ui);
+        });
+    });
+    ui.add_space(10.0);
+}
+
+/// 设置项分组标题：一条横线加文字
+pub fn setting_group(ui: &mut Ui, p: &Palette, title: &str) {
+    ui.add_space(6.0);
+    ui.label(
+        egui::RichText::new(title)
+            .font(font(14.5))
+            .color(p.text)
+            .strong(),
+    );
+    ui.add_space(8.0);
 }
 
 pub fn key_value(ui: &mut Ui, p: &Palette, key: &str, value: &str) {

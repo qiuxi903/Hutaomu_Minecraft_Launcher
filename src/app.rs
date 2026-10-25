@@ -545,6 +545,12 @@ pub struct App {
     pub authlib_jar: Option<PathBuf>,
     /// 这次启动里已经尝试过自动续期，避免续期失败时反复重试
     pub authlib_relogin_attempted: bool,
+    /// 游戏运行中，启动器被隐藏了
+    pub launcher_hidden: bool,
+    /// 游戏退出后重新打开启动器
+    pub launcher_reopen: bool,
+    /// 游戏退出后一起关掉启动器
+    pub launcher_close_on_exit: bool,
     /// authlib-injector 是否正在下载
     pub authlib_jar_loading: bool,
     /// authlib-injector 上一次准备失败的原因
@@ -635,6 +641,9 @@ impl App {
             first_frame: true,
             authlib_jar: None,
             authlib_relogin_attempted: false,
+            launcher_hidden: false,
+            launcher_reopen: false,
+            launcher_close_on_exit: false,
             authlib_jar_loading: false,
             authlib_jar_error: None,
             dwm_applied: false,
@@ -659,6 +668,7 @@ impl App {
         app.javas = app.cfg.java_cache.clone();
         app.refresh_local_versions();
         app.reload_background();
+        app.purge_old_logs();
         app.load_manifest();
         app.load_news();
         app.refresh_mcmod_db();
@@ -865,6 +875,35 @@ impl App {
 
     // ------------------------------------------------------------ 主题
 
+    /// 游戏启动后按设置处理启动器自身的可见性
+    ///
+    /// keep = 一直显示；hide = 隐藏（游戏退出也不回来）；
+    /// hide_and_reopen = 隐藏并在游戏退出后重新打开；close = 直接退出启动器。
+    pub fn apply_launcher_visibility(&mut self, visibility: &str) {
+        match visibility {
+            "hide" => {
+                self.ctx_send_visible(false);
+                self.launcher_hidden = true;
+                self.launcher_reopen = false;
+            }
+            "hide_and_reopen" => {
+                self.ctx_send_visible(false);
+                self.launcher_hidden = true;
+                self.launcher_reopen = true;
+            }
+            "close" => {
+                self.egui_ctx
+                    .send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            _ => {}
+        }
+    }
+
+    fn ctx_send_visible(&self, visible: bool) {
+        self.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::Visible(visible));
+    }
+
     pub fn apply_theme(&mut self) {
         let accent = self.cfg.ui.accent.as_deref().map(theme::hex);
         self.palette = Palette::from_def(&self.theme, accent, self.cfg.ui.radius);
@@ -882,6 +921,35 @@ impl App {
         self.save_config();
     }
 
+    /// 清理 30 天前的启动器日志
+    pub fn purge_old_logs(&mut self) {
+        if !self.cfg.ui.auto_purge_logs {
+            return;
+        }
+        let dir = paths::logs_dir();
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return;
+        };
+        let cutoff = std::time::SystemTime::now()
+            .checked_sub(std::time::Duration::from_secs(30 * 24 * 3600));
+        let mut removed = 0usize;
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            let Ok(modified) = meta.modified() else { continue };
+            if let Some(cutoff) = cutoff {
+                if modified < cutoff && std::fs::remove_file(entry.path()).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        if removed > 0 {
+            log::info!("已清理 {removed} 个过期日志");
+        }
+    }
+
     pub fn reload_background(&mut self) {
         self.background_frames.clear();
         self.background_delays.clear();
@@ -889,7 +957,7 @@ impl App {
         self.background_next = 0.0;
         self.background_path = None;
 
-        let Some(path) = theme::resolve_background(&self.theme, &self.cfg.ui.background) else {
+        let Some(path) = theme::resolve_background(&self.theme, &self.cfg.ui.background, self.cfg.ui.random_background) else {
             return;
         };
         match theme::load_background_frames(&path) {
@@ -1657,6 +1725,8 @@ impl App {
                     Toast::error(format!("{version} 异常退出（代码 {code}）"))
                 });
                 self.refresh_local_versions();
+                // 游戏结束了，按设置把启动器恢复回来
+                self.restore_launcher_after_game();
             }
             Ok(None) => {
                 self.egui_ctx
@@ -1666,6 +1736,15 @@ impl App {
                 self.game = None;
             }
         }
+    }
+
+    /// 游戏退出后处理启动器的隐藏与关闭
+    fn restore_launcher_after_game(&mut self) {
+        if self.launcher_hidden && self.launcher_reopen {
+            self.ctx_send_visible(true);
+        }
+        self.launcher_hidden = false;
+        self.launcher_reopen = false;
     }
 
     // ------------------------------------------------------------ 绘制
@@ -2215,7 +2294,7 @@ impl App {
         let lines = self
             .game
             .as_ref()
-            .map(|g| g.log.snapshot(400))
+            .map(|g| g.log.snapshot(self.cfg.ui.max_log_lines.clamp(500, 20000)))
             .unwrap_or_default();
         let mut open = true;
         let mut clear = false;

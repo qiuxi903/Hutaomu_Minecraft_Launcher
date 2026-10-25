@@ -118,6 +118,7 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
         identity: &identity,
         java: &java,
         memory_mb: 2048,
+        initial_memory_mb: 0,
         width: 854,
         height: 480,
         fullscreen: false,
@@ -125,6 +126,10 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
         extra_game_args: "",
         authlib_jar: None,
         server: None,
+        garbage_collector: "auto",
+        no_default_jvm_args: false,
+        custom_title: "",
+        no_javaw: false,
     };
     let command = launch::build_command(&spec)?;
     println!("      命令: {}", launch::describe_command(&command));

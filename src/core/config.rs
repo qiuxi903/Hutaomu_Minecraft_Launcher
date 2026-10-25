@@ -55,6 +55,24 @@ pub struct LaunchSettings {
     /// 版本隔离：每个版本使用独立的存档/模组目录
     pub isolation: bool,
     pub show_game_log: bool,
+    /// 自动分配内存：按物理内存推算，不再手动填
+    pub auto_memory: bool,
+    /// 初始内存 -Xms，0 表示不设置
+    pub initial_memory_mb: u32,
+    /// 游戏窗口标题，留空用游戏默认
+    pub custom_title: String,
+    /// 进程优先级：normal / above / high / below / low
+    pub process_priority: String,
+    /// 垃圾回收器：auto / g1 / zgc / shenandoah / parallel / serial
+    pub garbage_collector: String,
+    /// 启动器可见性：keep / hide / hide_and_reopen / close
+    pub launcher_visibility: String,
+    /// 用 java.exe 而不是 javaw.exe 启动（会带控制台窗口）
+    pub no_javaw: bool,
+    /// 不检查 Java 与游戏版本的兼容性
+    pub no_jvm_check: bool,
+    /// 不注入默认的 JVM 参数
+    pub no_default_jvm_args: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,6 +93,12 @@ pub struct DownloadSettings {
     pub auto_select_after_install: bool,
     /// 安装时同时下载资源文件（关闭则只装核心文件，速度更快）
     pub install_assets: bool,
+    /// 并发数由网络状况自动决定
+    pub auto_threads: bool,
+    /// 下载缓存目录，留空用默认
+    pub cache_dir: Option<PathBuf>,
+    /// 下载缓存上限（MB），0 表示不限制
+    pub cache_limit_mb: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +112,16 @@ pub struct UiSettings {
     pub sidebar_collapsed: bool,
     pub window_size: [f32; 2],
     pub animations: bool,
+    /// 每次打开启动器随机换一张背景
+    pub random_background: bool,
+    /// 动画帧率上限，0 表示不限制
+    pub max_fps: u32,
+    /// 游戏日志窗口保留的最大行数
+    pub max_log_lines: usize,
+    /// 自动清理启动器日志（30 天前）
+    pub auto_purge_logs: bool,
+    /// 调试模式：日志里输出更详细的信息
+    pub debug_mode: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +201,15 @@ impl Default for LaunchSettings {
             extra_args: String::new(),
             isolation: true,
             show_game_log: true,
+            auto_memory: false,
+            initial_memory_mb: 0,
+            custom_title: String::new(),
+            process_priority: "normal".into(),
+            garbage_collector: "auto".into(),
+            launcher_visibility: "keep".into(),
+            no_javaw: false,
+            no_jvm_check: false,
+            no_default_jvm_args: false,
         }
     }
 }
@@ -185,6 +228,9 @@ impl Default for DownloadSettings {
             loader_timing: "parallel".into(),
             auto_select_after_install: true,
             install_assets: true,
+            auto_threads: false,
+            cache_dir: None,
+            cache_limit_mb: 0,
         }
     }
 }
@@ -208,7 +254,11 @@ impl DownloadSettings {
     /// 下载选项（并发数与资源文件开关）
     pub fn install_options(&self) -> crate::core::minecraft::install::InstallOptions {
         crate::core::minecraft::install::InstallOptions {
-            threads: self.threads.clamp(1, 32),
+            threads: if self.auto_threads {
+                default_threads().clamp(1, 32)
+            } else {
+                self.threads.clamp(1, 32)
+            },
             install_assets: self.install_assets,
         }
     }
@@ -225,6 +275,11 @@ impl Default for UiSettings {
             sidebar_collapsed: false,
             window_size: [1120.0, 720.0],
             animations: true,
+            random_background: false,
+            max_fps: 0,
+            max_log_lines: 4000,
+            auto_purge_logs: false,
+            debug_mode: false,
         }
     }
 }
@@ -297,6 +352,29 @@ impl Config {
         Ok(())
     }
 
+    /// 导出一份配置备份
+    ///
+    /// 写到启动器目录下的 `htmcl-backup-<日期>.json`。
+    pub fn export_backup(&self) -> anyhow::Result<PathBuf> {
+        let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+        let path = paths::exe_dir().join(format!("htmcl-backup-{stamp}.json"));
+        let text = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, text)?;
+        Ok(path)
+    }
+
+    /// 从备份文件导入设置
+    pub fn import_backup(&mut self, path: &Path) -> anyhow::Result<()> {
+        let text = std::fs::read_to_string(path)?;
+        let mut incoming: Config = serde_json::from_str(&text)?;
+        incoming.schema = SCHEMA;
+        // 路径类设置跟着当前机器走，导入备份时保留本机的目录
+        incoming.game_dir = self.game_dir.clone();
+        incoming.java_cache = self.java_cache.clone();
+        *self = incoming;
+        Ok(())
+    }
+
     pub fn version_override(&self, mc_version: &str) -> VersionOverride {
         self.version_overrides
             .get(mc_version)
@@ -306,7 +384,22 @@ impl Config {
 
     pub fn effective_memory(&self, mc_version: &str) -> u32 {
         let ov = self.version_override(mc_version);
-        ov.memory_mb.unwrap_or(self.java.memory_mb)
+        match ov.memory_mb {
+            Some(mb) => mb,
+            None if self.launch.auto_memory => self.recommended_memory(),
+            None => self.java.memory_mb,
+        }
+    }
+
+    /// 按物理内存推荐的上限
+    ///
+    /// 留三分之一给系统与启动器，最多 16G，最少 1G。
+    pub fn recommended_memory(&self) -> u32 {
+        let total = crate::core::java::total_memory_mb();
+        if total == 0 {
+            return 4096;
+        }
+        ((total as f64 * 2.0 / 3.0) as u32).clamp(1024, 16384)
     }
 
     pub fn effective_java(&self, mc_version: &str) -> Option<PathBuf> {

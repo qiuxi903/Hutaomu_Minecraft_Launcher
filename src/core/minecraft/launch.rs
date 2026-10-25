@@ -60,6 +60,8 @@ pub struct LaunchSpec<'a> {
     pub identity: &'a LaunchIdentity,
     pub java: &'a JavaInfo,
     pub memory_mb: u32,
+    /// 初始内存 -Xms，0 表示不设置
+    pub initial_memory_mb: u32,
     pub width: u32,
     pub height: u32,
     pub fullscreen: bool,
@@ -67,6 +69,14 @@ pub struct LaunchSpec<'a> {
     pub extra_game_args: &'a str,
     pub authlib_jar: Option<&'a Path>,
     pub server: Option<(String, u16)>,
+    /// 垃圾回收器：auto / g1 / zgc / shenandoah / parallel / serial
+    pub garbage_collector: &'a str,
+    /// 不注入默认的 JVM 参数
+    pub no_default_jvm_args: bool,
+    /// 游戏窗口标题，留空用游戏默认
+    pub custom_title: &'a str,
+    /// 用 java.exe 而不是 javaw.exe 启动
+    pub no_javaw: bool,
 }
 
 fn os_name() -> &'static str {
@@ -283,13 +293,24 @@ pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
     // ---- JVM 参数 ----
     let mut jvm_args: Vec<String> = Vec::new();
     jvm_args.push(format!("-Xmx{}M", spec.memory_mb.max(512)));
-    jvm_args.push(format!("-Xms{}M", (spec.memory_mb / 2).clamp(256, 2048)));
-    jvm_args.push("-Dfile.encoding=UTF-8".into());
-    jvm_args.push("-Dstdout.encoding=UTF-8".into());
-    jvm_args.push("-Dstderr.encoding=UTF-8".into());
-    jvm_args.push("-Dlog4j2.formatMsgNoLookups=true".into());
+    if spec.initial_memory_mb > 0 {
+        jvm_args.push(format!("-Xms{}M", spec.initial_memory_mb));
+    } else if !spec.no_default_jvm_args {
+        jvm_args.push(format!("-Xms{}M", (spec.memory_mb / 2).clamp(256, 2048)));
+    }
+    if !spec.no_default_jvm_args {
+        jvm_args.push("-Dfile.encoding=UTF-8".into());
+        jvm_args.push("-Dstdout.encoding=UTF-8".into());
+        jvm_args.push("-Dstderr.encoding=UTF-8".into());
+        jvm_args.push("-Dlog4j2.formatMsgNoLookups=true".into());
+    }
     jvm_args.push(format!("-Dminecraft.launcher.brand={LAUNCHER_NAME}"));
     jvm_args.push(format!("-Dminecraft.launcher.version={LAUNCHER_VERSION}"));
+
+    // 垃圾回收器
+    if let Some(arg) = gc_argument(spec.garbage_collector) {
+        jvm_args.push(arg);
+    }
 
     if let Some(jar) = spec.authlib_jar {
         if let Some(url) = &spec.identity.authlib_url {
@@ -363,7 +384,20 @@ pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
         game_args.push(extra);
     }
 
-    let mut cmd = Command::new(&spec.java.path);
+    // 自定义窗口标题
+    if !spec.custom_title.trim().is_empty() {
+        game_args.push("--title".into());
+        game_args.push(spec.custom_title.trim().to_string());
+    }
+
+    // 默认用 javaw.exe 启动，不带控制台窗口；
+    // 在设置里勾了「保留控制台」就换回 java.exe
+    let java_path = if spec.no_javaw {
+        spec.java.path.clone()
+    } else {
+        javaw_path(&spec.java.path)
+    };
+    let mut cmd = Command::new(&java_path);
     cmd.args(&jvm_args);
     cmd.arg(&json.main_class);
     cmd.args(&game_args);
@@ -373,10 +407,69 @@ pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+        if spec.no_javaw {
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
     }
 
     Ok(cmd)
+}
+
+/// 把 java.exe 换成同目录的 javaw.exe
+fn javaw_path(java: &Path) -> PathBuf {
+    let stem = java.file_stem().map(|s| s.to_string_lossy().to_string());
+    let Some(stem) = stem else {
+        return java.to_path_buf();
+    };
+    if stem.eq_ignore_ascii_case("javaw") {
+        return java.to_path_buf();
+    }
+    let candidate = java.with_file_name(format!("javaw{}.exe", stem));
+    if candidate.is_file() {
+        candidate
+    } else {
+        java.to_path_buf()
+    }
+}
+
+/// 垃圾回收器对应的 JVM 参数
+fn gc_argument(choice: &str) -> Option<String> {
+    let arg = match choice {
+        "g1" => "-XX:+UseG1GC",
+        "zgc" => "-XX:+UseZGC",
+        "shenandoah" => "-XX:+UseShenandoahGC",
+        "parallel" => "-XX:+UseParallelGC",
+        "serial" => "-XX:+UseSerialGC",
+        _ => return None,
+    };
+    Some(arg.to_string())
+}
+
+/// 设置游戏进程的优先级
+pub fn set_priority(pid: u32, choice: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Threading::{
+            SetPriorityClass, ABOVE_NORMAL_PRIORITY_CLASS, BELOW_NORMAL_PRIORITY_CLASS,
+            HIGH_PRIORITY_CLASS, IDLE_PRIORITY_CLASS, NORMAL_PRIORITY_CLASS,
+        };
+        let class = match choice {
+            "above" => ABOVE_NORMAL_PRIORITY_CLASS,
+            "high" => HIGH_PRIORITY_CLASS,
+            "below" => BELOW_NORMAL_PRIORITY_CLASS,
+            "low" => IDLE_PRIORITY_CLASS,
+            "normal" => NORMAL_PRIORITY_CLASS,
+            _ => return,
+        };
+        // SAFETY: SetPriorityClass 只改目标进程的调度优先级，句柄由系统管理
+        unsafe {
+            SetPriorityClass(pid as _, class);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (pid, choice);
+    }
 }
 
 pub fn describe_command(cmd: &Command) -> String {

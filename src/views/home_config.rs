@@ -116,7 +116,7 @@ fn memory_row(app: &mut App, ui: &mut Ui) {
         .map(|v| v.mc_version.clone())
         .unwrap_or_default();
     let mut memory = app.cfg.effective_memory(&mc_version) as f32;
-    if ui::slider(ui, &p, "最大内存", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
+    if ui::slider(ui, &p, "最大内存", "分配给游戏进程的堆内存上限", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
         app.cfg.java.memory_mb = memory as u32;
         app.save_config();
     }

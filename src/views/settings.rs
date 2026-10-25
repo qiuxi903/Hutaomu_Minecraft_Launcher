@@ -28,7 +28,7 @@ const CATEGORIES: [(&str, &str); 6] = [
     ("cube", "游戏"),
     ("java", "Java"),
     ("news", "资讯"),
-    ("sliders", "其他"),
+    ("sliders", "高级"),
 ];
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
@@ -169,13 +169,13 @@ fn appearance(app: &mut App, ui: &mut Ui) {
 
         ui.add_space(14.0);
         let mut radius = app.cfg.ui.radius as f32;
-        if ui::slider(ui, &p, "圆角大小", &mut radius, 0.0, 20.0, 1.0, " px").changed() {
+        if ui::slider(ui, &p, "圆角大小", "卡片与按钮的圆角，0 为直角", &mut radius, 0.0, 20.0, 1.0, " px").changed() {
             app.cfg.ui.radius = radius as u8;
             app.apply_theme();
             app.save_config();
         }
         let mut scale = app.cfg.ui.font_scale;
-        if ui::slider(ui, &p, "字体缩放", &mut scale, 0.85, 1.4, 0.05, "x").changed() {
+        if ui::slider(ui, &p, "字体缩放", "整体放大或缩小界面文字", &mut scale, 0.85, 1.4, 0.05, "x").changed() {
             app.cfg.ui.font_scale = scale;
             app.apply_theme();
             app.save_config();
@@ -195,6 +195,22 @@ fn appearance(app: &mut App, ui: &mut Ui) {
                     app.save_config();
                 }
             });
+        });
+
+        // 动画帧率上限
+        let mut max_fps = app.cfg.ui.max_fps as f32;
+        if ui::slider(ui, &p, "动画帧率上限", "0 表示不限制，限制后更省电", &mut max_fps, 0.0, 60.0, 5.0, " FPS").changed() {
+            app.cfg.ui.max_fps = max_fps as u32;
+            app.save_config();
+        }
+
+        // 随机背景
+        let mut random_bg = app.cfg.ui.random_background;
+        widgets::setting_row(ui, &p, "随机切换背景", "每次打开启动器换一张背景", |ui| {
+            if ui::toggle(ui, &p, &mut random_bg).changed() {
+                app.cfg.ui.random_background = random_bg;
+                app.save_config();
+            }
         });
 
         ui.add_space(16.0);
@@ -217,6 +233,14 @@ fn appearance(app: &mut App, ui: &mut Ui) {
                 {
                     app.cfg.ui.background.kind = BackgroundKind::Image;
                     app.cfg.ui.background.path = Some(path);
+                    app.reload_background();
+                    app.save_config();
+                }
+            }
+            if ui::button(ui, &p, ButtonOpts::secondary("选择背景文件夹").icon("folder")).clicked() {
+                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                    app.cfg.ui.background.kind = BackgroundKind::Image;
+                    app.cfg.ui.background.path = Some(dir);
                     app.reload_background();
                     app.save_config();
                 }
@@ -256,12 +280,12 @@ fn appearance(app: &mut App, ui: &mut Ui) {
         if app.cfg.ui.background.path.is_some() {
             ui.add_space(8.0);
             let mut opacity = app.cfg.ui.background.opacity;
-            if ui::slider(ui, &p, "背景不透明度", &mut opacity, 0.05, 1.0, 0.05, "").changed() {
+            if ui::slider(ui, &p, "背景不透明度", "背景图的透明程度", &mut opacity, 0.05, 1.0, 0.05, "").changed() {
                 app.cfg.ui.background.opacity = opacity;
                 app.save_config();
             }
             let mut dim = app.cfg.ui.background.dim;
-            if ui::slider(ui, &p, "内容遮罩", &mut dim, 0.0, 0.95, 0.05, "").changed() {
+            if ui::slider(ui, &p, "内容遮罩", "压暗背景，保证文字清晰", &mut dim, 0.0, 0.95, 0.05, "").changed() {
                 app.cfg.ui.background.dim = dim;
                 app.save_config();
             }
@@ -424,12 +448,38 @@ fn download_section(app: &mut App, ui: &mut Ui) {
         ui.add_space(10.0);
 
         let mut threads = app.cfg.download.threads as f32;
-        if ui::slider(ui, &p, "并发线程", &mut threads, 1.0, 32.0, 1.0, "").changed() {
+        if ui::slider(ui, &p, "并发线程", "同时下载的文件数，网络好可以调高", &mut threads, 1.0, 32.0, 1.0, "").changed() {
             app.cfg.download.threads = threads as usize;
             app.save_config();
         }
+
+        // 自动并发
+        let mut auto_threads = app.cfg.download.auto_threads;
+        widgets::setting_row(ui, &p, "自动决定并发数", "按 CPU 核心数给一个合适的值", |ui| {
+            if ui::toggle(ui, &p, &mut auto_threads).changed() {
+                app.cfg.download.auto_threads = auto_threads;
+                if auto_threads {
+                    app.cfg.download.threads = crate::core::config::default_threads();
+                }
+                app.save_config();
+            }
+        });
+
+        // 缓存上限
+        let mut cache_limit = app.cfg.download.cache_limit_mb as f32;
+        if ui::slider(ui, &p, "下载缓存上限", "0 表示不限制，超出的旧缓存会被清掉", &mut cache_limit, 0.0, 8192.0, 256.0, " MB").changed() {
+            app.cfg.download.cache_limit_mb = cache_limit as u64;
+            app.save_config();
+        }
+        if ui::button(ui, &p, ButtonOpts::secondary("清理下载缓存").icon("trash")).clicked() {
+            match crate::core::paths::clear_dir(&paths::cache_dir()) {
+                Ok(removed) => app.success(format!("已清理 {removed} 个缓存文件")),
+                Err(err) => app.error(format!("清理失败：{err}")),
+            }
+        }
+        ui.add_space(10.0);
         let mut timeout = app.cfg.download.timeout_secs as f32;
-        if ui::slider(ui, &p, "超时时间", &mut timeout, 10.0, 180.0, 5.0, " 秒").changed() {
+        if ui::slider(ui, &p, "超时时间", "单次请求超过这个时间就判定失败", &mut timeout, 10.0, 180.0, 5.0, " 秒").changed() {
             app.cfg.download.timeout_secs = timeout as u64;
             app.save_config();
         }
@@ -720,11 +770,32 @@ fn game_section(app: &mut App, ui: &mut Ui) {
     // ---------------- 内存 ----------------
     ui::card(ui, &p, |ui| {
         widgets::section_title(ui, &p, "内存");
+
+        // 自动分配内存
+        let mut auto_memory = app.cfg.launch.auto_memory;
+        widgets::setting_row(ui, &p, "自动分配内存", "按物理内存推算上限，留三分之一给系统", |ui| {
+            if ui::toggle(ui, &p, &mut auto_memory).changed() {
+                app.cfg.launch.auto_memory = auto_memory;
+                if auto_memory {
+                    app.cfg.java.memory_mb = app.cfg.recommended_memory();
+                }
+                app.save_config();
+            }
+        });
+
         let mut memory = app.cfg.java.memory_mb as f32;
-        if ui::slider(ui, &p, "最大内存", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
+        if ui::slider(ui, &p, "最大内存", "分配给游戏进程的堆内存上限", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
             app.cfg.java.memory_mb = memory as u32;
             app.save_config();
         }
+
+        // 初始内存
+        let mut initial = app.cfg.launch.initial_memory_mb as f32;
+        if ui::slider(ui, &p, "初始内存", "游戏一开始就占用的内存，0 表示不设置", &mut initial, 0.0, 8192.0, 256.0, " MB").changed() {
+            app.cfg.launch.initial_memory_mb = initial as u32;
+            app.save_config();
+        }
+
         let total = crate::core::java::total_memory_mb();
         ui.label(
             egui::RichText::new(format!(
@@ -739,6 +810,89 @@ fn game_section(app: &mut App, ui: &mut Ui) {
             app.cfg.java.memory_mb = crate::core::config::default_memory();
             app.save_config();
         }
+    });
+    ui.add_space(14.0);
+
+    // ---------------- 启动进阶 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "启动进阶");
+
+        // 垃圾回收器
+        let gc = app.cfg.launch.garbage_collector.clone();
+        widgets::setting_row(ui, &p, "垃圾回收器", "默认交给 Java 自己选", |ui| {
+            let options: Vec<String> = ["自动", "G1GC", "ZGC", "Shenandoah", "Parallel", "Serial"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let ids = ["auto", "g1", "zgc", "shenandoah", "parallel", "serial"];
+            let current = ids.iter().position(|id| *id == gc).unwrap_or(0);
+            if let Some(index) = ui::dropdown(ui, &p, "gc", &options[current], &options, 150.0) {
+                app.cfg.launch.garbage_collector = ids[index].to_string();
+                app.save_config();
+            }
+        });
+
+        // 进程优先级
+        let priority = app.cfg.launch.process_priority.clone();
+        widgets::setting_row(ui, &p, "进程优先级", "游戏进程在系统里的调度优先级", |ui| {
+            let options: Vec<String> = ["普通", "较高", "高", "较低", "低"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            let ids = ["normal", "above", "high", "below", "low"];
+            let current = ids.iter().position(|id| *id == priority).unwrap_or(0);
+            if let Some(index) = ui::dropdown(ui, &p, "priority", &options[current], &options, 130.0) {
+                app.cfg.launch.process_priority = ids[index].to_string();
+                app.save_config();
+            }
+        });
+
+        // 启动器可见性
+        let visibility = app.cfg.launch.launcher_visibility.clone();
+        widgets::setting_row(ui, &p, "启动器可见性", "游戏启动后启动器自己怎么处理", |ui| {
+            let options: Vec<String> = [
+                "一直显示",
+                "启动后隐藏",
+                "隐藏并在游戏退出后重开",
+                "游戏启动后关闭",
+            ]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+            let ids = ["keep", "hide", "hide_and_reopen", "close"];
+            let current = ids.iter().position(|id| *id == visibility).unwrap_or(0);
+            if let Some(index) = ui::dropdown(ui, &p, "visibility", &options[current], &options, 210.0) {
+                app.cfg.launch.launcher_visibility = ids[index].to_string();
+                app.save_config();
+            }
+        });
+
+        // 窗口标题
+        let mut title = app.cfg.launch.custom_title.clone();
+        widgets::setting_row(ui, &p, "游戏窗口标题", "留空则用游戏默认标题", |ui| {
+            if ui::text_field(ui, &p, &mut title, "留空用默认", 220.0, false).changed() {
+                app.cfg.launch.custom_title = title.clone();
+                app.save_config();
+            }
+        });
+
+        // 保留控制台
+        let mut no_javaw = app.cfg.launch.no_javaw;
+        widgets::setting_row(ui, &p, "保留控制台窗口", "用 java.exe 启动，游戏旁边会有命令行窗口", |ui| {
+            if ui::toggle(ui, &p, &mut no_javaw).changed() {
+                app.cfg.launch.no_javaw = no_javaw;
+                app.save_config();
+            }
+        });
+
+        // 不加默认 JVM 参数
+        let mut no_default = app.cfg.launch.no_default_jvm_args;
+        widgets::setting_row(ui, &p, "不添加默认 JVM 参数", "自己完全控制 JVM 参数时用", |ui| {
+            if ui::toggle(ui, &p, &mut no_default).changed() {
+                app.cfg.launch.no_default_jvm_args = no_default;
+                app.save_config();
+            }
+        });
     });
     ui.add_space(14.0);
 
@@ -1057,7 +1211,7 @@ fn news_section(app: &mut App, ui: &mut Ui) {
         }
 
         let mut minutes = app.cfg.news.refresh_minutes as f32;
-        if ui::slider(ui, &p, "刷新间隔", &mut minutes, 5.0, 360.0, 5.0, " 分钟").changed() {
+        if ui::slider(ui, &p, "刷新间隔", "资讯自动刷新的间隔", &mut minutes, 5.0, 360.0, 5.0, " 分钟").changed() {
             app.cfg.news.refresh_minutes = minutes as u32;
             app.save_config();
         }
@@ -1118,6 +1272,71 @@ fn misc_section(app: &mut App, ui: &mut Ui) {
         ui.add_space(6.0);
         ui.label(
             egui::RichText::new("所有配置、账号与主题都保存在启动器同目录，删除启动器文件夹即可完全卸载。")
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+    });
+    ui.add_space(14.0);
+
+    // ---------------- 日志与调试 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "日志与调试");
+
+        let mut max_lines = app.cfg.ui.max_log_lines as f32;
+        if ui::slider(ui, &p, "游戏日志最大行数", "日志窗口里保留多少行，超出的丢掉", &mut max_lines, 500.0, 20000.0, 500.0, " 行").changed() {
+            app.cfg.ui.max_log_lines = max_lines as usize;
+            app.save_config();
+        }
+
+        let mut purge = app.cfg.ui.auto_purge_logs;
+        widgets::setting_row(ui, &p, "自动清理旧日志", "启动时删掉 30 天前的日志", |ui| {
+            if ui::toggle(ui, &p, &mut purge).changed() {
+                app.cfg.ui.auto_purge_logs = purge;
+                app.save_config();
+            }
+        });
+
+        let mut debug = app.cfg.ui.debug_mode;
+        widgets::setting_row(ui, &p, "调试模式", "日志里输出更详细的信息", |ui| {
+            if ui::toggle(ui, &p, &mut debug).changed() {
+                app.cfg.ui.debug_mode = debug;
+                app.save_config();
+            }
+        });
+    });
+    ui.add_space(14.0);
+
+    // ---------------- 配置备份 ----------------
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "配置备份");
+        ui.horizontal_wrapped(|ui| {
+            if ui::button(ui, &p, ButtonOpts::secondary("导出设置").icon("save")).clicked() {
+                match app.cfg.export_backup() {
+                    Ok(path) => app.success(format!("已导出到 {}", path.display())),
+                    Err(err) => app.error(format!("导出失败：{err}")),
+                }
+            }
+            if ui::button(ui, &p, ButtonOpts::secondary("导入设置").icon("upload")).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("配置文件", &["json"])
+                    .set_title("选择要导入的设置文件")
+                    .pick_file()
+                {
+                    match app.cfg.import_backup(&path) {
+                        Ok(()) => {
+                            app.apply_theme();
+                            app.refresh_local_versions();
+                            app.save_config();
+                            app.success("设置已导入");
+                        }
+                        Err(err) => app.error(format!("导入失败：{err}")),
+                    }
+                }
+            }
+        });
+        ui.add_space(6.0);
+        ui.label(
+            egui::RichText::new("导出的文件可以留着备份，换电脑时导入回来。")
                 .font(ui::font(11.5))
                 .color(p.text_faint),
         );

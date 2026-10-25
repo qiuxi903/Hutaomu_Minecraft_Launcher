@@ -94,8 +94,27 @@ pub fn reveal(path: &Path) {
     let _ = open::that(path);
 }
 
-pub fn dir_size(path: &Path) -> u64 {
-    let mut total = 0u64;
+/// 清空一个目录下的内容，返回删掉的文件数
+pub fn clear_dir(path: &Path) -> std::io::Result<usize> {
+    let mut removed = 0usize;
+    let Ok(entries) = std::fs::read_dir(path) else {
+        return Ok(0);
+    };
+    for entry in entries.flatten() {
+        let target = entry.path();
+        let ok = if target.is_dir() {
+            std::fs::remove_dir_all(&target).is_ok()
+        } else {
+            std::fs::remove_file(&target).is_ok()
+        };
+        if ok {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+pub fn dir_size(path: &Path) -> u64 {    let mut total = 0u64;
     for entry in walkdir::WalkDir::new(path)
         .into_iter()
         .filter_map(|e| e.ok())

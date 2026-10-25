@@ -372,11 +372,45 @@ pub fn find_theme(id: &str) -> ThemeDef {
 }
 
 /// 把主题目录 / 配置里的背景设置解析成实际文件路径
-pub fn resolve_background(theme: &ThemeDef, config_bg: &Background) -> Option<PathBuf> {
+///
+/// 背景也可以指向一个文件夹，这时每次打开启动器都从里面换一张。
+pub fn resolve_background(
+    theme: &ThemeDef,
+    config_bg: &Background,
+    random: bool,
+) -> Option<PathBuf> {
     if config_bg.kind == BackgroundKind::Image {
         if let Some(path) = &config_bg.path {
             if path.is_file() {
                 return Some(path.clone());
+            }
+            if path.is_dir() {
+                let mut files: Vec<PathBuf> = std::fs::read_dir(path)
+                    .ok()?
+                    .flatten()
+                    .map(|entry| entry.path())
+                    .filter(|file| {
+                        file.is_file()
+                            && matches!(
+                                file.extension()
+                                    .and_then(|e| e.to_str())
+                                    .map(|e| e.to_ascii_lowercase())
+                                    .as_deref(),
+                                Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp")
+                            )
+                    })
+                    .collect();
+                files.sort();
+                if files.is_empty() {
+                    return None;
+                }
+                let index = if random && files.len() > 1 {
+                    use rand::Rng;
+                    rand::rng().random_range(0..files.len())
+                } else {
+                    0
+                };
+                return Some(files[index].clone());
             }
         }
     }

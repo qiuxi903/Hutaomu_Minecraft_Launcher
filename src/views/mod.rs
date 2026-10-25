@@ -169,6 +169,7 @@ pub fn launch_game(app: &mut App) {
         identity: &identity,
         java: &java,
         memory_mb: memory,
+        initial_memory_mb: app.cfg.launch.initial_memory_mb,
         width,
         height,
         fullscreen,
@@ -176,6 +177,10 @@ pub fn launch_game(app: &mut App) {
         extra_game_args: &extra_args,
         authlib_jar: authlib_jar.as_deref(),
         server: None,
+        garbage_collector: &app.cfg.launch.garbage_collector,
+        no_default_jvm_args: app.cfg.launch.no_default_jvm_args,
+        custom_title: &app.cfg.launch.custom_title,
+        no_javaw: app.cfg.launch.no_javaw,
     };
 
     let command = match crate::core::minecraft::launch::build_command(&spec) {
@@ -194,13 +199,19 @@ pub fn launch_game(app: &mut App) {
     );
     log::debug!("命令: {}", crate::core::minecraft::launch::describe_command(&command));
 
+    let priority = app.cfg.launch.process_priority.clone();
+    let visibility = app.cfg.launch.launcher_visibility.clone();
     match crate::core::minecraft::launch::spawn(command, &version_id) {
         Ok(process) => {
+            // 进程优先级
+            crate::core::minecraft::launch::set_priority(process.pid, &priority);
             app.game = Some(process);
             app.game_log_open = app.cfg.launch.show_game_log;
             app.cfg.record_launch(&version_id);
             app.save_config();
             app.success(format!("{version_id} 已启动"));
+            // 启动器可见性：游戏开起来后按设置隐藏或退出
+            app.apply_launcher_visibility(&visibility);
         }
         Err(err) => app.error(format!("启动失败：{err}")),
     }
