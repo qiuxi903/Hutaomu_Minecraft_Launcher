@@ -753,7 +753,7 @@ fn game_section(app: &mut App, ui: &mut Ui) {
         let mut show_log = app.cfg.launch.show_game_log;
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("启动后显示游戏日志")
+                egui::RichText::new("游戏正常退出后显示日志")
                     .font(ui::font(13.0))
                     .color(p.text_weak),
             );

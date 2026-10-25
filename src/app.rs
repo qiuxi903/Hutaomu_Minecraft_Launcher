@@ -551,6 +551,13 @@ pub struct App {
     pub launcher_reopen: bool,
     /// 游戏退出后一起关掉启动器
     pub launcher_close_on_exit: bool,
+    /// 正在启动游戏，这段时间播放启动动画
+    pub game_starting: bool,
+    /// 启动器窗口的原生句柄，用来把小窗挪到屏幕右下角
+    pub window_handle: Option<isize>,    /// 启动动画开始的时间
+    pub game_start_at: f64,
+    /// 悬浮球模式：游戏在跑，主界面收成一个圆球
+    pub overlay_mode: bool,
     /// authlib-injector 是否正在下载
     pub authlib_jar_loading: bool,
     /// authlib-injector 上一次准备失败的原因
@@ -644,6 +651,10 @@ impl App {
             launcher_hidden: false,
             launcher_reopen: false,
             launcher_close_on_exit: false,
+            game_starting: false,
+            game_start_at: 0.0,
+            window_handle: None,
+            overlay_mode: false,
             authlib_jar_loading: false,
             authlib_jar_error: None,
             dwm_applied: false,
@@ -1722,8 +1733,16 @@ impl App {
                 self.toast(if code == 0 {
                     Toast::info(format!("{version} 已退出"))
                 } else {
-                    Toast::error(format!("{version} 异常退出（代码 {code}）"))
+                    Toast::error(format!("{version} 异常退出（代码 {code}），已展开日志"))
                 });
+                // 异常退出：把日志摊开给用户看
+                if code != 0 {
+                    self.game_log_open = true;
+                } else if self.cfg.launch.show_game_log {
+                    self.game_log_open = true;
+                }
+                self.game_starting = false;
+                self.leave_overlay_mode();
                 self.refresh_local_versions();
                 // 游戏结束了，按设置把启动器恢复回来
                 self.restore_launcher_after_game();
@@ -2286,8 +2305,125 @@ impl App {
         }
     }
 
-    fn game_log_modal(&mut self, ctx: &egui::Context) {
-        if !self.game_log_open {
+    /// 悬浮球：游戏在跑的时候，启动器收成右下角一个小圆点
+    ///
+    /// 点一下就展开游戏日志，游戏退出后主界面自动回来。
+    fn draw_overlay_ball(&mut self, root: &mut Ui) {
+        let ctx = root.ctx().clone();
+        let now = ctx.input(|i| i.time);
+        let full = root.max_rect();
+        let palette = self.palette;
+
+        let size = 52.0;
+        let center = Pos2::new(full.right() - size / 2.0 - 8.0, full.bottom() - size / 2.0 - 8.0);
+        // 呼吸动画：提示游戏正在跑
+        let breathe = 1.0 + 0.04 * (now * 2.0).sin();
+        let rect = Rect::from_center_size(center, Vec2::splat(size * breathe as f32));
+
+        // 圆形按钮
+        let response = root.interact(rect, egui::Id::new("htmcl_overlay_ball"), Sense::click());
+        let hovered = response.hovered();
+        let fill = if hovered {
+            palette.accent
+        } else {
+            palette.accent_weak
+        };
+        root.painter().circle_filled(rect.center(), size / 2.0, fill);
+        if hovered {
+            root.painter().circle_stroke(
+                rect.center(),
+                size / 2.0,
+                Stroke::new(1.5, palette.accent),
+            );
+        }
+        icons::paint(
+            &ctx,
+            root.painter(),
+            "terminal",
+            Rect::from_center_size(rect.center(), Vec2::splat(22.0)),
+            palette.on_accent,
+        );
+        if response.clicked() {
+            // 小窗里放不下日志，先把窗口恢复正常再展开
+            self.leave_overlay_mode();
+            self.game_log_open = true;
+        }
+        if response.hovered() {
+            response.on_hover_ui(|ui| {
+                ui.label(
+                    egui::RichText::new("点击查看游戏日志")
+                        .font(ui::font(11.5))
+                        .color(palette.text_weak),
+                );
+            });
+        }
+    }
+
+    /// 切到悬浮球：窗口缩成屏幕右下角的小圆窗并置顶
+    fn enter_overlay_mode(&mut self) {
+        if self.overlay_mode {
+            return;
+        }
+        self.overlay_mode = true;
+        let ctx = self.egui_ctx.clone();
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(64.0, 64.0)));
+        move_window_to_bottom_right(self.window_handle);
+    }
+    /// 退出悬浮球：窗口恢复原来的大小
+    fn leave_overlay_mode(&mut self) {
+        if !self.overlay_mode {
+            return;
+        }
+        self.overlay_mode = false;
+        let size = self.last_window_size;
+        let ctx = self.egui_ctx.clone();
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(
+            size.x.max(960.0),
+            size.y.max(640.0),
+        )));
+    }
+
+    /// 启动动画：游戏正在拉起时的过场
+    fn draw_starting_animation(&mut self, root: &mut Ui, version: &str) {
+        let ctx = root.ctx().clone();
+        let now = ctx.input(|i| i.time);
+        let full = root.max_rect();
+        let palette = self.palette;
+
+        root.painter()
+            .rect_filled(full, CornerRadius::ZERO, palette.bg);
+        let center = full.center();
+
+        // 一圈转动的进度点
+        let radius = 26.0;
+        for i in 0..12 {
+            let phase = (now * 2.2) as f32 + i as f32 * std::f32::consts::TAU / 12.0;
+            let alpha = (0.25 + 0.65 * ((phase.sin() + 1.0) / 2.0)) as u8;
+            let pos = Pos2::new(
+                center.x + phase.cos() * radius,
+                center.y + phase.sin() * radius,
+            );
+            root.painter().circle_filled(pos, 3.2, egui::Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), alpha));
+        }
+
+        root.painter().text(
+            Pos2::new(center.x, center.y + 58.0),
+            egui::Align2::CENTER_CENTER,
+            format!("正在启动 {version} ..."),
+            ui::font(14.0),
+            palette.text,
+        );
+        root.painter().text(
+            Pos2::new(center.x, center.y + 82.0),
+            egui::Align2::CENTER_CENTER,
+            "游戏在后台运行，日志会一直记着",
+            ui::font(11.5),
+            palette.text_faint,
+        );
+        ctx.request_repaint_after(std::time::Duration::from_millis(33));
+    }
+
+    fn game_log_modal(&mut self, ctx: &egui::Context) {        if !self.game_log_open {
             return;
         }
         let palette = self.palette;
@@ -2298,6 +2434,7 @@ impl App {
             .unwrap_or_default();
         let mut open = true;
         let mut clear = false;
+        let mut collapse = false;
         widgets::modal(ctx, &palette, &mut open, "游戏日志", 720.0, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
@@ -2306,6 +2443,9 @@ impl App {
                         .color(palette.text_weak),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui::ghost(ui, &palette, "收起").clicked() {
+                        collapse = true;
+                    }
                     if ui::ghost(ui, &palette, "清空显示").clicked() {
                         clear = true;
                     }
@@ -2341,7 +2481,14 @@ impl App {
                 let _ = game.log.snapshot(0);
             }
         }
+        if collapse {
+            open = false;
+        }
         self.game_log_open = open && self.game.is_some();
+        // 日志关掉了，游戏还在跑的话缩回小圆球
+        if !self.game_log_open && self.game.is_some() {
+            self.enter_overlay_mode();
+        }
     }
 }
 
@@ -2402,6 +2549,7 @@ impl eframe::App for App {
             if let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(frame) {
                 if let raw_window_handle::RawWindowHandle::Win32(win) = handle.as_raw() {
                     apply_win11_style(win.hwnd.get());
+                    self.window_handle = Some(win.hwnd.get() as isize);
                 }
             }
         }
@@ -2420,6 +2568,32 @@ impl eframe::App for App {
         root.painter()
             .rect_filled(full, CornerRadius::ZERO, self.palette.bg);
         self.draw_background(root, full);
+
+        // 游戏在跑：主界面收成右下角的悬浮球
+        if self.overlay_mode && self.game.is_some() {
+            self.draw_overlay_ball(root);
+            self.game_log_modal(&ctx);
+            return;
+        }
+
+        // 正在启动：放一段过场动画
+        if self.game_starting {
+            let elapsed = now - self.game_start_at;
+            if elapsed > 1.6 {
+                self.game_starting = false;
+                if self.game.is_some() {
+                    self.enter_overlay_mode();
+                }
+            } else {
+                let version = self
+                    .game
+                    .as_ref()
+                    .map(|g| g.version_id.clone())
+                    .unwrap_or_default();
+                self.draw_starting_animation(root, &version);
+                return;
+            }
+        }
 
         let title_height = 40.0;
         let title_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), title_height));
@@ -2583,6 +2757,51 @@ fn shot_scene_label(scene: usize) -> &'static str {
         25 => "版本管理-投影蓝图",
         26 => "版本管理-存档",
         _ => "账号-皮肤站",
+    }
+}
+
+#[cfg(windows)]
+/// 把窗口挪到屏幕右下角
+fn move_window_to_bottom_right(handle: Option<isize>) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SetWindowPos, HWND_TOPMOST, SM_CXSCREEN, SM_CYSCREEN, SWP_NOSIZE,
+        SWP_NOACTIVATE, SWP_SHOWWINDOW,
+    };
+    // SAFETY: 句柄来自 eframe 的原生窗口，由系统管理
+    unsafe {
+        let hwnd = match handle {
+            Some(handle) => handle as HWND,
+            None => return,
+        };
+        let screen_w = GetSystemMetrics(SM_CXSCREEN) as i32;
+        let screen_h = GetSystemMetrics(SM_CYSCREEN) as i32;
+        let size = 64;
+        let x = screen_w - size - 12;
+        let y = screen_h - size - 12;
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
+    }
+}
+
+#[cfg(windows)]
+/// 当前启动器窗口的原生句柄
+fn current_window_handle() -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            None
+        } else {
+            Some(hwnd as isize)
+        }
     }
 }
 

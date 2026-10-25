@@ -206,10 +206,14 @@ pub fn launch_game(app: &mut App) {
             // 进程优先级
             crate::core::minecraft::launch::set_priority(process.pid, &priority);
             app.game = Some(process);
-            app.game_log_open = app.cfg.launch.show_game_log;
+            // 启动不弹日志：日志在后台一直记着，主界面收成悬浮球
+            app.game_log_open = false;
+            app.game_starting = true;
+            app.game_start_at = app.egui_ctx.input(|i| i.time);
+            app.overlay_mode = false;
             app.cfg.record_launch(&version_id);
             app.save_config();
-            app.success(format!("{version_id} 已启动"));
+            app.success(format!("{version_id} 正在启动"));
             // 启动器可见性：游戏开起来后按设置隐藏或退出
             app.apply_launcher_visibility(&visibility);
         }
