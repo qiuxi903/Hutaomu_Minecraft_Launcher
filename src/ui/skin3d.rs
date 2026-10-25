@@ -360,7 +360,8 @@ pub fn skin_preview(
     const MODEL_CENTER_Y: f32 = 16.0;
     let scale = height * 0.80 / 34.0;
     let center = Pos2::new(rect.center().x, rect.top() + height * 0.52);
-    let pitch = -0.10_f32;
+    // 略微俯视：这样才能看到头顶（帽子的第二层就在顶上）
+    let pitch = 0.12_f32;
     let yaw_angle = *yaw;
 
     let mut faces: Vec<(f32, egui::Mesh)> = Vec::new();
@@ -465,7 +466,8 @@ pub fn head_preview(ui: &mut Ui, texture: Option<&egui::TextureHandle>, yaw: f32
     };
     let scale = size / 14.0;
     let center = rect.center();
-    let pitch = -0.12;
+    // 略微俯视，和游戏里看自己角色的角度一致
+    let pitch = 0.14;
     let mut faces: Vec<(f32, egui::Mesh)> = Vec::new();
     for face in box_faces(head.size, head.uv_size, head.uv, 64.0) {
         let world: Vec<V3> = face
