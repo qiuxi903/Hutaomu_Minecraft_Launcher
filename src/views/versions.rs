@@ -83,9 +83,9 @@ fn sections_for(
 ) -> Vec<(&'static str, &'static str, &'static str)> {
     let mut list: Vec<(&'static str, &'static str, &'static str)> = vec![
         ("info", "概览", "info"),
-        ("sliders", "设置", "sliders"),
-        ("world", "存档", "world"),
-        ("image", "截图", "image"),
+        ("settings", "设置", "sliders"),
+        ("saves", "存档", "world"),
+        ("screenshots", "截图", "image"),
     ];
     let has_loader = inst.variants.iter().any(|v| v.loader.is_some());
     if has_loader {
@@ -583,6 +583,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("section", &section)), 0.0);
             ui.set_opacity(appear);
             match app.versions_ui.section {
+                "info" => overview_tab(app, ui, &inst, &active),
                 "settings" => settings_tab(app, ui, &inst),
                 "saves" => saves_tab(app, ui, &inst),
                 "screenshots" => screenshots_tab(app, ui, &inst),

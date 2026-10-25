@@ -89,7 +89,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 26;
+pub const SHOT_SCENES: usize = 27;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -229,6 +229,14 @@ impl App {
                 if let Some(id) = self.shot_loader_instance_id() {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.section = "litematic";
+                }
+            }
+            26 => {
+                // 版本详情 - 存档
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = "saves";
                 }
             }
             12 => {
@@ -2494,6 +2502,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         22 => "版本管理-资源包",
         24 => "版本管理-蓝图",
         25 => "版本管理-投影蓝图",
+        26 => "版本管理-存档",
         _ => "账号-皮肤站",
     }
 }
