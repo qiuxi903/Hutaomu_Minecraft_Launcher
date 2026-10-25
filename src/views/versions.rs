@@ -1482,39 +1482,38 @@ mod tests {
     }
 }
 
-/// 这个内容对应的网站名
-fn site_labels(
-    modrinth_slug: &Option<String>,
-    mcmod_url: &Option<String>,
-) -> Vec<String> {
-    let mut names = Vec::new();
-    if modrinth_slug.is_some() {
-        names.push("Modrinth".to_string());
+/// 站点链接：小字，悬停变色可点
+fn site_link(ui: &mut Ui, p: &Palette, text: &str) -> egui::Response {
+    let response = ui.add(
+        egui::Label::new(
+            egui::RichText::new(text)
+                .font(ui::font(10.5))
+                .color(p.accent)
+                .strong(),
+        )
+        .truncate(),
+    );
+    if response.clicked() || response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    if mcmod_url.is_some() {
-        names.push("MC 百科".to_string());
-    }
-    names
+    response
 }
 
 /// 卡片下方的堆叠纸边
 ///
-/// 列表项一层压一层，看起来像一叠卡片而不是平铺的清单。
+/// 像卡片压在一叠纸上：只露一条边，不画描边，
+/// 免得在浅色主题下看成几条错位的线。
 fn paint_stacked_edges(ui: &Ui, p: &Palette, rect: &Rect) {
     let radius = p.corner(0);
-    for layer in 1..=3u8 {
-        let offset = layer as f32 * 4.0;
+    // 两层纸，每层往下挪一点、左右也窄一点
+    for layer in 1..=2u8 {
+        let offset = layer as f32 * 3.0;
         let edge = Rect::from_min_max(
-            Pos2::new(rect.left() + offset, rect.bottom() + offset - 4.0),
+            Pos2::new(rect.left() + offset, rect.bottom() + offset - 3.0),
             Pos2::new(rect.right() - offset, rect.bottom() + offset),
         );
-        ui.painter().rect_filled(edge, radius, p.surface_alt);
-        ui.painter().rect_stroke(
-            edge,
-            radius,
-            egui::Stroke::new(1.0, p.border_strong),
-            egui::StrokeKind::Inside,
-        );
+        ui.painter()
+            .rect_filled(edge, radius, widgets::alpha(p.text, if p.dark { 10 } else { 7 }));
     }
 }
 
@@ -1787,18 +1786,30 @@ fn content_tab(
                                 );
                             });
                         }
-                        // 相关网站：标出有词条的站点，外链角标在卡片右上角
+                        // 相关网站：各自可点，点谁开谁
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
-                        let site_names = site_labels(&modrinth_slug, &mcmod_url);
-                        if !site_names.is_empty() {
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if let Some(url) = &mcmod_url {
+                                if site_link(ui, &p, "MC 百科").clicked() {
+                                    let _ = open::that(url);
+                                }
                                 ui.label(
-                                    egui::RichText::new(site_names.join(" · "))
+                                    egui::RichText::new("·")
                                         .font(ui::font(10.5))
-                                        .color(p.text_weak),
+                                        .color(p.text_faint),
                                 );
-                            });
-                        }
+                            }
+                            if let Some(slug) = &modrinth_slug {
+                                if site_link(ui, &p, "Modrinth").clicked() {
+                                    let _ = open::that(
+                                        crate::core::content::modrinth::project_url(
+                                            kind.modrinth_type(),
+                                            slug,
+                                        ),
+                                    );
+                                }
+                            }
+                        });
                     });
                 });
                 // 堆叠：卡片下面露出几层纸边

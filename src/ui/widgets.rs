@@ -156,15 +156,15 @@ pub fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
 }
 
 pub fn card_padded(ui: &mut Ui, p: &Palette, padding: i8, add: impl FnOnce(&mut Ui)) -> Response {
-    let id = ui.id().with("card");
-    let frame = egui::Frame::NONE
+    // 容器类卡片不响应悬停：整块面板跟着鼠标变深很奇怪
+    egui::Frame::NONE
         .fill(p.surface)
+        .stroke(Stroke::new(1.0, p.border))
         .corner_radius(p.corner(0))
         .inner_margin(Margin::same(padding))
-        .shadow(p.shadow);
-    let response = frame.show(ui, add).response;
-    paint_card_state(ui, p, &response, id, true);
-    response
+        .shadow(p.shadow)
+        .show(ui, add)
+        .response
 }
 
 pub fn card_flat(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
