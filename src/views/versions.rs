@@ -1100,6 +1100,15 @@ impl ContentKind {
         }
     }
 
+    /// Modrinth 的项目类型（决定主页链接的路径）
+    fn modrinth_type(self) -> &'static str {
+        match self {
+            Self::Mod => "mod",
+            Self::Shader => "shader",
+            Self::ResourcePack => "resourcepack",
+        }
+    }
+
     /// 相对游戏目录的位置
     fn sub_dir(self) -> &'static str {
         match self {
@@ -1738,7 +1747,10 @@ fn content_tab(
                                 }
                                 if badge.clicked() {
                                     if let Some(slug) = &modrinth_slug {
-                                        let _ = open::that(format!("https://modrinth.com/{}", slug));
+                                        let _ = open::that(crate::core::content::modrinth::project_url(
+                                            kind.modrinth_type(),
+                                            slug,
+                                        ));
                                     } else if let Some(url) = &mcmod_url {
                                         let _ = open::that(url);
                                     }

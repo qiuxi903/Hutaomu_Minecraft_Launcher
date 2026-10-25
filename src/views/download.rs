@@ -1575,10 +1575,7 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let modrinth_url = format!(
-                        "https://modrinth.com/{}/{}",
-                        project.project_type, project.slug
-                    );
+                    let modrinth_url = modrinth::project_url(&project.project_type, &project.slug);
                     if ui::button(ui, &p, ButtonOpts::secondary("Modrinth 页面").icon("external-link"))
                         .clicked()
                     {

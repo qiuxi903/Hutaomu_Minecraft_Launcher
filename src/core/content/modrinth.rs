@@ -607,6 +607,18 @@ pub fn required_dependencies(
     result
 }
 
+/// 项目主页链接
+///
+/// Modrinth 的路径要跟项目类型对上：`/mod/xxx`、`/shader/xxx`、`/resourcepack/xxx`，
+/// 只写 `https://modrinth.com/xxx` 是打不开的（404）。
+pub fn project_url(project_type: &str, slug: &str) -> String {
+    let kind = match project_type {
+        "mod" | "modpack" | "resourcepack" | "shader" | "plugin" | "project" => project_type,
+        _ => "project",
+    };
+    format!("https://modrinth.com/{kind}/{slug}")
+}
+
 pub fn format_downloads(count: u64) -> String {
     if count >= 10_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
@@ -620,6 +632,25 @@ pub fn format_downloads(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 项目主页的路径要跟项目类型对上，只写 slug 是打不开的
+    #[test]
+    fn project_url_includes_type_path() {
+        assert_eq!(
+            project_url("mod", "sodium"),
+            "https://modrinth.com/mod/sodium"
+        );
+        assert_eq!(
+            project_url("shader", "complementary-reimagined"),
+            "https://modrinth.com/shader/complementary-reimagined"
+        );
+        assert_eq!(
+            project_url("resourcepack", "fancy-world"),
+            "https://modrinth.com/resourcepack/fancy-world"
+        );
+        // 没见过的类型走通用入口
+        assert_eq!(project_url("unknown", "foo"), "https://modrinth.com/project/foo");
+    }
 
     #[test]
     fn category_label_translates_known_categories() {

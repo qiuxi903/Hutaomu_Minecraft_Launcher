@@ -97,7 +97,9 @@ impl Database {
             }
             let mcmod_id: u32 = fields[0].trim().parse().unwrap_or(0);
             let modrinth_slug = fields[2].trim();
-            if mcmod_id == 0 || modrinth_slug.is_empty() {
+            // 只要有 MC 百科的编号就收下：没有 Modrinth 对照的模组，
+            // 照样能给出中文名和 MC 百科页面
+            if mcmod_id == 0 {
                 continue;
             }
             let entry = Entry {
@@ -107,8 +109,10 @@ impl Database {
                 subname: fields[4].trim().to_string(),
                 abbr: fields[5].trim().to_string(),
             };
-            db.by_modrinth
-                .insert(modrinth_slug.to_lowercase(), entry.clone());
+            if !modrinth_slug.is_empty() {
+                db.by_modrinth
+                    .insert(modrinth_slug.to_lowercase(), entry.clone());
+            }
             if !entry.subname.is_empty() {
                 db.by_english
                     .entry(entry.subname.to_lowercase())
@@ -286,13 +290,19 @@ mod tests {
                    459,jei,jei,JEI物品管理器,Just Enough Items,JEI\n\
                    1,,,我的世界原版,Minecraft,MC\n";
         let db = Database::parse(csv);
-        assert_eq!(db.count, 1);
+        // 两条都有 MC 百科编号，都收下
+        assert_eq!(db.count, 2);
         let entry = db.lookup_modrinth("jei").expect("应能按 slug 找到");
         assert_eq!(entry.mcmod_id, 459);
         assert_eq!(entry.name, "JEI物品管理器");
         assert_eq!(entry.subname, "Just Enough Items");
         assert_eq!(entry.abbr, "JEI");
         assert_eq!(entry.url(), "https://www.mcmod.cn/class/459.html");
+        // 没有 Modrinth 对照的模组，仍能按英文名找到，MC 百科链接照常用
+        let vanilla = db.lookup_english("Minecraft").expect("应能按英文名找到");
+        assert_eq!(vanilla.mcmod_id, 1);
+        assert!(vanilla.modrinth_slug.is_empty());
+        assert_eq!(vanilla.url(), "https://www.mcmod.cn/class/1.html");
         // 查不到时返回 None
         assert!(db.lookup_modrinth("sodium").is_none());
     }
