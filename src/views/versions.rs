@@ -1172,7 +1172,7 @@ struct LocalContent {
     /// 对应的 Modrinth slug（有则可跳转到 Modrinth 页面）
     modrinth_slug: Option<String>,
     /// jar 自带的图标
-    icon: Option<Vec<u8>>,
+    icon: Option<std::sync::Arc<Vec<u8>>>,
     /// 排序用的稳定键
     ///
     /// 词库是异步加载的，显示名会后到后变。
@@ -1263,7 +1263,7 @@ fn list_contents(app: &App, kind: ContentKind, game_dir: &Path) -> Vec<LocalCont
             display,
             subtitle,
             mcmod,
-            icon: meta.and_then(|m| m.icon),
+            icon: meta.and_then(|m| m.icon.clone()),
             modrinth_slug,
             sort_key,
         });

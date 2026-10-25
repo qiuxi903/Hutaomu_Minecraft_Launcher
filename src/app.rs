@@ -454,6 +454,10 @@ pub enum CoreEvent {
     McmodDbReady(crate::core::content::mcmod::Database),
     /// 本地内容反查到的 Modrinth 项目：文件名 → slug
     ContentSlugs(std::collections::HashMap<String, String>),
+    /// 各实例里装了哪些模组自带的内容
+    ModFeatures(
+        std::collections::HashMap<String, Vec<crate::core::content::modfeature::ModFeature>>,
+    ),
     ImageReady {
         url: String,
         path: PathBuf,
@@ -1047,15 +1051,35 @@ impl App {
     }
 
     /// 扫描各实例装了什么模组，决定左侧导航要多出哪些内容入口
+    ///
+    /// 扫描要开 jar 读元数据，整合包上百个模组时在主线程做会明显卡一下，
+    /// 所以放到后台线程去，结果回来再更新。
     fn refresh_mod_features(&mut self) {
-        self.mod_features.clear();
-        for inst in &self.instances {
-            let game_dir = self.cfg.effective_game_dir(&inst.mc_version);
-            let features = crate::core::content::modfeature::detect(&game_dir);
-            if !features.is_empty() {
-                self.mod_features.insert(inst.mc_version.clone(), features);
-            }
+        let dirs: Vec<(String, std::path::PathBuf)> = self
+            .instances
+            .iter()
+            .map(|inst| {
+                (
+                    inst.mc_version.clone(),
+                    self.cfg.effective_game_dir(&inst.mc_version),
+                )
+            })
+            .collect();
+        if dirs.is_empty() {
+            self.mod_features.clear();
+            return;
         }
+        self.spawn("扫描模组内容", false, move |job| {
+            let mut found = std::collections::HashMap::new();
+            for (id, dir) in dirs {
+                let features = crate::core::content::modfeature::detect(&dir);
+                if !features.is_empty() {
+                    found.insert(id, features);
+                }
+            }
+            job.send(CoreEvent::ModFeatures(found));
+            job.done(true, "");
+        });
     }
 
     /// 旧布局把实例目录放在版本目录里，现在统一按 Minecraft 版本存放
@@ -1684,6 +1708,9 @@ impl App {
                     for (name, slug) in map {
                         self.versions_ui.content_slugs.insert(name, slug);
                     }
+                }
+                CoreEvent::ModFeatures(map) => {
+                    self.mod_features = map;
                 }
                 CoreEvent::ImageReady { url, path } => {
                     self.images_pending.remove(&url);

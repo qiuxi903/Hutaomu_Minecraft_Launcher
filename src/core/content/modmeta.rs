@@ -9,8 +9,10 @@
 //! 拿到 mod id 后可以再去 MCMod 词库里查中文名，
 //! 查不到时退回元数据自带的名称。
 
+use std::collections::HashMap;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 
@@ -32,13 +34,62 @@ pub struct ModMeta {
     /// jar 内自带图标的原始字节
     ///
     /// 模组大多会在 jar 里带一张图，拿到它就不用联网去找头像了。
-    pub icon: Option<Vec<u8>>,
+    pub icon: Option<Arc<Vec<u8>>>,
+}
+
+/// 缓存的键：路径 + 修改时间 + 大小
+///
+/// jar 装好后内容不会再变，换了文件这三个值就会变，缓存自然失效。
+type CacheKey = (PathBuf, u64, u64);
+
+/// 元数据缓存
+///
+/// 整合包动辄上百个模组，列表每帧都要过一遍，
+/// 每次都重新开 zip 读文件会把界面卡住。
+/// 这里按「路径 + 修改时间 + 大小」记住结果，重复扫描几乎不花钱。
+fn cache() -> &'static Mutex<HashMap<CacheKey, Option<Arc<ModMeta>>>> {
+    static CACHE: OnceLock<Mutex<HashMap<CacheKey, Option<Arc<ModMeta>>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 缓存最多留多少条，超了整体清掉重来
+const CACHE_LIMIT: usize = 1024;
+
+/// 取一个 jar 的身份标识
+fn stamp(jar: &Path) -> Option<CacheKey> {
+    let meta = std::fs::metadata(jar).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    Some((jar.to_path_buf(), mtime, meta.len()))
 }
 
 /// 读取一个 jar 的模组元数据
 ///
 /// 不是模组、或元数据无法解析时返回 None。
-pub fn read_meta(jar: &Path) -> Option<ModMeta> {
+/// 结果带缓存，重复读取同一个 jar 不会再去碰磁盘。
+pub fn read_meta(jar: &Path) -> Option<Arc<ModMeta>> {
+    let key = stamp(jar)?;
+    if let Ok(c) = cache().lock() {
+        if let Some(hit) = c.get(&key) {
+            return hit.clone();
+        }
+    }
+    let meta = read_meta_uncached(jar).map(Arc::new);
+    if let Ok(mut c) = cache().lock() {
+        if c.len() >= CACHE_LIMIT {
+            c.clear();
+        }
+        c.insert(key, meta.clone());
+    }
+    meta
+}
+
+/// 真正去 jar 里翻元数据
+fn read_meta_uncached(jar: &Path) -> Option<ModMeta> {
     let file = std::fs::File::open(jar).ok()?;
     let mut archive = zip::ZipArchive::new(file).ok()?;
 
@@ -74,7 +125,7 @@ pub fn read_meta(jar: &Path) -> Option<ModMeta> {
 
     // 图标就在 jar 里，顺手读出来
     if let Some(inner) = meta.icon_path.clone() {
-        meta.icon = read_binary_entry(&mut archive, &inner);
+        meta.icon = read_binary_entry(&mut archive, &inner).map(Arc::new);
     }
     Some(meta)
 }
