@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use egui::{Align, Layout, Pos2, Rect, Sense, Ui, Vec2};
+use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::app::{App, CoreEvent, Page};
 use crate::core::minecraft::version;
@@ -275,7 +275,12 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
                     .and_then(|i| i.active_version())
                     .map(|v| app.cfg.selected_version.as_deref() == Some(v.id.as_str()))
                     .unwrap_or(false);
-                let response = instance_card(ui, &p, inst, card_width, is_current);
+                // 版本目录里有自定义图标就用它，没有再按版本分类给一个
+                let icon_texture = inst
+                    .custom_icon
+                    .as_ref()
+                    .and_then(|path| app.file_icon_texture(path));
+                let response = instance_card(ui, &p, inst, card_width, is_current, icon_texture);
                 let clickable = response.interact(Sense::click());
                 if clickable.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -304,6 +309,7 @@ fn instance_card(
     inst: &crate::core::minecraft::GameInstance,
     card_width: f32,
     is_current: bool,
+    icon_texture: Option<egui::TextureHandle>,
 ) -> egui::Response {
     const CARD_HEIGHT: f32 = 88.0;
     const PAD: f32 = 12.0;
@@ -339,23 +345,32 @@ fn instance_card(
     );
 
     // 图标
+    //
+    // 版本目录里放了自定义图标就用它（整合包多是这样），
+    // 没有的话按版本分类给一个：正式版草方块、快照命令方块、
+    // 旧版圆石、愚人节另有一个。
     let icon_rect = Rect::from_min_size(rect.min + Vec2::new(PAD, PAD), Vec2::splat(ICON_SIZE));
     ui.painter()
         .rect_filled(icon_rect, p.corner_sm(), p.surface_alt);
-    let has_loader = inst.variants.iter().any(|v| v.loader.is_some());
-    icons::paint(
-        ui.ctx(),
-        ui.painter(),
-        if inst.is_modpack {
-            "modpack"
-        } else if has_loader {
-            "layers"
-        } else {
-            "cube"
-        },
-        icon_rect.shrink(6.0),
-        p.text_weak,
-    );
+    match icon_texture {
+        Some(texture) => {
+            ui.painter().image(
+                texture.id(),
+                icon_rect.shrink(4.0),
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
+        None => {
+            icons::paint(
+                ui.ctx(),
+                ui.painter(),
+                inst.category.icon(),
+                icon_rect.shrink(6.0),
+                p.text_weak,
+            );
+        }
+    }
 
     // 标题：自行截断，保证不超出卡片
     let text_x = icon_rect.right() + 8.0;
@@ -371,6 +386,10 @@ fn instance_card(
 
     // 副信息：加载器 · 变体数 · 当前状态
     let mut meta: Vec<String> = vec![inst.loader_label()];
+    // 版本分类，正式版就不用重复写了
+    if inst.category != crate::core::minecraft::VersionCategory::Release {
+        meta.push(inst.category.label().to_string());
+    }
     if inst.variant_count() > 1 {
         meta.push(format!("{} 个变体", inst.variant_count()));
     }
@@ -458,23 +477,36 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
     });
     ui.add_space(8.0);
 
+    // 版本目录里有自定义图标就用它，没有再按版本分类给一个
+    let icon_texture = inst
+        .custom_icon
+        .as_ref()
+        .and_then(|path| app.file_icon_texture(path));
+
+
     ui::card(ui, &p, |ui| {
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
             ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
-            icons::paint(
-                ui.ctx(),
-                ui.painter(),
-                if inst.is_modpack {
-                    "modpack"
-                } else if active.loader.is_some() {
-                    "layers"
-                } else {
-                    "cube"
-                },
-                rect.shrink(10.0),
-                p.text_weak,
-            );
+            match icon_texture.as_ref() {
+                Some(texture) => {
+                    ui.painter().image(
+                        texture.id(),
+                        rect.shrink(6.0),
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                None => {
+                    icons::paint(
+                        ui.ctx(),
+                        ui.painter(),
+                        inst.category.icon(),
+                        rect.shrink(10.0),
+                        p.text_weak,
+                    );
+                }
+            }
             ui.add_space(4.0);
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {

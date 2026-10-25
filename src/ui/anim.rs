@@ -6,7 +6,7 @@
 //!
 //! 动画状态存在 egui 的内存里（按 Id 索引），不用自己维护生命周期。
 
-use egui::{Color32, Context, Id, Rect, Vec2};
+use egui::{Color32, Context, Id, Rect, Stroke, Vec2};
 
 use super::animations_enabled;
 
@@ -117,10 +117,13 @@ pub struct Enter {
 }
 
 /// 给页面内容算一个入场状态
+///
+/// 透明度不从 0 开始：整页一起淡入时，卡片的阴影也会跟着变浓变淡，
+/// 起点太低时看着像阴影在闪。这里留一半底，只做轻微的渐入。
 pub fn enter(ctx: &Context, id: Id, delay: f32) -> Enter {
     let t = progress(ctx, id, delay, 0.26);
     Enter {
-        opacity: 0.15 + 0.85 * t,
+        opacity: 0.55 + 0.45 * t,
         offset: (1.0 - t) * 8.0,
         scale: 0.99 + 0.01 * t,
     }
@@ -146,21 +149,32 @@ pub fn hover_scale(ctx: &Context, id: Id, hovered: bool) -> f32 {
 
 /// 画一个柔和的阴影
 ///
-/// egui 没有模糊阴影，用几层递减的圆角矩形叠出层次感。
+/// egui 没有模糊阴影，这里用几圈由内到外变淡的描边叠出层次感。
+///
+/// 两个要点：
+/// - 阴影画在卡片外面，不会盖住里面的文字
+/// - 不复制 painter：egui 的 Painter 带着这一帧已绘制的全部图形，
+///   复制一次就是全量拷贝，页面上卡片一多就会把渲染拖死
 pub fn shadow(painter: &egui::Painter, rect: Rect, radius: egui::CornerRadius, alpha: u8) {
     if !animations_enabled() || alpha == 0 {
         return;
     }
-    for layer in (1..=3u8).rev() {
-        let spread = layer as f32 * 2.5;
-        let a = (alpha as f32 * 0.16) as u8 / layer;
-        painter.rect_filled(
-            Rect::from_min_max(
-                rect.min - egui::vec2(spread, spread),
-                rect.max + egui::vec2(spread, spread) + egui::vec2(0.0, 1.0),
-            ),
+    // 阴影不跟着外层的淡入一起变淡，页面切换时看着才稳
+    let opacity = painter.opacity().max(0.05);
+    let boost = (alpha as f32 / opacity).min(255.0) as u8;
+    const LAYERS: usize = 4;
+    for layer in (1..=LAYERS).rev() {
+        let t = layer as f32 / LAYERS as f32;
+        let spread = 1.0 + t * 3.0;
+        let a = (boost as f32 * 0.16 * (1.0 - t * 0.55)) as u8;
+        if a == 0 {
+            continue;
+        }
+        painter.rect_stroke(
+            rect.expand(spread),
             radius,
-            Color32::from_black_alpha(a),
+            Stroke::new(spread * 1.5, Color32::from_black_alpha(a)),
+            egui::StrokeKind::Outside,
         );
     }
 }

@@ -6,5 +6,7 @@ pub mod loaders;
 pub mod manifest;
 pub mod modpack;
 pub mod version;
+pub mod version_icon;
 
 pub use version::{group_instances, resolve, scan_local, GameInstance, LocalVersion, VersionJson};
+pub use version_icon::VersionCategory;

@@ -79,7 +79,7 @@ pub fn page_title(ui: &mut Ui, p: &Palette, title: &str, subtitle: &str) {
             .strong(),
     );
     if !subtitle.is_empty() {
-        ui.add_space(3.0);
+        ui.add_space(6.0);
         ui.label(egui::RichText::new(subtitle).font(font(13.0)).color(p.text_weak));
     }
     ui.add_space(14.0);
@@ -157,14 +157,17 @@ pub fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
 
 pub fn card_padded(ui: &mut Ui, p: &Palette, padding: i8, add: impl FnOnce(&mut Ui)) -> Response {
     // 容器类卡片不响应悬停：整块面板跟着鼠标变深很奇怪
-    egui::Frame::NONE
+    let radius = p.corner(0);
+    let response = egui::Frame::NONE
         .fill(p.surface)
         .stroke(Stroke::new(1.0, p.border))
-        .corner_radius(p.corner(0))
+        .corner_radius(radius)
         .inner_margin(Margin::same(padding))
-        .shadow(p.shadow)
         .show(ui, add)
-        .response
+        .response;
+    // 阴影自己画，浓度不跟着页面的淡入变淡，切换时不会晃
+    super::anim::shadow(ui.painter(), response.rect, radius, p.shadow.color.a());
+    response
 }
 
 pub fn card_flat(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
@@ -415,8 +418,8 @@ pub fn button(ui: &mut Ui, p: &Palette, opts: ButtonOpts<'_>) -> Response {
     };
 
     let bg = lerp_color(lerp_color(base, hover_bg, hover_t), active_bg, press_t);
-    // 按下时轻微内缩，给出物理反馈
-    let draw_rect = rect.shrink(press_t * 1.0);
+    // 按下时只收一点点，收多了按钮看着在抖
+    let draw_rect = rect.shrink(press_t * 0.5);
 
     let painter = ui.painter();
     if bg.a() > 0 {
@@ -906,16 +909,11 @@ pub fn dropdown(
             .show(ui.ctx(), |ui| {
                 ui.set_opacity(progress);
                 ui.set_width(width);
-                egui::Frame::NONE
+                let radius = p.corner_sm();
+                let response = egui::Frame::NONE
                     .fill(p.surface)
                     .stroke(Stroke::new(1.0, p.border))
-                    .corner_radius(p.corner_sm())
-                    .shadow(egui::epaint::Shadow {
-                        offset: [0, 4],
-                        blur: 16,
-                        spread: 0,
-                        color: alpha(Color32::BLACK, if p.dark { 90 } else { 28 }),
-                    })
+                    .corner_radius(radius)
                     .inner_margin(Margin::same(4))
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical()
@@ -965,6 +963,13 @@ pub fn dropdown(
                                 }
                             });
                     });
+                // 阴影自己画，打开动画时浓度不变，不会看着在闪
+                super::anim::shadow(
+                    ui.painter(),
+                    response.response.rect,
+                    radius,
+                    if p.dark { 90 } else { 28 },
+                );
             });
 
         // 点击外部关闭
@@ -1023,7 +1028,7 @@ pub fn slider(
     }
     if !desc.is_empty() {
         ui.painter().text(
-            Pos2::new(rect.left(), rect.top() + 22.0),
+            Pos2::new(rect.left(), rect.top() + 24.0),
             Align2::LEFT_TOP,
             desc,
             font(11.0),
@@ -1140,9 +1145,23 @@ pub fn fixed_card(
 ) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let radius = p.corner_sm();
+    let hovered = response.hovered();
+    // 悬停时边框染上主色，阴影也重一点，扫一眼就知道点的是哪张
+    let t = if super::animations_enabled() {
+        ui.ctx()
+            .animate_bool_with_time(response.id.with("hov"), hovered, 0.14)
+    } else if hovered {
+        1.0
+    } else {
+        0.0
+    };
+    let border = lerp_color(p.border, p.accent, t * 0.8);
     ui.painter().rect_filled(rect, radius, p.surface);
     ui.painter()
-        .rect_stroke(rect, radius, Stroke::new(1.0, p.border), StrokeKind::Inside);
+        .rect_stroke(rect, radius, Stroke::new(1.0, border), StrokeKind::Inside);
+    if t > 0.0 {
+        super::anim::shadow(ui.painter(), rect, radius, (8.0 + 34.0 * t) as u8);
+    }
     let inner = rect.shrink(padding);
     // 显式指定自上而下的布局，避免继承外层的横向排列导致内容溢出卡片
     ui.scope_builder(
@@ -1275,7 +1294,7 @@ pub fn setting_row(
                     .color(p.text),
             );
             if !desc.is_empty() {
-                ui.add_space(2.0);
+                ui.add_space(5.0);
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(desc)
@@ -1494,17 +1513,12 @@ pub fn modal(
         )
         .show(ctx, |ui| {
             ui.set_opacity(progress);
-            egui::Frame::NONE
+            let radius = p.corner(2);
+            let response = egui::Frame::NONE
                 .fill(p.surface)
                 .stroke(Stroke::new(1.0, p.border))
-                .corner_radius(p.corner(2))
+                .corner_radius(radius)
                 .inner_margin(Margin::same(20))
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 10],
-                    blur: 32,
-                    spread: 0,
-                    color: Color32::from_black_alpha(if p.dark { 120 } else { 50 }),
-                })
                 .show(ui, |ui| {
                     ui.set_width(width);
                     ui.horizontal(|ui| {
@@ -1523,6 +1537,13 @@ pub fn modal(
                     ui.add_space(6.0);
                     add(ui);
                 });
+            // 阴影自己画，弹窗打开时浓度不变，看着不会闪
+            super::anim::shadow(
+                ui.painter(),
+                response.response.rect,
+                radius,
+                if p.dark { 120 } else { 50 },
+            );
         });
 
     if close {

@@ -1,4 +1,4 @@
-use egui::{Align, Layout, Pos2, Rect, Sense, Ui, Vec2};
+use egui::{Align, Layout, Rect, Sense, Ui, Vec2};
 
 use crate::app::App;
 use crate::icons;
@@ -65,6 +65,27 @@ const DATA_SOURCES: [(&str, &str, &str); 10] = [
     ("authlib-injector", "https://authlib-injector.yushi.moe", "皮肤站登录支持"),
 ];
 
+/// 已经在真实环境里跑通的功能
+const VERIFIED: [&str; 10] = [
+    "版本下载与安装（含资源文件）",
+    "原版启动",
+    "Fabric 加载器安装与启动",
+    "游戏与加载器一次装好",
+    "Java 简要搜索",
+    "Modrinth 搜索与版本查询",
+    "MCMod 中文名与官网跳转",
+    "整合包独立安装",
+    "皮肤站登录与续期",
+    "界面各页面与自检截图",
+];
+
+/// 还没有实机验证的功能
+const UNVERIFIED: [&str; 3] = [
+    "Forge / NeoForge 安装器流程",
+    "微软账号登录",
+    "整合包首次安装（需真实整合包）",
+];
+
 pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     widgets::page_title(ui, &p, "关于", "胡桃木 Minecraft 启动器");
@@ -102,6 +123,11 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                     {
                         let _ = open::that("https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher");
                     }
+                    if ui::button(ui, &p, ButtonOpts::secondary("更新日志").icon("clock")).clicked() {
+                        let _ = open::that(
+                            "https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/commits/main",
+                        );
+                    }
                     if ui::button(ui, &p, ButtonOpts::secondary("反馈问题").icon("external-link")).clicked()
                     {
                         let _ = open::that("https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/issues");
@@ -128,14 +154,49 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
             .font(ui::font(12.5))
             .color(p.text_weak),
         );
-        ui.add_space(10.0);
-        ui.label(
-            egui::RichText::new(
-                "已在真实环境验证：版本下载与安装（含资源文件）、原版启动、Fabric 加载器安装与启动、游戏与加载器一次装好、Java 简要搜索、Modrinth 搜索与版本查询、MCMod 中文名与官网跳转、界面各页面。尚未实机验证：Forge / NeoForge 安装器流程、微软账号登录、皮肤站登录（需要真实账号）。",
-            )
-            .font(ui::font(12.5))
-            .color(p.text_weak),
-        );
+        ui.add_space(14.0);
+
+        // 验证情况分两栏列出来，比一整段文字好找
+        ui.columns(2, |columns| {
+            columns[0].label(
+                egui::RichText::new("已验证")
+                    .font(ui::font(13.0))
+                    .color(p.success)
+                    .strong(),
+            );
+            columns[0].add_space(6.0);
+            for item in VERIFIED {
+                columns[0].horizontal(|ui| {
+                    icons::paint(ui.ctx(), ui.painter(), "check", Rect::from_min_size(ui.cursor().min, Vec2::splat(13.0)), p.success);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(item)
+                            .font(ui::font(12.0))
+                            .color(p.text_weak),
+                    );
+                });
+                columns[0].add_space(3.0);
+            }
+            columns[1].label(
+                egui::RichText::new("待验证")
+                    .font(ui::font(13.0))
+                    .color(p.warning)
+                    .strong(),
+            );
+            columns[1].add_space(6.0);
+            for item in UNVERIFIED {
+                columns[1].horizontal(|ui| {
+                    icons::paint(ui.ctx(), ui.painter(), "clock", Rect::from_min_size(ui.cursor().min, Vec2::splat(13.0)), p.warning);
+                    ui.add_space(4.0);
+                    ui.label(
+                        egui::RichText::new(item)
+                            .font(ui::font(12.0))
+                            .color(p.text_weak),
+                    );
+                });
+                columns[1].add_space(3.0);
+            }
+        });
     });
 
     ui.add_space(14.0);
@@ -231,11 +292,17 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                     if ui::ghost(ui, &p, "访问").clicked() {
                         let _ = open::that(url);
                     }
+                    // 地址太长会挤成一片，这里只显示域名，完整地址放悬停提示
+                    let short = url
+                        .trim_start_matches("https://")
+                        .trim_start_matches("http://")
+                        .trim_end_matches('/');
                     ui.label(
-                        egui::RichText::new(url)
+                        egui::RichText::new(short)
                             .font(ui::font(11.0))
                             .color(p.text_faint),
-                    );
+                    )
+                    .on_hover_text(url);
                 });
             });
             ui.add_space(8.0);
@@ -306,7 +373,5 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 .font(ui::font(11.5))
                 .color(p.text_faint),
         );
-        let _ = Pos2::ZERO;
-        let _ = Rect::NOTHING;
     });
 }

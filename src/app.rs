@@ -578,7 +578,9 @@ pub struct App {
     pub dwm_applied: bool,
     pub shot: Option<ShotState>,
     pub download_panel_open: bool,
-    download_panel_auto: bool,
+    pub download_panel_auto: bool,
+    /// 模组内容扫描是否正在进行，避免重复起线程
+    mod_features_scanning: bool,
     pub last_window_size: egui::Vec2,
     image_tx: std::sync::mpsc::Sender<String>,
     image_rx: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<String>>>,
@@ -674,6 +676,7 @@ impl App {
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
+            mod_features_scanning: false,
             last_window_size: egui::vec2(1120.0, 720.0),
             image_tx,
             image_rx: image_rx.clone(),
@@ -1055,6 +1058,11 @@ impl App {
     /// 扫描要开 jar 读元数据，整合包上百个模组时在主线程做会明显卡一下，
     /// 所以放到后台线程去，结果回来再更新。
     fn refresh_mod_features(&mut self) {
+        // 已经在扫了就别再起一个
+        if self.mod_features_scanning {
+            return;
+        }
+        self.mod_features_scanning = true;
         let dirs: Vec<(String, std::path::PathBuf)> = self
             .instances
             .iter()
@@ -1078,7 +1086,8 @@ impl App {
                 }
             }
             job.send(CoreEvent::ModFeatures(found));
-            job.done(true, "");
+            // 这里不发 TaskDone：任务完成会触发一次版本刷新，
+            // 刷新又会再起一个扫描任务，就成死循环了
         });
     }
 
@@ -1239,6 +1248,22 @@ impl App {
             .or_else(|| self.local_versions.first().map(|v| v.id.clone()))
     }
 
+    /// 当前实例对应的 Minecraft 版本
+    ///
+    /// 整合包实例的 id 是它自己的名字，直接拿去做版本筛选会搜不到东西，
+    /// 这里返回它真正的 Minecraft 版本。
+    pub fn current_mc_version(&self) -> Option<String> {
+        let version = self.selected_version()?;
+        Some(
+            version
+                .modpack
+                .as_ref()
+                .map(|m| m.mc_version.clone())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| version.mc_version.clone()),
+        )
+    }
+
     pub fn selected_account(&self) -> Option<&Account> {
         self.accounts.selected_account()
     }
@@ -1385,6 +1410,18 @@ impl App {
         );
         self.mod_icons.insert(key.to_string(), texture.clone());
         Some(texture)
+    }
+
+    /// 本地文件图标的纹理（版本目录里的自定义图标等）
+    ///
+    /// 与模组图标共用一份缓存，同一个文件只解码一次。
+    pub fn file_icon_texture(&mut self, path: &std::path::Path) -> Option<egui::TextureHandle> {
+        let key = path.to_string_lossy().to_string();
+        if let Some(texture) = self.mod_icons.get(&key) {
+            return Some(texture.clone());
+        }
+        let bytes = std::fs::read(path).ok()?;
+        self.mod_icon_texture(&key, &bytes)
     }
 
     /// 按需下载并缓存远程图片（项目图标等）。请求进入共享队列，
@@ -1710,6 +1747,7 @@ impl App {
                     }
                 }
                 CoreEvent::ModFeatures(map) => {
+                    self.mod_features_scanning = false;
                     self.mod_features = map;
                 }
                 CoreEvent::ImageReady { url, path } => {
@@ -2797,10 +2835,13 @@ impl eframe::App for App {
         if self.game.is_some() && !self.show_game_log_page {
             self.draw_overlay_ball(root);
         }
-        // 提示条固定在右下角，下载中心展开时自动上移避让
+        // 提示条固定在右下角，下载中心展开或游戏在跑时自动上移避让
         let active_tasks = self.tasks.iter().filter(|t| !t.done).count();
         let panel_offset = if self.download_panel_open && active_tasks > 0 {
             (80.0 + active_tasks as f32 * 126.0).min(500.0)
+        } else if self.game.is_some() {
+            // 悬浮球占着右下角，提示条让到它上面
+            70.0
         } else {
             0.0
         };

@@ -347,8 +347,23 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
     let mut install: Option<VersionEntry> = None;
     for entry in &entries {
         let installed = app.cfg.is_installed(&entry.id);
+        // 版本分类：正式版、快照、旧版、愚人节，各配一个图标
+        let category = crate::core::minecraft::version_icon::classify(
+            &entry.version_type,
+            &entry.id,
+            Some(&entry.release_time),
+        );
         let response = ui::card_padded(ui, &p, 12, |ui| {
             ui.horizontal(|ui| {
+                let (icon_rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
+                icons::paint(
+                    ui.ctx(),
+                    ui.painter(),
+                    category.icon(),
+                    icon_rect.shrink(2.0),
+                    p.text_weak,
+                );
+                ui.add_space(8.0);
                 ui.label(
                     egui::RichText::new(&entry.id)
                         .font(ui::font(14.5))
@@ -361,6 +376,9 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
                     entry.type_label(),
                     views::version_type_color(&entry.version_type),
                 );
+                if category == crate::core::minecraft::VersionCategory::AprilFools {
+                    widgets::badge(ui, &p, "愚人节", p.warning);
+                }
                 if installed {
                     widgets::badge(ui, &p, "已安装", p.success);
                 }
@@ -1025,7 +1043,10 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                     .color(p.text_weak),
             );
             if let Some(version) = app.selected_version() {
-                widgets::badge(ui, &p, &version.mc_version, p.accent);
+                let mc = app
+                    .current_mc_version()
+                    .unwrap_or_else(|| version.mc_version.clone());
+                widgets::badge(ui, &p, &mc, p.accent);
                 if let Some(loader) = &version.loader {
                     widgets::badge(ui, &p, loader, views::loader_color(Some(loader)));
                 }
@@ -1081,9 +1102,9 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
     let card_width = (width - 12.0 * (columns as f32 - 1.0)) / columns as f32;
 
     // 卡片高度固定，保证同一排的上下边缘完全对齐
-    const CARD_HEIGHT: f32 = 150.0;
+    const CARD_HEIGHT: f32 = 168.0;
     const CARD_PADDING: f32 = 12.0;
-    const ICON_SIZE: f32 = 40.0;
+    const ICON_SIZE: f32 = 42.0;
 
     let mut open_detail: Option<SearchHit> = None;
     let mut index = 0usize;
@@ -1121,26 +1142,24 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                             let icon_rect =
                                 Rect::from_min_size(ui.cursor().min, Vec2::splat(ICON_SIZE));
                             ui.allocate_space(Vec2::splat(ICON_SIZE));
+                            // 图标垫一层淡底，没有图标的分类图标看着更清楚
+                            ui.painter()
+                                .rect_filled(icon_rect, p.corner_sm(), p.surface_alt);
                             if let Some(url) = &hit.icon_url {
                                 app.ensure_image(url);
                                 if let Some(texture) = app.image(url) {
                                     ui.painter().image(
                                         texture.id(),
-                                        icon_rect,
+                                        icon_rect.shrink(2.0),
                                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                                         Color32::WHITE,
                                     );
                                 } else {
-                                    ui.painter().rect_filled(
-                                        icon_rect,
-                                        p.corner_sm(),
-                                        p.surface_alt,
-                                    );
                                     icons::paint(
                                         ui.ctx(),
                                         ui.painter(),
                                         kind.icon(),
-                                        icon_rect.shrink(10.0),
+                                        icon_rect.shrink(11.0),
                                         p.text_faint,
                                     );
                                 }
@@ -1149,7 +1168,7 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                                     ui.ctx(),
                                     ui.painter(),
                                     kind.icon(),
-                                    icon_rect.shrink(9.0),
+                                    icon_rect.shrink(10.0),
                                     p.text_faint,
                                 );
                             }
@@ -1184,17 +1203,17 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                             });
                         });
                         ui.add_space(8.0);
-                        // 描述：按两行容量截断原文，再交给 egui 排版，超出部分裁掉
-                        let budget = ((desc_width / (12.5 * 0.62)) as usize).max(12) * 2;
+                        // 描述：按三行容量截断原文，再交给 egui 排版，超出部分裁掉
+                        let budget = ((desc_width / (12.5 * 0.62)) as usize).max(12) * 3;
                         let mut desc: String = hit.description.chars().take(budget).collect();
                         if hit.description.chars().count() > budget {
                             desc.push('…');
                         }
                         let desc_rect = Rect::from_min_size(
                             ui.cursor().min,
-                            Vec2::new(desc_width, 34.0),
+                            Vec2::new(desc_width, 48.0),
                         );
-                        ui.allocate_space(Vec2::new(desc_width, 34.0));
+                        ui.allocate_space(Vec2::new(desc_width, 48.0));
                         ui.scope_builder(
                             egui::UiBuilder::new()
                                 .max_rect(desc_rect)
@@ -1266,7 +1285,7 @@ pub(crate) fn run_search(app: &mut App) {
     let filter_by_version = app.download.use_version_filter && kind != ContentKind::Modpack;
     let (mc, loader) = if filter_by_version {
         match app.selected_version() {
-            Some(v) => (Some(v.mc_version.clone()), v.loader.clone()),
+            Some(v) => (app.current_mc_version(), v.loader.clone()),
             None => (None, None),
         }
     } else {
@@ -1364,7 +1383,10 @@ pub(crate) fn open_project(app: &mut App, project_id: &str, author: &str) {
         && app.download.content_kind() != ContentKind::Modpack;
     let (mc, loader) = if filter_by_version {
         match app.selected_version() {
-            Some(v) => (Some(v.mc_version.clone()), v.loader.as_ref().map(|l| l.to_lowercase())),
+            Some(v) => (
+                app.current_mc_version(),
+                v.loader.as_ref().map(|l| l.to_lowercase()),
+            ),
             None => (None, None),
         }
     } else {
@@ -1650,7 +1672,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
 
     // ---- 实例列表 ----
     // 按 Minecraft 版本聚合，原版与各加载器版本是同一个实例
-    let instances: Vec<(String, Option<String>, String)> = app
+    let instances: Vec<(String, String, String)> = app
         .instances
         .iter()
         .map(|inst| {
@@ -1658,7 +1680,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
                 .active_version()
                 .and_then(|v| v.loader.clone())
                 .unwrap_or_else(|| "原版".to_string());
-            (inst.mc_version.clone(), inst.loader_label_opt(), loader)
+            (inst.mc_version.clone(), inst.display_name.clone(), loader)
         })
         .collect();
 
@@ -1682,7 +1704,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
             .find(|i| &i.mc_version == id)
             .map(|i| {
                 let loader = i.active_version().and_then(|v| v.loader.clone());
-                (i.mc_version.clone(), i.mc_version.clone(), loader)
+                (i.mc_version.clone(), i.real_mc_version(), loader)
             })
     });
 
@@ -1787,7 +1809,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
                 } else {
                     let labels: Vec<String> = instances
                         .iter()
-                        .map(|(id, _, loader)| format!("{id} · {loader}"))
+                        .map(|(_, name, loader)| format!("{name} · {loader}"))
                         .collect();
                     let current = instance_id
                         .as_ref()
@@ -2040,7 +2062,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
 fn install_card_modpack(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project) {
     let all_versions = app.download.content_versions.clone();
     // 当前实例的 Minecraft 版本，用来筛掉用不上的整合包版本
-    let instance_mc = app.selected_version().map(|v| v.mc_version.clone());
+    let instance_mc = app.current_mc_version();
 
     // 整合包往往有几十个版本，按 Minecraft 版本筛一遍才好选
     let mut game_options: Vec<String> = Vec::new();
@@ -2348,7 +2370,7 @@ fn install_content(
         .instances
         .iter()
         .find(|i| i.mc_version == instance_id)
-        .map(|i| (i.mc_version.clone(), i.loader_label_opt().map(|l| l.to_lowercase())))
+        .map(|i| (i.real_mc_version(), i.loader_label_opt().map(|l| l.to_lowercase())))
         .unwrap_or_default();
 
     app.spawn_download(format!("安装 {title}"), move |dl, progress, _job| {

@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::core::minecraft::modpack::{self, ModpackInfo};
+use crate::core::minecraft::version_icon::{self, VersionCategory};
 use crate::core::paths;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -519,6 +520,10 @@ pub struct LocalVersion {
     pub icon_data_url: Option<String>,
     /// 整合包实例的信息，普通版本为 None
     pub modpack: Option<ModpackInfo>,
+    /// 版本分类：正式版、快照、旧版、愚人节
+    pub category: VersionCategory,
+    /// 版本目录里的自定义图标
+    pub custom_icon: Option<PathBuf>,
 }
 
 /// 扫描本地已安装版本，并推断加载器类型与对应 MC 版本
@@ -554,6 +559,8 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             .ok();
         let has_jar = version_jar_path(game_dir, &id).is_file()
             || version_jar_path(game_dir, &json.inherits_from.clone().unwrap_or_default()).is_file();
+        let category = version_icon::classify(&json.version_type, &id, json.release_time.as_deref());
+        let custom_icon = version_icon::custom_icon(&dir);
         result.push(LocalVersion {
             id,
             version_type: json.version_type.clone(),
@@ -565,6 +572,8 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             has_jar,
             icon_data_url: None,
             modpack: marker,
+            category,
+            custom_icon,
         });
     }
     result.sort_by(|a, b| {
@@ -639,12 +648,27 @@ pub struct GameInstance {
     pub display_name: String,
     /// 是不是整合包实例
     pub is_modpack: bool,
+    /// 版本分类，决定默认图标
+    pub category: VersionCategory,
+    /// 版本目录里的自定义图标
+    pub custom_icon: Option<PathBuf>,
 }
 
 impl GameInstance {
     /// 当前使用的变体
     pub fn active_version(&self) -> Option<&LocalVersion> {
         self.variants.iter().find(|v| v.id == self.active)
+    }
+
+    /// 实例实际对应的 Minecraft 版本
+    ///
+    /// 整合包实例的 id 是它自己的名字，真实版本要看标记文件里记的那个。
+    pub fn real_mc_version(&self) -> String {
+        self.variants
+            .iter()
+            .find_map(|v| v.modpack.as_ref().map(|m| m.mc_version.clone()))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| self.mc_version.clone())
     }
 
     /// 原版变体
@@ -713,6 +737,7 @@ pub fn group_instances(versions: &[LocalVersion], selected: Option<&str>) -> Vec
                         .map(|v| v.id.clone())
                         .unwrap_or_default()
                 });
+            let active_version = variants.iter().find(|v| v.id == active);
             Some(GameInstance {
                 display_name: variants
                     .iter()
@@ -720,6 +745,11 @@ pub fn group_instances(versions: &[LocalVersion], selected: Option<&str>) -> Vec
                     .filter(|n| !n.is_empty())
                     .unwrap_or_else(|| mc.clone()),
                 is_modpack: variants.iter().any(|v| v.modpack.is_some()),
+                // 分类取当前变体的，图标则整个实例里谁有就用谁的
+                category: active_version
+                    .map(|v| v.category)
+                    .unwrap_or_default(),
+                custom_icon: variants.iter().find_map(|v| v.custom_icon.clone()),
                 mc_version: mc,
                 variants,
                 active,
@@ -1038,6 +1068,7 @@ mod tests {
                 loader: Some("Fabric".into()),
                 loader_version: Some("0.20.1".into()),
                 project_id: None,
+                pack_version_id: None,
             },
         )
         .unwrap();

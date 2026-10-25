@@ -1,6 +1,6 @@
 //! 悬浮下载中心：显示所有进行中的任务、字节进度、速度与当前动作。
 
-use egui::{Align, Color32, Layout, Margin, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{Align, CornerRadius, Layout, Margin, Pos2, Rect, Sense, Stroke, Vec2};
 
 use crate::app::{App, TaskItem};
 use crate::core::paths;
@@ -45,16 +45,22 @@ impl App {
             .map(TaskSnapshot::from)
             .collect();
 
-        if !self.download_panel_open {
-            // 收起时清掉入场状态，下次打开重新播一遍
-            ctx.memory_mut(|m| {
-                m.data.remove::<f64>(egui::Id::new("htmcl_download_panel_anim"))
-            });
+        // 开合都走同一条动画：关闭时不是啪地消失，而是缩回去
+        let target = if self.download_panel_open { 1.0 } else { 0.0 };
+        let anim = if crate::ui::animations_enabled() {
+            ctx.animate_value_with_time(egui::Id::new("htmcl_download_panel_anim"), target, 0.18)
+        } else {
+            target
+        };
+
+        if anim <= 0.001 {
+            // 完全收起了，只留一个胶囊提示
             if active.is_empty() {
                 return;
             }
             if self.download_chip(ctx, &active) {
                 self.download_panel_open = true;
+                self.download_panel_auto = false;
             }
             return;
         }
@@ -64,39 +70,26 @@ impl App {
         let mut cancel: Option<u64> = None;
 
         // 面板从右下角滑入，不要啪地一下出现
-        let anim = if crate::ui::animations_enabled() {
-            crate::ui::widgets::enter_progress(
-                ctx,
-                egui::Id::new("htmcl_download_panel_anim"),
-                true,
-                0.18,
-            )
-        } else {
-            1.0
-        };
         let shift = (1.0 - anim) * 18.0;
+        // 游戏在跑时右下角挂着悬浮球，下载中心往上让一让，别叠在一起
+        let lift = if self.game.is_some() { 78.0 } else { 0.0 };
 
         egui::Area::new(egui::Id::new("htmcl_download_panel"))
             .order(egui::Order::Foreground)
             .anchor(
                 egui::Align2::RIGHT_BOTTOM,
-                Vec2::new(-20.0 + shift, -20.0 + shift),
+                Vec2::new(-20.0 + shift, -20.0 - lift + shift),
             )
             .show(ctx, |ui| {
                 ui.set_opacity(anim);
-                egui::Frame::NONE
+                ui.set_width(400.0);
+                let radius = palette.corner(2);
+                let response = egui::Frame::NONE
                     .fill(palette.surface)
                     .stroke(Stroke::new(1.0, palette.border))
-                    .corner_radius(palette.corner(2))
+                    .corner_radius(radius)
                     .inner_margin(Margin::same(14))
-                    .shadow(egui::epaint::Shadow {
-                        offset: [0, 8],
-                        blur: 24,
-                        spread: 0,
-                        color: Color32::from_black_alpha(if palette.dark { 110 } else { 40 }),
-                    })
                     .show(ui, |ui| {
-                        ui.set_width(400.0);
                         ui.horizontal(|ui| {
                             icons::paint(
                                 ui.ctx(),
@@ -143,12 +136,24 @@ impl App {
                             .max_height(400.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
-                                for task in &active {
+                                // 任务卡片依次淡入，不会整片糊上来
+                                for (i, task) in active.iter().enumerate() {
+                                    let delay = ui::anim::stagger(i, 0.03);
+                                    let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("task", i)), delay);
+                                    ui.set_opacity(appear);
                                     task_card(ui, &palette, task, &mut cancel);
+                                    ui.set_opacity(1.0);
                                     ui.add_space(6.0);
                                 }
                             });
                     });
+                // 阴影自己画，展开动画时浓度不变，看着不会闪
+                crate::ui::anim::shadow(
+                    ui.painter(),
+                    response.response.rect,
+                    radius,
+                    if palette.dark { 110 } else { 40 },
+                );
             });
 
         if close {
@@ -167,17 +172,20 @@ impl App {
             active.iter().map(|t| t.fraction).sum::<f32>() / active.len() as f32
         };
         let mut open = false;
+        // 游戏在跑时右下角挂着悬浮球，胶囊往上让，别叠在一起
+        let lift = if self.game.is_some() { 78.0 } else { 0.0 };
 
         egui::Area::new(egui::Id::new("htmcl_download_chip"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -20.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -20.0 - lift))
             .show(ctx, |ui| {
-                let (rect, response) = ui.allocate_exact_size(Vec2::new(200.0, 46.0), Sense::click());
+                let (rect, response) = ui.allocate_exact_size(Vec2::new(196.0, 48.0), Sense::click());
+                let radius = CornerRadius::same(24);
                 let painter = ui.painter();
-                painter.rect_filled(rect, palette.corner(0), palette.surface);
+                painter.rect_filled(rect, radius, palette.surface);
                 painter.rect_stroke(
                     rect,
-                    palette.corner(0),
+                    radius,
                     Stroke::new(1.0, palette.border),
                     egui::StrokeKind::Inside,
                 );
@@ -186,25 +194,36 @@ impl App {
                     painter,
                     "download",
                     Rect::from_center_size(
-                        Pos2::new(rect.left() + 22.0, rect.center().y),
+                        Pos2::new(rect.left() + 24.0, rect.center().y),
                         Vec2::splat(18.0),
                     ),
                     palette.accent,
                 );
                 painter.text(
-                    Pos2::new(rect.left() + 40.0, rect.center().y - 7.0),
+                    Pos2::new(rect.left() + 42.0, rect.center().y - 7.0),
                     egui::Align2::LEFT_CENTER,
                     format!("下载中 · {} 个任务", active.len()),
                     ui::font(12.0),
                     palette.text,
                 );
                 painter.text(
-                    Pos2::new(rect.left() + 40.0, rect.center().y + 8.0),
+                    Pos2::new(rect.left() + 42.0, rect.center().y + 8.0),
                     egui::Align2::LEFT_CENTER,
                     format!("{:.0}% · 点击查看", fraction * 100.0),
                     ui::font(11.0),
                     palette.text_weak,
                 );
+                // 底部一条细进度，扫一眼就知道走到哪了
+                let bar = Rect::from_min_size(
+                    Pos2::new(rect.left() + 42.0, rect.bottom() - 11.0),
+                    Vec2::new(rect.width() - 62.0, 3.0),
+                );
+                painter.rect_filled(bar, CornerRadius::same(2), palette.surface_alt);
+                let filled = Rect::from_min_size(
+                    bar.min,
+                    Vec2::new(bar.width() * fraction.clamp(0.0, 1.0), bar.height()),
+                );
+                painter.rect_filled(filled, CornerRadius::same(2), palette.accent);
                 if response.clicked() {
                     open = true;
                 }
