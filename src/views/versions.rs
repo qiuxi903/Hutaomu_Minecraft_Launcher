@@ -1583,24 +1583,29 @@ fn content_tab(
                     }
                 }
                 ui.vertical(|ui| {
+                    // 标题、版本信息、文件名分三层排开，不再挤在一起
                     ui.label(
                         egui::RichText::new(&item.display)
-                            .font(ui::font(13.0))
+                            .font(ui::font(13.5))
                             .color(p.text)
                             .strong(),
                     );
+                    ui.add_space(3.0);
+                    if !item.subtitle.is_empty() {
+                        ui.label(
+                            egui::RichText::new(&item.subtitle)
+                                .font(ui::font(11.5))
+                                .color(p.text_weak),
+                        );
+                        ui.add_space(2.0);
+                    }
                     ui.label(
                         egui::RichText::new(format!(
-                            "{}{} · {}",
-                            if item.subtitle.is_empty() {
-                                String::new()
-                            } else {
-                                format!("{} · ", item.subtitle)
-                            },
+                            "{} · {}",
                             item.file_name,
                             paths::format_size(item.size)
                         ))
-                        .font(ui::font(11.0))
+                        .font(ui::font(10.5))
                         .color(p.text_faint),
                     );
                 });
@@ -1622,7 +1627,7 @@ fn content_tab(
             });
         });
         ui.set_opacity(1.0);
-        ui.add_space(6.0);
+        ui.add_space(8.0);
     }
 }
 
