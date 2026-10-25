@@ -1540,17 +1540,15 @@ fn content_tab(
                 let _ = paths::ensure_dir(&dir);
                 paths::reveal(&dir);
             }
-            // 每行放一个还是两个
-            let mut columns = app.versions_ui.content_columns.clamp(1, 2);
-            if ui::button(
-                ui,
-                &p,
-                ButtonOpts::ghost(if columns == 1 { "一行一个" } else { "一行两个" }),
-            )
-            .clicked()
-            {
-                columns = if columns == 1 { 2 } else { 1 };
-                app.versions_ui.content_columns = columns;
+            // 每行放一个还是两个（图标按钮，网格/列表）
+            let columns = app.versions_ui.content_columns.clamp(1, 2);
+            let (icon_name, tip) = if columns == 1 {
+                ("list", "当前一行一个，点击改成一行两个")
+            } else {
+                ("grid", "当前一行两个，点击改成一行一个")
+            };
+            if ui::icon_button(ui, &p, icon_name, tip).clicked() {
+                app.versions_ui.content_columns = if columns == 1 { 2 } else { 1 };
             }
             let download_label = format!("去下载{}", kind.label());
             if ui::button(ui, &p, ButtonOpts::secondary(&download_label).icon("download")).clicked() {
@@ -1698,24 +1696,41 @@ fn content_tab(
                                 .truncate(),
                             );
                         });
-                        // 右上角一个角标，点开外部浏览器看项目主页
+                        // 右上角的角标：打开所在目录、用外部浏览器看项目主页
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
-                        if modrinth_slug.is_some() || mcmod_url.is_some() {
-                            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                            // 打开所在目录
+                            let folder = ui::round_icon_button(ui, &p, "folder-open", 22.0);
+                            if folder.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                folder.clone().on_hover_ui(|ui| {
+                                    ui.label(
+                                        egui::RichText::new("打开所在目录")
+                                            .font(ui::font(11.0)),
+                                    );
+                                });
+                            }
+                            if folder.clicked() {
+                                paths::reveal(&item.path);
+                            }
+                            if modrinth_slug.is_some() || mcmod_url.is_some() {
                                 let badge = ui::round_icon_button(ui, &p, "external-link", 22.0);
                                 if badge.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     if let Some(slug) = &modrinth_slug {
                                         badge.clone().on_hover_ui(|ui| {
                                             ui.label(
-                                                egui::RichText::new(format!("在 Modrinth 打开 {}", slug))
-                                                    .font(ui::font(11.0)),
+                                                egui::RichText::new(format!(
+                                                    "在浏览器里打开 Modrinth：{}",
+                                                    slug
+                                                ))
+                                                .font(ui::font(11.0)),
                                             );
                                         });
                                     } else if mcmod_url.is_some() {
                                         badge.clone().on_hover_ui(|ui| {
                                             ui.label(
-                                                egui::RichText::new("在 MC 百科打开")
+                                                egui::RichText::new("在浏览器里打开 MC 百科")
                                                     .font(ui::font(11.0)),
                                             );
                                         });
@@ -1728,8 +1743,8 @@ fn content_tab(
                                         let _ = open::that(url);
                                     }
                                 }
-                            });
-                        }
+                            }
+                        });
                     });
                     ui.add_space(5.0);
                     // 底行：左边是文件位置，右边是相关网站与外链角标
@@ -1751,44 +1766,26 @@ fn content_tab(
                             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                             path_label.clone().on_hover_ui(|ui| {
                                 ui.label(
-                                    egui::RichText::new(item.path.display().to_string())
-                                        .font(ui::font(11.0)),
+                                    egui::RichText::new(format!(
+                                        "点击打开所在目录：{}",
+                                        item.path.display()
+                                    ))
+                                    .font(ui::font(11.0)),
                                 );
                             });
                         }
-                        // 相关网站：有词条就标出来，角标直接引到外部浏览器
+                        // 相关网站：标出有词条的站点，外链角标在卡片右上角
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
                         let site_names = site_labels(&modrinth_slug, &mcmod_url);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if modrinth_slug.is_some() || mcmod_url.is_some() {
-                                let badge = ui::round_icon_button(ui, &p, "external-link", 20.0);
-                                if badge.hovered() {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                    let tip = if modrinth_slug.is_some() {
-                                        "在浏览器里打开 Modrinth"
-                                    } else {
-                                        "在浏览器里打开 MC 百科"
-                                    };
-                                    badge.clone().on_hover_ui(|ui| {
-                                        ui.label(egui::RichText::new(tip).font(ui::font(11.0)));
-                                    });
-                                }
-                                if badge.clicked() {
-                                    if let Some(slug) = &modrinth_slug {
-                                        let _ = open::that(format!("https://modrinth.com/{}", slug));
-                                    } else if let Some(url) = &mcmod_url {
-                                        let _ = open::that(url);
-                                    }
-                                }
-                            }
-                            if !site_names.is_empty() {
+                        if !site_names.is_empty() {
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 ui.label(
                                     egui::RichText::new(site_names.join(" · "))
                                         .font(ui::font(10.5))
                                         .color(p.text_weak),
                                 );
-                            }
-                        });
+                            });
+                        }
                     });
                 });
                 // 堆叠：卡片下面露出几层纸边
