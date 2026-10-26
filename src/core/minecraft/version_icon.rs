@@ -135,6 +135,49 @@ pub fn custom_icon(version_dir: &Path) -> Option<PathBuf> {
     None
 }
 
+/// 给版本目录换一个自定义图标
+///
+/// 图片复制进版本目录，命名成 `icon.<扩展名>`，
+/// 与 HMCL 的约定一致，其它启动器也认。
+pub fn set_custom_icon(version_dir: &Path, source: &Path) -> anyhow::Result<()> {
+    anyhow::ensure!(source.is_file(), "选择的图标文件不存在");
+    crate::core::paths::ensure_dir(version_dir)?;
+    // 先把旧的清掉，免得两个图标同时存在
+    clear_custom_icon(version_dir)?;
+    let ext = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let ext = if ICON_EXTS.contains(&ext.as_str()) {
+        ext
+    } else {
+        "png".to_string()
+    };
+    let dest = version_dir.join(format!("icon.{ext}"));
+    std::fs::copy(source, &dest)?;
+    Ok(())
+}
+
+/// 清掉版本目录里的自定义图标，恢复成默认样子
+pub fn clear_custom_icon(version_dir: &Path) -> anyhow::Result<()> {
+    for ext in ICON_EXTS {
+        let path = version_dir.join(format!("icon.{ext}"));
+        if path.is_file() {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    let pcl = version_dir.join("PCL").join("Logo.png");
+    if pcl.is_file() {
+        let _ = std::fs::remove_file(&pcl);
+    }
+    let sjmcl = version_dir.join("icon");
+    if sjmcl.is_file() {
+        let _ = std::fs::remove_file(&sjmcl);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

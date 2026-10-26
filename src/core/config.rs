@@ -26,6 +26,24 @@ pub struct Config {
     pub version_overrides: HashMap<String, VersionOverride>,
     /// 每个版本的启动统计（启动次数、最后启动时间）
     pub version_stats: HashMap<String, VersionStat>,
+    /// 每个实例的自定义信息（名字、描述、分类、收藏）
+    pub instance_meta: HashMap<String, InstanceMeta>,
+}
+
+/// 实例的自定义信息
+///
+/// 键是实例 id，跟版本列表里显示的那个一致。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct InstanceMeta {
+    /// 自定义名字，留空用默认显示名
+    pub name: String,
+    /// 实例描述
+    pub description: String,
+    /// 分类标签
+    pub category: String,
+    /// 是否收藏
+    pub favorite: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -162,11 +180,19 @@ pub struct NewsSettings {
 #[serde(default)]
 pub struct VersionOverride {
     pub memory_mb: Option<u32>,
+    /// 内存分配方式：global（跟随全局）/ auto（自动）/ custom（自定义）
+    pub memory_mode: Option<String>,
+    /// 初始内存 -Xms，0 表示不设置
+    pub initial_memory_mb: Option<u32>,
     pub java_path: Option<PathBuf>,
     pub jvm_args: Option<String>,
+    /// 额外的游戏启动参数
+    pub extra_args: Option<String>,
     pub game_dir: Option<PathBuf>,
     /// 该版本是否启用版本隔离（独立游戏目录），None 表示跟随全局设置
     pub isolation: Option<bool>,
+    /// 游戏窗口标题，留空用全局设置
+    pub custom_title: Option<String>,
 }
 
 impl Default for Config {
@@ -184,6 +210,7 @@ impl Default for Config {
             java_cache: Vec::new(),
             version_overrides: HashMap::new(),
             version_stats: HashMap::new(),
+            instance_meta: HashMap::new(),
         }
     }
 }
@@ -415,10 +442,42 @@ impl Config {
 
     pub fn effective_memory(&self, mc_version: &str) -> u32 {
         let ov = self.version_override(mc_version);
-        match ov.memory_mb {
-            Some(mb) => mb,
-            None if self.launch.auto_memory => self.recommended_memory(),
-            None => self.java.memory_mb,
+        match ov.memory_mode.as_deref() {
+            // 自动：按物理内存推算
+            Some("auto") => self.recommended_memory(),
+            // 自定义：用实例自己填的，没填就退回全局的值
+            Some("custom") => ov.memory_mb.unwrap_or(self.java.memory_mb),
+            // 跟随全局
+            _ => match ov.memory_mb {
+                Some(mb) => mb,
+                None if self.launch.auto_memory => self.recommended_memory(),
+                None => self.java.memory_mb,
+            },
+        }
+    }
+
+    /// 该实例的初始内存 -Xms
+    pub fn effective_initial_memory(&self, mc_version: &str) -> u32 {
+        let ov = self.version_override(mc_version);
+        ov.initial_memory_mb
+            .unwrap_or(self.launch.initial_memory_mb)
+    }
+
+    /// 该实例额外的游戏启动参数
+    pub fn effective_extra_args(&self, mc_version: &str) -> String {
+        let ov = self.version_override(mc_version);
+        match ov.extra_args {
+            Some(args) if !args.trim().is_empty() => args,
+            _ => self.launch.extra_args.clone(),
+        }
+    }
+
+    /// 该实例的游戏窗口标题
+    pub fn effective_custom_title(&self, mc_version: &str) -> String {
+        let ov = self.version_override(mc_version);
+        match &ov.custom_title {
+            Some(title) if !title.trim().is_empty() => title.clone(),
+            _ => self.launch.custom_title.clone(),
         }
     }
 
@@ -477,6 +536,16 @@ impl Config {
 
     pub fn stat_of(&self, version: &str) -> VersionStat {
         self.version_stats.get(version).cloned().unwrap_or_default()
+    }
+
+    /// 某个实例的自定义信息
+    pub fn instance_meta(&self, id: &str) -> InstanceMeta {
+        self.instance_meta.get(id).cloned().unwrap_or_default()
+    }
+
+    /// 改某个实例的自定义信息
+    pub fn set_instance_meta(&mut self, id: &str, meta: InstanceMeta) {
+        self.instance_meta.insert(id.to_string(), meta);
     }
 
     pub fn set_game_dir(&mut self, dir: impl Into<PathBuf>) {
