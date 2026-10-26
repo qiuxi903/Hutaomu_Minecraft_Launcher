@@ -155,6 +155,33 @@ fn substitute(input: &str, vars: &[(String, String)]) -> String {
     out
 }
 
+/// 去掉当前 Java 不认识的参数
+///
+/// 1.16.5 这类老版本的 Forge 会在版本描述里带上 `--add-exports`、`--add-opens`，
+/// 那是给 Java 9+ 用的模块系统参数；Java 8 遇到它们会直接拒绝启动，
+/// 报一句 `Unrecognized option` 就没了。
+///
+/// 反过来 `--illegal-access` 是 Java 9 到 16 才有的，
+/// Java 17 之后被移除了，再带上同样起不来。
+fn filter_jvm_args(args: Vec<String>, java_major: u32) -> Vec<String> {
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+        let unsupported = if java_major < 9 {
+            arg.starts_with("--add-exports") || arg.starts_with("--add-opens")
+        } else if java_major >= 17 {
+            arg.starts_with("--illegal-access")
+        } else {
+            false
+        };
+        if unsupported {
+            log::info!("Java {java_major} 不支持参数 {arg}，已去掉");
+            continue;
+        }
+        out.push(arg);
+    }
+    out
+}
+
 pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
     let resolved = spec.version;
     let json = &resolved.json;
@@ -343,7 +370,7 @@ pub fn build_command(spec: &LaunchSpec<'_>) -> Result<Command> {
         jvm_args.push("-cp".into());
         jvm_args.push(classpath_str.clone());
     } else {
-        for arg in from_json {
+        for arg in filter_jvm_args(from_json, spec.java.major) {
             jvm_args.push(substitute(&arg, &vars));
         }
     }
@@ -662,6 +689,39 @@ pub fn ensure_authlib_injector(dl: &crate::core::download::Downloader) -> Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Java 8 遇到模块系统参数会直接拒绝启动，这些要去掉
+    #[test]
+    fn drops_module_args_on_java8() {
+        let args = vec![
+            "-XX:+IgnoreUnrecognizedVMOptions".to_string(),
+            "--add-exports=java.base/sun.security.util=ALL-UNNAMED".to_string(),
+            "--add-opens=java.base/java.util.jar=ALL-UNNAMED".to_string(),
+        ];
+        let kept = filter_jvm_args(args, 8);
+        assert_eq!(kept, vec!["-XX:+IgnoreUnrecognizedVMOptions".to_string()]);
+    }
+
+    /// Java 9 及以上认这些参数，得留着
+    #[test]
+    fn keeps_module_args_on_modern_java() {
+        let args = || {
+            vec![
+                "--add-exports=java.base/sun.security.util=ALL-UNNAMED".to_string(),
+                "--add-opens=java.base/java.util.jar=ALL-UNNAMED".to_string(),
+            ]
+        };
+        assert_eq!(filter_jvm_args(args(), 17).len(), 2);
+        assert_eq!(filter_jvm_args(args(), 21).len(), 2);
+    }
+
+    /// Java 17 之后 --illegal-access 被移除了
+    #[test]
+    fn drops_illegal_access_on_java17() {
+        let args = || vec!["--illegal-access=warn".to_string()];
+        assert!(filter_jvm_args(args(), 17).is_empty());
+        assert_eq!(filter_jvm_args(args(), 11).len(), 1);
+    }
 
     /// 第一次启动给默认中文，其它设置不能被弄丢
     #[test]
