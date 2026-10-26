@@ -89,7 +89,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 29;
+pub const SHOT_SCENES: usize = 31;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -303,6 +303,22 @@ impl App {
                     views::versions::open_detail(self, &id);
                 }
             }
+            29 => {
+                // 更换加载器弹窗
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    views::versions::open_loader_modal_for(self, &id);
+                }
+            }
+            30 => {
+                // 更换光影加载器弹窗
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.shader_modal = Some(id);
+                }
+            }
             _ => {
                 // 提示条位置与动效检查
                 self.page = Page::Home;
@@ -430,6 +446,17 @@ pub enum CoreEvent {
         kind: LoaderKind,
         mc: String,
         result: Result<Vec<LoaderVersion>, String>,
+    },
+    /// 版本详情页「更换加载器」弹窗里的版本列表
+    DetailLoaderVersions {
+        kind: LoaderKind,
+        mc: String,
+        result: Result<Vec<LoaderVersion>, String>,
+    },
+    /// 装好加载器后切到新的变体
+    LoaderSwitched {
+        version_id: String,
+        instance_id: String,
     },
     DeviceCode(Result<crate::core::auth::microsoft::DeviceCode, String>),
     MsPoll(Result<crate::core::auth::microsoft::PollOutcome, String>),
@@ -1679,6 +1706,20 @@ impl App {
                 }
                 CoreEvent::InstallLoaderVersions { kind, mc, result } => {
                     self.download.on_install_loader_versions(kind, &mc, result);
+                }
+                CoreEvent::DetailLoaderVersions { kind, mc, result } => {
+                    self.versions_ui.on_loader_versions(kind, &mc, result);
+                }
+                CoreEvent::LoaderSwitched {
+                    version_id,
+                    instance_id,
+                } => {
+                    // 换完加载器直接切过去，省得用户还要自己再选一次
+                    self.cfg.selected_version = Some(version_id.clone());
+                    self.save_config();
+                    self.refresh_local_versions();
+                    self.versions_ui.detail = Some(instance_id.clone());
+                    self.success(format!("已切换到 {version_id}"));
                 }
                 CoreEvent::DeviceCode(result) => {
                     self.accounts_ui.on_device_code(result);
@@ -3017,6 +3058,8 @@ fn shot_scene_label(scene: usize) -> &'static str {
         26 => "版本管理-存档",
         27 => "下载-整合包详情",
         28 => "版本管理-整合包",
+        29 => "版本管理-更换加载器",
+        30 => "版本管理-光影加载器",
         _ => "账号-皮肤站",
     }
 }

@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::app::{App, CoreEvent, Page};
+use crate::core::minecraft::loaders::{self, LoaderKind, LoaderVersion};
+use crate::core::minecraft::shader_loader::{self, ShaderLoader};
 use crate::core::minecraft::version;
 use crate::core::paths;
 use crate::icons;
@@ -39,6 +41,21 @@ pub struct VersionsState {
     pub detail_dir: String,
     /// 该版本是否启用版本隔离
     pub detail_isolation: bool,
+    /// 「更换加载器」弹窗的目标实例
+    pub loader_modal: Option<String>,
+    /// 弹窗里选中的加载器类型
+    pub loader_kind: Option<crate::core::minecraft::loaders::LoaderKind>,
+    /// 弹窗里加载器版本是否自动选择
+    pub loader_auto: bool,
+    /// 手动选择时可用的加载器版本
+    pub loader_versions: Vec<crate::core::minecraft::loaders::LoaderVersion>,
+    pub loader_version_index: usize,
+    pub loader_loading: bool,
+    pub loader_error: Option<String>,
+    /// 上面这份版本列表对应的游戏版本
+    pub loader_mc: String,
+    /// 「更换光影加载器」弹窗的目标实例
+    pub shader_modal: Option<String>,
     pub confirm_delete: Option<String>,
     pub rename_target: Option<String>,
     pub rename_value: String,
@@ -67,12 +84,50 @@ impl Default for VersionsState {
             detail_jvm: String::new(),
             detail_dir: String::new(),
             detail_isolation: true,
+            loader_modal: None,
+            loader_kind: None,
+            loader_auto: true,
+            loader_versions: Vec::new(),
+            loader_version_index: 0,
+            loader_loading: false,
+            loader_error: None,
+            loader_mc: String::new(),
+            shader_modal: None,
             confirm_delete: None,
             rename_target: None,
             rename_value: String::new(),
             screenshots: HashMap::new(),
             loaded_for: None,
             content_cache: HashMap::new(),
+        }
+    }
+}
+
+impl VersionsState {
+    /// 收到「更换加载器」弹窗的版本列表
+    ///
+    /// 游戏版本或加载器类型变了就丢弃过期结果，
+    /// 不然切换加载器后看到的还是上一个的版本。
+    pub fn on_loader_versions(
+        &mut self,
+        kind: crate::core::minecraft::loaders::LoaderKind,
+        mc: &str,
+        result: Result<Vec<crate::core::minecraft::loaders::LoaderVersion>, String>,
+    ) {
+        if self.loader_mc != mc || self.loader_kind != Some(kind) {
+            return;
+        }
+        self.loader_loading = false;
+        match result {
+            Ok(list) => {
+                self.loader_versions = list;
+                self.loader_version_index = 0;
+                self.loader_error = None;
+            }
+            Err(err) => {
+                self.loader_versions.clear();
+                self.loader_error = Some(err);
+            }
         }
     }
 }
@@ -116,6 +171,8 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
 
     delete_modal(app, ui);
     rename_modal(app, ui);
+    loader_modal(app, ui);
+    shader_modal(app, ui);
 }
 
 // ------------------------------------------------------------------ 一级：版本列表
@@ -583,16 +640,18 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                     }
                 });
                 ui.add_space(3.0);
-                let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+                // 路径不放这里，概览里也不摆，要看目录点「打开目录」
+                let mut meta = format!("{}", paths::format_size(inst.size()));
+                if inst.variant_count() > 1 {
+                    meta.push_str(&format!(" · {} 个变体", inst.variant_count()));
+                }
+                if let Some(loader_version) = &active.loader_version {
+                    meta.push_str(&format!(" · {loader_version}"));
+                }
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{} · {} 个变体 · 游戏目录 {}",
-                        paths::format_size(inst.size()),
-                        inst.variant_count(),
-                        game_dir.display()
-                    ))
-                    .font(ui::font(11.5))
-                    .color(p.text_faint),
+                    egui::RichText::new(meta)
+                        .font(ui::font(11.5))
+                        .color(p.text_faint),
                 );
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -624,41 +683,6 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
         if let Some(id) = reinstall {
             reinstall_modpack(app, &id);
         }
-        ui.add_space(12.0);
-
-        // ---------- 加载器变体切换 ----------
-        if inst.variant_count() > 1 {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("加载器版本")
-                        .font(ui::font(13.0))
-                        .color(p.text_weak),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    let labels: Vec<String> =
-                        inst.variants.iter().map(|v| v.variant_label()).collect();
-                    let current = labels
-                        .iter()
-                        .position(|l| *l == active.variant_label())
-                        .unwrap_or(0);
-                    let current_label = labels[current].clone();
-                    if let Some(index) =
-                        ui::dropdown(ui, &p, "variant", &current_label, &labels, 260.0)
-                    {
-                        let picked = inst.variants[index].id.clone();
-                        app.cfg.selected_version = Some(picked);
-                        app.save_config();
-                        app.refresh_local_versions();
-                    }
-                });
-            });
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("切换加载器版本会同时改用该版本启动，模组、光影与存档仍共用这一份。")
-                    .font(ui::font(11.5))
-                    .color(p.text_faint),
-            );
-        }
     });
     ui.add_space(12.0);
 
@@ -688,7 +712,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             let width = ui.available_width();
             ui.set_width(width);
             // 换子标签时内容淡入，不是一下子跳过去
-            let section = app.versions_ui.section.clone();
+            let section = app.versions_ui.section;
             let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("section", &section)), 0.0);
             ui.set_opacity(appear);
             match app.versions_ui.section {
@@ -721,14 +745,11 @@ fn version_type_label(version_type: &str) -> &'static str {
     }
 }
 
-fn count_files(dir: &Path) -> usize {
-    walkdir::WalkDir::new(dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-        .count()
-}
-
+/// 概览：这个实例现在是什么样
+///
+/// 这里只写看得懂的事：用的哪个加载器、装了哪个光影加载器、
+/// 占多大地方、启动过几次。版本目录、游戏目录这些路径属于内部信息，
+/// 不往页面上摆，需要的时候点「打开目录」自己看。
 fn overview_tab(
     app: &mut App,
     ui: &mut Ui,
@@ -736,74 +757,201 @@ fn overview_tab(
     active: &crate::core::minecraft::LocalVersion,
 ) {
     let p = app.palette;
-    let dir = version::version_dir(&app.cfg.game_dir, &active.id);
-    let json_path = version::version_json_path(&app.cfg.game_dir, &active.id);
-    let inherits = version::read_local_json(&app.cfg.game_dir, &active.id)
-        .ok()
-        .and_then(|json| json.inherits_from)
-        .unwrap_or_default();
     let stat = app.cfg.stat_of(&active.id);
-    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
-
     // 整合包实例的 id 是自己的名字，Minecraft 版本要看标记文件里记的
     let mc_version = active
         .modpack
         .as_ref()
         .map(|m| m.mc_version.clone())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| inst.mc_version.clone());
-    widgets::key_value(ui, &p, "Minecraft 版本", &mc_version);
-    ui.add_space(6.0);
-    if let Some(info) = &active.modpack {
-        widgets::key_value(ui, &p, "整合包", &info.name);
-        ui.add_space(6.0);
-    }
-    widgets::key_value(
-        ui,
-        &p,
-        "加载器",
-        active.loader.as_deref().unwrap_or("原版"),
-    );
-    ui.add_space(6.0);
-    if let Some(version) = &active.loader_version {
-        widgets::key_value(ui, &p, "加载器版本", version);
-        ui.add_space(6.0);
-    }
-    widgets::key_value(ui, &p, "当前变体", &active.id);
-    ui.add_space(6.0);
-    if !inherits.is_empty() {
-        widgets::key_value(ui, &p, "继承自", &inherits);
-        ui.add_space(6.0);
-    }
-    widgets::key_value(ui, &p, "版本类型", version_type_label(&active.version_type));
-    ui.add_space(6.0);
-    widgets::key_value(ui, &p, "启动次数", &format!("{} 次", stat.launches));
-    ui.add_space(6.0);
-    if stat.last_launch > 0 {
-        let dt = chrono::DateTime::from_timestamp(stat.last_launch, 0)
-            .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_default();
-        widgets::key_value(ui, &p, "最后启动", &dt);
-        ui.add_space(6.0);
-    }
-    widgets::key_value(ui, &p, "版本目录", &dir.display().to_string());
-    ui.add_space(6.0);
-    widgets::key_value(ui, &p, "游戏目录", &game_dir.display().to_string());
-    ui.add_space(6.0);
-    widgets::key_value(ui, &p, "占用空间", &paths::format_size(inst.size()));
+        .unwrap_or_else(|| inst.real_mc_version());
+    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+    let instance_id = inst.mc_version.clone();
+
+    // ---------------- 加载器 ----------------
+    ui::card(ui, &p, |ui| {
+        // 卡片宽度统一，否则短内容的卡片会缩成一小块
+        ui.set_width(ui.available_width());
+        widgets::section_title(ui, &p, "加载器");
+        ui.label(
+            egui::RichText::new("模组要靠加载器才能用。换了加载器，模组、光影和存档还是同一份。")
+                .font(ui::font(12.0))
+                .color(p.text_faint),
+        );
+        ui.add_space(14.0);
+
+        if inst.variants.len() > 1 {
+            let labels: Vec<String> = inst.variants.iter().map(|v| v.variant_label()).collect();
+            let current = labels
+                .iter()
+                .position(|l| *l == active.variant_label())
+                .unwrap_or(0);
+            let current_label = labels[current].clone();
+            widgets::setting_row(
+                ui,
+                &p,
+                "当前加载器",
+                "切换之后就用这个加载器启动游戏",
+                |ui| {
+                    if let Some(index) =
+                        ui::dropdown(ui, &p, "detail_variant", &current_label, &labels, 230.0)
+                    {
+                        let picked = inst.variants[index].id.clone();
+                        app.cfg.selected_version = Some(picked);
+                        app.save_config();
+                        app.refresh_local_versions();
+                    }
+                },
+            );
+        } else {
+            widgets::setting_row(ui, &p, "当前加载器", "还没有别的加载器", |ui| {
+                ui.label(
+                    egui::RichText::new(active.variant_label())
+                        .font(ui::font(13.5))
+                        .color(p.accent)
+                        .strong(),
+                );
+            });
+        }
+
+        if inst.is_modpack {
+            // 整合包的加载器由整合包自己决定，换了也对不上模组
+            widgets::setting_row(ui, &p, "更换加载器", "整合包的加载器由整合包决定", |ui| {
+                ui.label(
+                    egui::RichText::new("整合包自带")
+                        .font(ui::font(12.5))
+                        .color(p.text_faint),
+                );
+            });
+        } else {
+            widgets::setting_row(
+                ui,
+                &p,
+                "更换加载器",
+                "给这个版本再装一个加载器，两边共用同一份模组与存档",
+                |ui| {
+                    if ui::button(ui, &p, ButtonOpts::secondary("更换加载器").icon("refresh"))
+                        .clicked()
+                    {
+                        open_loader_modal(app, &instance_id, &mc_version);
+                    }
+                },
+            );
+        }
+    });
+    ui.add_space(12.0);
+
+    // ---------------- 光影 ----------------
+    let shader = shader_loader::detect(&game_dir);
+    let loader_kind = active
+        .loader
+        .as_deref()
+        .and_then(|l| LoaderKind::from_id(&l.to_lowercase()));
+    ui::card(ui, &p, |ui| {
+        ui.set_width(ui.available_width());
+        widgets::section_title(ui, &p, "光影");
+        match &shader {
+            Some(installed) => {
+                let name = if installed.version.is_empty() {
+                    installed.kind.label().to_string()
+                } else {
+                    format!("{} {}", installed.kind.label(), installed.version)
+                };
+                widgets::setting_row(ui, &p, "光影加载器", "光影包要靠它才能加载", |ui| {
+                    ui.label(
+                        egui::RichText::new(&name)
+                            .font(ui::font(13.5))
+                            .color(p.accent)
+                            .strong(),
+                    );
+                });
+                widgets::setting_row(
+                    ui,
+                    &p,
+                    "更换光影加载器",
+                    "装好之后就能在左边的「光影」里挑光影包了",
+                    |ui| {
+                        if ui::button(ui, &p, ButtonOpts::secondary("更换").icon("refresh")).clicked()
+                        {
+                            app.versions_ui.shader_modal = Some(instance_id.clone());
+                        }
+                        if ui::button(ui, &p, ButtonOpts::danger("卸载").icon("trash")).clicked() {
+                            let file = installed.file.clone();
+                            uninstall_shader(app, &file);
+                        }
+                    },
+                );
+            }
+            None => {
+                if loader_kind.is_none() {
+                    ui.label(
+                        egui::RichText::new("原版不带光影支持，先装一个加载器再来装光影加载器。")
+                            .font(ui::font(12.0))
+                            .color(p.text_faint),
+                    );
+                } else {
+                    widgets::setting_row(ui, &p, "光影加载器", "当前还没有安装", |ui| {
+                        ui.label(
+                            egui::RichText::new("未安装")
+                                .font(ui::font(13.5))
+                                .color(p.text_faint),
+                        );
+                    });
+                    widgets::setting_row(
+                        ui,
+                        &p,
+                        "安装光影加载器",
+                        "装好之后就能在左边的「光影」里挑光影包了",
+                        |ui| {
+                            if ui::button(
+                                ui,
+                                &p,
+                                ButtonOpts::secondary("安装").icon("download-arrow"),
+                            )
+                            .clicked()
+                            {
+                                app.versions_ui.shader_modal = Some(instance_id.clone());
+                            }
+                        },
+                    );
+                }
+            }
+        }
+    });
+    ui.add_space(12.0);
+
+    // ---------------- 这个实例 ----------------
+    ui::card(ui, &p, |ui| {
+        ui.set_width(ui.available_width());
+        widgets::section_title(ui, &p, "这个实例");
+        widgets::key_value(ui, &p, "Minecraft 版本", &mc_version);
+        ui.add_space(8.0);
+        widgets::key_value(
+            ui,
+            &p,
+            "版本类型",
+            version_type_label(&active.version_type),
+        );
+        ui.add_space(8.0);
+        if let Some(info) = &active.modpack {
+            widgets::key_value(ui, &p, "整合包", &info.name);
+            ui.add_space(8.0);
+        }
+        widgets::key_value(ui, &p, "占用空间", &paths::format_size(inst.size()));
+        ui.add_space(8.0);
+        widgets::key_value(ui, &p, "启动次数", &format!("{} 次", stat.launches));
+        ui.add_space(8.0);
+        if stat.last_launch > 0 {
+            let dt = chrono::DateTime::from_timestamp(stat.last_launch, 0)
+                .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
+                .unwrap_or_default();
+            widgets::key_value(ui, &p, "最后启动", &dt);
+            ui.add_space(8.0);
+        }
+    });
     ui.add_space(14.0);
 
     ui.horizontal_wrapped(|ui| {
-        if ui::button(ui, &p, ButtonOpts::secondary("打开版本目录").icon("folder")).clicked() {
-            paths::reveal(&dir);
-        }
-        if ui::button(ui, &p, ButtonOpts::secondary("打开游戏目录").icon("folder-open")).clicked() {
-            let _ = paths::ensure_dir(&game_dir);
-            paths::reveal(&game_dir);
-        }
-        if ui::button(ui, &p, ButtonOpts::secondary("版本 JSON").icon("code")).clicked() {
-            paths::reveal(&json_path);
-        }
         if ui::button(ui, &p, ButtonOpts::secondary("重命名").icon("edit")).clicked() {
             app.versions_ui.rename_target = Some(active.id.clone());
             app.versions_ui.rename_value = active.id.clone();
@@ -811,10 +959,463 @@ fn overview_tab(
         if ui::button(ui, &p, ButtonOpts::secondary("复制版本").icon("copy")).clicked() {
             copy_version(app, &active.id);
         }
+        if ui::button(ui, &p, ButtonOpts::secondary("打开版本目录").icon("folder")).clicked() {
+            let dir = version::version_dir(&app.cfg.game_dir, &active.id);
+            paths::reveal(&dir);
+        }
+        if ui::button(ui, &p, ButtonOpts::secondary("版本 JSON").icon("code")).clicked() {
+            let path = version::version_json_path(&app.cfg.game_dir, &active.id);
+            paths::reveal(&path);
+        }
         if ui::button(ui, &p, ButtonOpts::danger("删除版本").icon("trash")).clicked() {
             app.versions_ui.confirm_delete = Some(active.id.clone());
         }
     });
+}
+
+// ------------------------------------------------------------------ 更换加载器
+
+/// 打开「更换加载器」弹窗
+fn open_loader_modal(app: &mut App, instance_id: &str, mc_version: &str) {    app.versions_ui.loader_modal = Some(instance_id.to_string());
+    // 默认挑一个这个版本支持的加载器
+    let kinds = LoaderKind::all();
+    app.versions_ui.loader_kind = kinds
+        .iter()
+        .copied()
+        .find(|k| loaders::supports(*k, mc_version))
+        .or(Some(kinds[0]));
+    app.versions_ui.loader_auto = true;
+    app.versions_ui.loader_versions.clear();
+    app.versions_ui.loader_version_index = 0;
+    app.versions_ui.loader_error = None;
+    app.versions_ui.loader_mc.clear();
+    app.versions_ui.loader_loading = false;
+}
+
+/// 为某个实例打开「更换加载器」弹窗
+pub(crate) fn open_loader_modal_for(app: &mut App, instance_id: &str) {
+    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+        return;
+    };
+    open_loader_modal(app, instance_id, &inst.real_mc_version());
+}
+
+/// 「更换加载器」弹窗
+///
+/// 给已经装好的版本再补一个加载器变体，装完自动切过去。
+fn loader_modal(app: &mut App, ui: &mut Ui) {
+    let Some(instance_id) = app.versions_ui.loader_modal.clone() else {
+        return;
+    };
+    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+        app.versions_ui.loader_modal = None;
+        return;
+    };
+    let mc = inst.real_mc_version();
+    let p = app.palette;
+    let mut open = true;
+    // 用 Cell 记下用户点了哪个按钮，免得闭包里再借用 app
+    let action: std::cell::Cell<Option<(LoaderKind, Option<String>)>> = std::cell::Cell::new(None);
+    let cancel = std::cell::Cell::new(false);
+    let ctx = ui.ctx().clone();
+    let kinds = LoaderKind::all();
+    let labels: Vec<&str> = kinds.iter().map(|k| k.label()).collect();
+    let title = format!("更换加载器 · {mc}");
+
+    widgets::modal(&ctx, &p, &mut open, &title, 500.0, |ui| {
+        ui.label(
+            egui::RichText::new("新加载器会装成这个版本的一个变体，模组、存档和光影跟现在这份共用。")
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        ui.add_space(16.0);
+        ui.label(
+            egui::RichText::new("加载器")
+                .font(ui::font(13.0))
+                .color(p.text_weak),
+        );
+        ui.add_space(6.0);
+        let kind = app.versions_ui.loader_kind.unwrap_or(kinds[0]);
+        let mut index = kinds.iter().position(|k| *k == kind).unwrap_or(0);
+        if ui::segmented(ui, &p, "detail_loader_kind", &mut index, &labels).clicked() {
+            app.versions_ui.loader_kind = Some(kinds[index]);
+            app.versions_ui.loader_versions.clear();
+            app.versions_ui.loader_version_index = 0;
+            app.versions_ui.loader_error = None;
+            app.versions_ui.loader_mc.clear();
+            app.versions_ui.loader_loading = false;
+        }
+        ui.add_space(10.0);
+
+        let kind = app.versions_ui.loader_kind.unwrap_or(kinds[0]);
+        ui.label(
+            egui::RichText::new(kind.description())
+                .font(ui::font(12.0))
+                .color(p.text_faint),
+        );
+        ui.add_space(12.0);
+        let supported = loaders::supports(kind, &mc);
+        if !supported {
+            ui.label(
+                egui::RichText::new(format!("{} 不支持 Minecraft {mc}", kind.label()))
+                    .font(ui::font(12.0))
+                    .color(p.warning),
+            );
+            ui.add_space(8.0);
+        }
+
+        ui.label(
+            egui::RichText::new("加载器版本")
+                .font(ui::font(13.0))
+                .color(p.text_weak),
+        );
+        ui.add_space(6.0);
+        let modes = ["自动选择", "手动选择"];
+        let mut mode = if app.versions_ui.loader_auto { 0 } else { 1 };
+        if ui::segmented(ui, &p, "detail_loader_mode", &mut mode, &modes).clicked() {
+            app.versions_ui.loader_auto = mode == 0;
+            if mode == 1 {
+                load_detail_loader_versions(app, &mc, kind);
+            } else {
+                app.versions_ui.loader_versions.clear();
+                app.versions_ui.loader_error = None;
+            }
+        }
+        ui.add_space(8.0);
+        let mut picked_version = None;
+        if app.versions_ui.loader_auto {
+            ui.label(
+                egui::RichText::new("自动挑一个推荐的稳定版")
+                    .font(ui::font(12.0))
+                    .color(p.text_faint),
+            );
+        } else {
+            picked_version = loader_version_picker(app, ui, &mc, kind);
+        }
+
+        ui.add_space(18.0);
+        ui.horizontal(|ui| {
+            if ui::button(
+                ui,
+                &p,
+                ButtonOpts::primary("安装并切换")
+                    .icon("download-arrow")
+                    .enabled(supported),
+            )
+            .clicked()
+            {
+                action.set(Some((kind, picked_version)));
+            }
+            if ui::button(ui, &p, ButtonOpts::secondary("取消")).clicked() {
+                cancel.set(true);
+            }
+        });
+    });
+
+    if cancel.get() {
+        open = false;
+    }
+    if !open {
+        app.versions_ui.loader_modal = None;
+    }
+    if let Some((kind, version)) = action.take() {
+        app.versions_ui.loader_modal = None;
+        install_loader_variant(app, &instance_id, kind, version);
+    }
+}
+
+/// 加载器版本下拉框
+fn loader_version_picker(
+    app: &mut App,
+    ui: &mut Ui,
+    mc: &str,
+    kind: LoaderKind,
+) -> Option<String> {
+    if app.versions_ui.loader_loading {
+        ui.horizontal(|ui| {
+            ui::spinner(ui, &app.palette, 14.0);
+            ui.label(
+                egui::RichText::new("正在获取加载器版本 ...")
+                    .font(ui::font(12.0))
+                    .color(app.palette.text_weak),
+            );
+        });
+        return None;
+    }
+    if let Some(err) = app.versions_ui.loader_error.clone() {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(&err)
+                    .font(ui::font(12.0))
+                    .color(app.palette.danger),
+            );
+            if ui::ghost(ui, &app.palette, "重试").clicked() {
+                load_detail_loader_versions(app, mc, kind);
+            }
+        });
+        return None;
+    }
+    if app.versions_ui.loader_versions.is_empty() {
+        load_detail_loader_versions(app, mc, kind);
+        ui.label(
+            egui::RichText::new("正在获取加载器版本 ...")
+                .font(ui::font(12.0))
+                .color(app.palette.text_faint),
+        );
+        return None;
+    }
+    let labels: Vec<String> = app
+        .versions_ui
+        .loader_versions
+        .iter()
+        .map(|v| {
+            if v.stable {
+                format!("{}（推荐）", v.version)
+            } else {
+                v.version.clone()
+            }
+        })
+        .collect();
+    let current = labels
+        .get(app.versions_ui.loader_version_index)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(index) = ui::dropdown(
+        ui,
+        &app.palette,
+        "detail_loader_version",
+        &current,
+        &labels,
+        320.0,
+    ) {
+        app.versions_ui.loader_version_index = index;
+    }
+    app.versions_ui
+        .loader_versions
+        .get(app.versions_ui.loader_version_index)
+        .map(|v| v.version.clone())
+}
+
+/// 后台获取加载器版本列表
+fn load_detail_loader_versions(app: &mut App, mc: &str, kind: LoaderKind) {
+    if app.versions_ui.loader_loading {
+        return;
+    }
+    if app.versions_ui.loader_mc == mc && !app.versions_ui.loader_versions.is_empty() {
+        return;
+    }
+    app.versions_ui.loader_loading = true;
+    app.versions_ui.loader_error = None;
+    app.versions_ui.loader_mc = mc.to_string();
+    app.versions_ui.loader_kind = Some(kind);
+    let source = app.cfg.download.source;
+    let timeout = app.cfg.download.timeout_secs;
+    let mc = mc.to_string();
+    app.spawn(format!("获取 {} 版本列表", kind.label()), false, move |job| {
+        let result = (|| -> anyhow::Result<Vec<LoaderVersion>> {
+            let dl = crate::core::download::Downloader::new(source, timeout)?;
+            loaders::list_versions(&dl, kind, &mc)
+        })();
+        job.send(CoreEvent::DetailLoaderVersions {
+            kind,
+            mc: mc.clone(),
+            result: result.map_err(|e| format!("{e}")),
+        });
+        job.done(true, "");
+    });
+}
+
+/// 给实例装一个加载器变体，装完切过去
+fn install_loader_variant(
+    app: &mut App,
+    instance_id: &str,
+    kind: LoaderKind,
+    version: Option<String>,
+) {
+    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+        app.error("找不到这个实例");
+        return;
+    };
+    let mc = inst.real_mc_version();
+    let game_dir = app.cfg.game_dir.clone();
+    let java = app.java_for(&mc);
+    let opts = app.cfg.download.install_options();
+    let policy = app.cfg.download.loader_policy();
+    let instance_id = instance_id.to_string();
+    app.spawn_download(format!("安装 {} 加载器", kind.label()), move |dl, progress, job| {
+        let version = match version {
+            Some(v) => v,
+            None => {
+                let list = loaders::list_versions(&dl, kind, &mc)?;
+                loaders::pick_version(&list, policy).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "没有找到适用于 Minecraft {} 的 {} 加载器",
+                        mc,
+                        kind.label()
+                    )
+                })?
+            }
+        };
+        let id = loaders::install_variant(
+            &dl,
+            kind,
+            &mc,
+            &version,
+            &game_dir,
+            java.as_ref(),
+            &progress,
+            opts,
+        )?;
+        job.send(CoreEvent::LoaderSwitched {
+            version_id: id.clone(),
+            instance_id: instance_id.clone(),
+        });
+        Ok(format!("{mc} 的 {} {version} 已装好", kind.label()))
+    });
+}
+
+// ------------------------------------------------------------------ 更换光影加载器
+
+/// 「更换光影加载器」弹窗
+fn shader_modal(app: &mut App, ui: &mut Ui) {
+    let Some(instance_id) = app.versions_ui.shader_modal.clone() else {
+        return;
+    };
+    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+        app.versions_ui.shader_modal = None;
+        return;
+    };
+    let Some(active) = inst.active_version().cloned() else {
+        app.versions_ui.shader_modal = None;
+        return;
+    };
+    let loader = active
+        .loader
+        .as_deref()
+        .and_then(|l| LoaderKind::from_id(&l.to_lowercase()));
+    let p = app.palette;
+    let mut open = true;
+    let action: std::cell::Cell<Option<ShaderLoader>> = std::cell::Cell::new(None);
+    let cancel = std::cell::Cell::new(false);
+    let ctx = ui.ctx().clone();
+    let game_dir = app.cfg.effective_game_dir(&instance_id);
+    let current = shader_loader::detect(&game_dir);
+    let options: Vec<ShaderLoader> = ShaderLoader::all()
+        .into_iter()
+        .filter(|s| s.works_with(loader))
+        .collect();
+    let title = format!("光影加载器 · {}", inst.display_name);
+
+    widgets::modal(&ctx, &p, &mut open, &title, 520.0, |ui| {
+        ui.label(
+            egui::RichText::new("光影包要靠光影加载器才能用。装好之后就能在左边的「光影」里挑光影包了。")
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        ui.add_space(16.0);
+        if options.is_empty() {
+            ui.label(
+                egui::RichText::new("当前加载器没有可用的光影加载器，先换一个加载器再来。")
+                    .font(ui::font(12.5))
+                    .color(p.warning),
+            );
+            ui.add_space(16.0);
+        }
+        for kind in options {
+            let installed = current.as_ref().filter(|c| c.kind == kind);
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new(kind.label())
+                            .font(ui::font(14.0))
+                            .color(p.text)
+                            .strong(),
+                    );
+                    ui.label(
+                        egui::RichText::new(kind.description())
+                            .font(ui::font(11.5))
+                            .color(p.text_faint),
+                    );
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if installed.is_some() {
+                        ui.label(
+                            egui::RichText::new("已安装")
+                                .font(ui::font(12.0))
+                                .color(p.accent),
+                        );
+                    } else if ui::button(ui, &p, ButtonOpts::secondary("安装")).clicked() {
+                        action.set(Some(kind));
+                    }
+                });
+            });
+            ui.add_space(14.0);
+        }
+        ui.horizontal(|ui| {
+            if let Some(cur) = &current {
+                if ui::button(ui, &p, ButtonOpts::danger("卸载当前光影加载器").icon("trash"))
+                    .clicked()
+                {
+                    let file = cur.file.clone();
+                    uninstall_shader(app, &file);
+                }
+            }
+            if ui::button(ui, &p, ButtonOpts::secondary("关闭")).clicked() {
+                cancel.set(true);
+            }
+        });
+    });
+
+    if cancel.get() {
+        open = false;
+    }
+    if !open {
+        app.versions_ui.shader_modal = None;
+    }
+    if let Some(kind) = action.take() {
+        install_shader_loader(app, &instance_id, kind);
+    }
+}
+
+/// 装一个光影加载器
+fn install_shader_loader(app: &mut App, instance_id: &str, kind: ShaderLoader) {
+    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+        app.error("找不到这个实例");
+        return;
+    };
+    let Some(active) = inst.active_version().cloned() else {
+        return;
+    };
+    let Some(loader) = active
+        .loader
+        .as_deref()
+        .and_then(|l| LoaderKind::from_id(&l.to_lowercase()))
+    else {
+        app.error("原版不带光影支持，先装一个加载器");
+        return;
+    };
+    let mc = inst.real_mc_version();
+    let game_dir = app.cfg.effective_game_dir(instance_id);
+    app.spawn_download(format!("安装 {}", kind.label()), move |dl, progress, _job| {
+        let (path, extra) = shader_loader::install(&dl, kind, &mc, loader, &game_dir, &progress)?;
+        Ok(match extra {
+            0 => format!("{} 已安装到 {}", kind.label(), path.display()),
+            _ => format!(
+                "{} 已安装到 {}（连同 {} 个前置依赖）",
+                kind.label(),
+                path.display(),
+                extra
+            ),
+        })
+    });
+}
+
+/// 卸掉光影加载器
+fn uninstall_shader(app: &mut App, file: &Path) {
+    match std::fs::remove_file(file) {
+        Ok(()) => app.success("光影加载器已卸载"),
+        Err(err) => app.error(format!("卸载失败：{err}")),
+    }
 }
 
 fn load_detail(app: &mut App, mc_version: &str) {
