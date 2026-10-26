@@ -4,6 +4,7 @@ use crate::app::{App, CoreEvent};
 use crate::core::content::mcmod;
 use crate::core::content::modrinth::{self, ContentKind, Project, SearchHit, SearchResponse, Version};
 use crate::core::content::translate;
+use crate::core::content::{self, ContentSource};
 use crate::core::minecraft::bundle;
 use crate::core::minecraft::loaders::{self, LoaderKind, LoaderPolicy, LoaderVersion};
 use crate::core::minecraft::manifest::VersionEntry;
@@ -45,6 +46,10 @@ pub struct DownloadState {
 
     /// 已自动加载过的内容标签页，用于切回时避免重复搜索
     pub content_loaded_tab: Option<usize>,
+    /// 当前浏览的内容平台
+    pub content_source: ContentSource,
+    /// 已经加载过的平台，换平台时要把结果清掉重搜
+    pub content_loaded_source: Option<ContentSource>,
 
     /// 详情页选择的安装实例（本地版本 id），默认当前实例
     pub content_install_instance: Option<String>,
@@ -94,6 +99,8 @@ impl Default for DownloadState {
             install_loader_mc: String::new(),
             install_loader_kind: None,
             content_loaded_tab: None,
+            content_source: ContentSource::default(),
+            content_loaded_source: None,
             content_install_instance: None,
             content_loader_filter: String::new(),
             content_game_filter: String::new(),
@@ -243,8 +250,13 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
 
     // 切到内容标签时自动加载，不用再点搜索按钮
     let tab = app.download.tab;
-    if (2..=5).contains(&tab) && app.download.content_loaded_tab != Some(tab) {
+    let source = app.download.content_source;
+    if (2..=5).contains(&tab)
+        && (app.download.content_loaded_tab != Some(tab)
+            || app.download.content_loaded_source != Some(source))
+    {
         app.download.content_loaded_tab = Some(tab);
+        app.download.content_loaded_source = Some(source);
         run_search(app);
     }
 
@@ -985,6 +997,69 @@ fn install_loader(app: &mut App, kind: LoaderKind, mc: String, loader_version: O
 
 // ------------------------------------------------------------------ 内容（Mod / 光影 / 资源包 / 整合包）
 
+/// 内容平台切换
+///
+/// Modrinth 不用 key，CurseForge 要 key。
+/// 换平台会清掉当前结果重新搜一遍。
+fn platform_switcher(app: &mut App, ui: &mut Ui) {
+    let p = app.palette;
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new("内容平台")
+                .font(ui::font(12.5))
+                .color(p.text_weak),
+        );
+        let labels = ["Modrinth", "CurseForge"];
+        let mut index = match app.download.content_source {
+            ContentSource::Modrinth => 0,
+            ContentSource::CurseForge => 1,
+        };
+        if ui::segmented(ui, &p, "content_source", &mut index, &labels).clicked() {
+            let picked = if index == 0 {
+                ContentSource::Modrinth
+            } else {
+                ContentSource::CurseForge
+            };
+            if picked != app.download.content_source {
+                app.download.content_source = picked;
+                app.cfg.download.content_source = picked;
+                app.save_config();
+                // 换平台后旧结果没用了，收起来重新搜
+                app.download.content_hits.clear();
+                app.download.content_detail = None;
+                app.download.content_versions.clear();
+                app.download.content_loaded_source = None;
+                run_search(app);
+            }
+        }
+        ui.label(
+            egui::RichText::new(app.download.content_source.hint())
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+        );
+    });
+
+    // CurseForge 没有 key 就先用不了，提前说清楚
+    if app.download.content_source == ContentSource::CurseForge
+        && app.cfg.download.curseforge_key().is_none()
+    {
+        ui.add_space(6.0);
+        ui::inset(ui, &p, |ui| {
+            ui.horizontal(|ui| {
+                ui::icon(ui, "alert", 15.0, p.warning);
+                ui.label(
+                    egui::RichText::new("CurseForge 需要 API Key，现在还没设置")
+                        .font(ui::font(12.5))
+                        .color(p.text_weak),
+                );
+                if ui::button(ui, &p, ButtonOpts::secondary("去设置").icon("settings")).clicked() {
+                    app.page = crate::app::Page::Settings;
+                }
+            });
+        });
+    }
+}
+
 fn content_tab(app: &mut App, ui: &mut Ui) {
     let kind = app.download.content_kind();
     if app.download.content_detail.is_some() {
@@ -993,6 +1068,10 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
     }
 
     let p = app.palette;
+    // ---------- 平台切换 ----------
+    platform_switcher(app, ui);
+    ui.add_space(10.0);
+
     ui.horizontal(|ui| {
         let mut query = app.download.content_query.clone();
         let response = ui::search_field(
@@ -1119,7 +1198,12 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                 index += 1;
                 let desc_width = card_width - CARD_PADDING * 2.0;
                 // MCMod 元数据：有中文名时用中文名，缩写按 PCL2 的写法放在前面
-                let mcmod_entry = app.mcmod_db.lookup_modrinth(&hit.slug).cloned();
+                // CurseForge 上没有这套对应关系，别硬套
+                let mcmod_entry = if app.download.content_source == ContentSource::Modrinth {
+                    app.mcmod_db.lookup_modrinth(&hit.slug).cloned()
+                } else {
+                    None
+                };
                 let display_title = match &mcmod_entry {
                     Some(entry) if !entry.name.is_empty() => {
                         if entry.abbr.is_empty() {
@@ -1281,6 +1365,7 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
 pub(crate) fn run_search(app: &mut App) {
     let kind = app.download.content_kind();
     let query = app.download.content_query.clone();
+    let source = app.download.content_source;
     // 整合包自带 Minecraft 版本，不按当前实例过滤
     let filter_by_version = app.download.use_version_filter && kind != ContentKind::Modpack;
     let (mc, loader) = if filter_by_version {
@@ -1298,24 +1383,28 @@ pub(crate) fn run_search(app: &mut App) {
     app.download.content_loading = true;
     app.download.content_error = None;
     log::info!(
-        "开始搜索 {}（标签 {}，关键词 {query:?}）",
+        "开始搜索 {}（{} · 标签 {}，关键词 {query:?}）",
         kind.label(),
+        source.label(),
         app.download.tab
     );
 
-    let source = app.cfg.download.source;
+    let download_source = app.cfg.download.source;
     let timeout = app.cfg.download.timeout_secs;
+    let curseforge_key = app.cfg.download.curseforge_key();
     // 中文关键词：先用 MCMod 中文名库反查英文名，再补一次英文搜索
-    let supplement = if mcmod::has_chinese(&query) {
+    let supplement = if source == ContentSource::Modrinth && mcmod::has_chinese(&query) {
         app.mcmod_db.english_hint(&query)
     } else {
         None
     };
     app.spawn(format!("搜索{}", kind.label()), false, move |job| {
         let result = (|| -> anyhow::Result<SearchResponse> {
-            let dl = crate::core::download::Downloader::new(source, timeout)?;
-            let mut response = modrinth::search(
+            let dl = crate::core::download::Downloader::new(download_source, timeout)?
+                .with_curseforge_key(curseforge_key);
+            let mut response = content::search(
                 &dl,
+                source,
                 kind,
                 &query,
                 mc.as_deref(),
@@ -1326,8 +1415,9 @@ pub(crate) fn run_search(app: &mut App) {
             // MCMod 反查出的英文名搜索结果排在前面，两边结果按项目去重合并
             if let Some(keyword) = &supplement {
                 if !keyword.eq_ignore_ascii_case(&query) {
-                    if let Ok(extra) = modrinth::search(
+                    if let Ok(extra) = content::search(
                         &dl,
+                        source,
                         kind,
                         keyword,
                         mc.as_deref(),
@@ -1376,54 +1466,48 @@ pub(crate) fn open_project(app: &mut App, project_id: &str, author: &str) {
     app.download.content_version_index = 0;
 
     let id = project_id.to_string();
-    let source = app.cfg.download.source;
+    let source = app.download.content_source;
+    let kind = app.download.content_kind();
+    let download_source = app.cfg.download.source;
     let timeout = app.cfg.download.timeout_secs;
-    // 整合包不带版本筛选
-    let filter_by_version = app.download.use_version_filter
-        && app.download.content_kind() != ContentKind::Modpack;
-    let (mc, loader) = if filter_by_version {
-        match app.selected_version() {
-            Some(v) => (
-                app.current_mc_version(),
-                v.loader.as_ref().map(|l| l.to_lowercase()),
-            ),
-            None => (None, None),
-        }
-    } else {
-        (None, None)
-    };
-    let _ = (mc, loader);
+    let curseforge_key = app.cfg.download.curseforge_key();
 
     // 顺带请求中文简介：翻译服务不可用时静默回退到原文
-    let id_for_translate = id.clone();
-    let translate_source = source;
-    let translate_timeout = timeout;
-    app.spawn("获取中文简介", false, move |job| {
-        let result = (|| -> anyhow::Result<String> {
-            let dl = crate::core::download::Downloader::new(translate_source, translate_timeout)?;
-            let mut cache = translate::Cache::load();
-            let text = translate::translate_cached(&dl, &id_for_translate, &mut cache)
-                .ok_or_else(|| anyhow::anyhow!("没有可用的中文翻译"))?;
-            cache.save();
-            Ok(text)
-        })();
-        if let Ok(text) = result {
-            job.send(CoreEvent::ContentTranslated {
-                project_id: id_for_translate,
-                text,
-            });
-        } else {
-            log::debug!("中文翻译不可用，使用原文");
-        }
-        job.done(true, "");
-    });
+    // CurseForge 没有中文翻译服务，只有 Modrinth 才请求
+    if source == ContentSource::Modrinth {
+        let id_for_translate = id.clone();
+        let translate_source = download_source;
+        let translate_timeout = timeout;
+        app.spawn("获取中文简介", false, move |job| {
+            let result = (|| -> anyhow::Result<String> {
+                let dl = crate::core::download::Downloader::new(translate_source, translate_timeout)?;
+                let mut cache = translate::Cache::load();
+                let text = translate::translate_cached(&dl, &id_for_translate, &mut cache)
+                    .ok_or_else(|| anyhow::anyhow!("没有可用的中文翻译"))?;
+                cache.save();
+                Ok(text)
+            })();
+            if let Ok(text) = result {
+                job.send(CoreEvent::ContentTranslated {
+                    project_id: id_for_translate,
+                    text,
+                });
+            } else {
+                log::debug!("中文翻译不可用，使用原文");
+            }
+            job.done(true, "");
+        });
+    } else {
+        app.download.content_translation_loading = false;
+    }
 
     app.spawn("获取项目详情", false, move |job| {
         let result = (|| -> anyhow::Result<(Project, Vec<Version>)> {
-            let dl = crate::core::download::Downloader::new(source, timeout)?;
-            let project = modrinth::project(&dl, &id)?;
+            let dl = crate::core::download::Downloader::new(download_source, timeout)?
+                .with_curseforge_key(curseforge_key);
+            let project = content::project(&dl, source, kind, &id)?;
             // 拉全部版本，由界面按所选实例过滤
-            let versions = modrinth::versions(&dl, &id, None, None).unwrap_or_default();
+            let versions = content::versions(&dl, source, &id, None, None).unwrap_or_default();
             Ok((project, versions))
         })();
         match result {
@@ -1444,8 +1528,14 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
     let Some(project) = app.download.content_detail.clone() else {
         return;
     };
+    let source = app.download.content_source;
     // MCMod（MC 百科）元数据：有中文名与 MCMod 页面链接
-    let mcmod_entry = app.mcmod_db.lookup_modrinth(&project.slug).cloned();
+    // CurseForge 上没有这套对应关系，只在 Modrinth 下查
+    let mcmod_entry = if source == ContentSource::Modrinth {
+        app.mcmod_db.lookup_modrinth(&project.slug).cloned()
+    } else {
+        None
+    };
 
     // ---------- 顶部：返回 ----------
     ui.horizontal(|ui| {
@@ -1584,14 +1674,16 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
                         &format!("下载 {}", modrinth::format_downloads(project.downloads)),
                         p.accent,
                     );
-                    widgets::badge(
-                        ui,
-                        &p,
-                        &format!("关注 {}", modrinth::format_downloads(project.followers)),
-                        p.text_weak,
-                    );
-                    if !project.license.name.is_empty() {
-                        widgets::badge(ui, &p, &project.license.name, p.text_faint);
+                    if source == ContentSource::Modrinth {
+                        widgets::badge(
+                            ui,
+                            &p,
+                            &format!("关注 {}", modrinth::format_downloads(project.followers)),
+                            p.text_weak,
+                        );
+                        if !project.license.name.is_empty() {
+                            widgets::badge(ui, &p, &project.license.name, p.text_faint);
+                        }
                     }
                     for category in project.categories.iter().take(4) {
                         widgets::badge(
@@ -1607,11 +1699,12 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
-                    let modrinth_url = modrinth::project_url(&project.project_type, &project.slug);
-                    if ui::button(ui, &p, ButtonOpts::secondary("Modrinth 页面").icon("external-link"))
+                    let home_url = content::project_url(source, kind, &project);
+                    let home_label = format!("{} 页面", source.label());
+                    if ui::button(ui, &p, ButtonOpts::secondary(&home_label).icon("external-link"))
                         .clicked()
                     {
-                        let _ = open::that(&modrinth_url);
+                        let _ = open::that(&home_url);
                     }
                     if let Some(entry) = &mcmod_entry {
                         if ui::button(ui, &p, ButtonOpts::secondary("MCMod 页面").icon("external-link"))
@@ -2290,6 +2383,7 @@ fn version_label(v: &Version) -> String {
 /// 安装整合包，生成一个独立实例
 fn install_modpack(app: &mut App, version: Version, project: Project) {
     let game_dir = app.cfg.game_dir.clone();
+    let source = app.download.content_source;
     // 整合包声明的 Minecraft 版本要等下载后才知道，
     // 这里先用项目版本里标着的游戏版本挑一个合适的 Java，
     // 挑不到就按 Java 8 兜底，Forge 安装器够用
@@ -2303,6 +2397,7 @@ fn install_modpack(app: &mut App, version: Version, project: Project) {
     app.spawn_download(format!("安装 {title}"), move |dl, progress, job| {
         let installed = crate::core::content::modpack::install_instance(
             &dl,
+            source,
             &project_id,
             &title,
             &slug,
@@ -2366,6 +2461,7 @@ fn install_content(
 ) {
     let game_dir = app.cfg.effective_game_dir(&instance_id);
     let auto_deps = app.cfg.download.auto_install_dependencies;
+    let source = app.download.content_source;
     // 依赖筛选按目标实例的 MC 版本与加载器来算
     let (mc, loader) = app
         .instances
@@ -2376,17 +2472,18 @@ fn install_content(
 
     app.spawn_download(format!("安装 {title}"), move |dl, progress, _job| {
         crate::core::paths::ensure_dir(&game_dir)?;
-        let path = modrinth::install(&dl, kind, &version, &game_dir, &progress)?;
+        let path = content::install(&dl, source, kind, &version, &game_dir, &progress)?;
         if auto_deps && kind == ContentKind::Mod {
-            let deps = modrinth::required_dependencies(
+            let deps = content::required_dependencies(
                 &dl,
+                source,
                 &version,
                 Some(mc.as_str()),
                 loader.as_deref(),
             );
             for dep in deps {
                 progress.set_message(format!("正在安装前置依赖 {} ...", dep.version_number));
-                let _ = modrinth::install(&dl, kind, &dep, &game_dir, &progress);
+                let _ = content::install(&dl, source, kind, &dep, &game_dir, &progress);
             }
         }
         Ok(format!("已安装到 {}", path.display()))

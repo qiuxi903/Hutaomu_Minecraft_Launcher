@@ -493,6 +493,8 @@ pub enum CoreEvent {
     },
     /// MCMod 元数据更新完成
     McmodDbReady(crate::core::content::mcmod::Database),
+    /// CurseForge API Key 连通性测试结果
+    CurseForgeKeyTest(Result<String, String>),
     /// 本地内容反查到的 Modrinth 项目：文件名 → slug
     ContentSlugs(std::collections::HashMap<String, String>),
     /// 各实例里装了哪些模组自带的内容
@@ -622,6 +624,10 @@ pub struct App {
     pub authlib_jar_loading: bool,
     /// authlib-injector 上一次准备失败的原因
     pub authlib_jar_error: Option<String>,
+    /// CurseForge API Key 连通性测试是否在进行
+    pub cf_key_testing: bool,
+    /// CurseForge API Key 连通性测试的结果
+    pub cf_key_test: Option<Result<String, String>>,
     pub dwm_applied: bool,
     pub shot: Option<ShotState>,
     pub download_panel_open: bool,
@@ -722,6 +728,8 @@ impl App {
             show_game_log_page: false,
             authlib_jar_loading: false,
             authlib_jar_error: None,
+            cf_key_testing: false,
+            cf_key_test: None,
             dwm_applied: false,
             download_panel_open: false,
             download_panel_auto: false,
@@ -824,6 +832,7 @@ impl App {
 
     pub fn downloader(&self) -> anyhow::Result<Downloader> {
         Downloader::new(self.cfg.download.source, self.cfg.download.timeout_secs)
+            .map(|dl| dl.with_curseforge_key(self.cfg.download.curseforge_key()))
     }
 
     /// 轻量后台任务：不进入下载中心，用于拉取清单、搜索等短请求
@@ -878,6 +887,7 @@ impl App {
         };
         let source = self.cfg.download.source;
         let timeout = self.cfg.download.timeout_secs;
+        let curseforge_key = self.cfg.download.curseforge_key();
 
         {
             let job = job.clone();
@@ -901,7 +911,8 @@ impl App {
 
         std::thread::spawn(move || {
             let result = (|| -> anyhow::Result<String> {
-                let dl = Downloader::new(source, timeout)?;
+                let dl = Downloader::new(source, timeout)?
+                    .with_curseforge_key(curseforge_key);
                 f(dl, progress.clone(), job.clone())
             })();
             progress
@@ -1859,6 +1870,10 @@ impl App {
                 CoreEvent::McmodDbReady(db) => {
                     self.mcmod_db_loading = false;
                     self.mcmod_db = db;
+                }
+                CoreEvent::CurseForgeKeyTest(result) => {
+                    self.cf_key_testing = false;
+                    self.cf_key_test = Some(result);
                 }
                 CoreEvent::ContentSlugs(map) => {
                     for (name, slug) in map {

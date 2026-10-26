@@ -1,7 +1,8 @@
 use egui::{Align, Layout, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
-use crate::app::App;
+use crate::app::{App, CoreEvent};
 use crate::core::config::BackgroundKind;
+use crate::core::content::ContentSource;
 use crate::core::download::DownloadSource;
 use crate::core::minecraft::bundle::LoaderTiming;
 use crate::core::minecraft::loaders::{LoaderKind, LoaderPolicy};
@@ -522,7 +523,144 @@ fn download_section(app: &mut App, ui: &mut Ui) {
         });
     });
 
+    content_source_section(app, ui);
     loader_section(app, ui);
+}
+
+/// 内容平台设置
+///
+/// Modrinth 不用 key，CurseForge 官方接口必须带 `x-api-key`，
+/// 没有 key 就一个接口都调不通。
+fn content_source_section(app: &mut App, ui: &mut Ui) {
+    let p = app.palette;
+    ui::card(ui, &p, |ui| {
+        widgets::section_title(ui, &p, "内容平台");
+
+        ui.label(
+            egui::RichText::new("Mod、光影、资源包与整合包从哪个平台下载")
+                .font(ui::font(12.0))
+                .color(p.text_faint),
+        );
+        ui.add_space(12.0);
+
+        // ---- 平台 ----
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("默认平台")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            let labels = ["Modrinth", "CurseForge"];
+            let mut index = match app.cfg.download.content_source {
+                ContentSource::Modrinth => 0,
+                ContentSource::CurseForge => 1,
+            };
+            if ui::segmented(ui, &p, "set_content_source", &mut index, &labels).clicked() {
+                let picked = if index == 0 {
+                    ContentSource::Modrinth
+                } else {
+                    ContentSource::CurseForge
+                };
+                app.cfg.download.content_source = picked;
+                app.download.content_source = picked;
+                app.save_config();
+            }
+            ui.label(
+                egui::RichText::new(app.cfg.download.content_source.hint())
+                    .font(ui::font(11.5))
+                    .color(p.text_faint),
+            );
+        });
+        ui.add_space(14.0);
+
+        // ---- API Key ----
+        ui.label(
+            egui::RichText::new("CurseForge API Key")
+                .font(ui::font(13.0))
+                .color(p.text_weak),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "CurseForge 的官方接口必须带这个 key，没有就搜不了也下不了。\n去 console.curseforge.com 注册后生成，填在这里就行；留空则依次找环境变量 CURSEFORGE_API_KEY 与启动器内置的 key。",
+            )
+            .font(ui::font(11.5))
+            .color(p.text_faint),
+        );
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            let mut key = app.cfg.download.curseforge_key.clone();
+            if ui::text_field(ui, &p, &mut key, "留空则用内置 key", 340.0, true).changed() {
+                app.cfg.download.curseforge_key = key;
+                app.cf_key_test = None;
+            }
+            if ui::button(ui, &p, ButtonOpts::secondary("保存").icon("save")).clicked() {
+                app.save_config();
+                app.success("API Key 已保存");
+            }
+            if app.cf_key_testing {
+                ui::spinner(ui, &p, 14.0);
+            } else if ui::button(ui, &p, ButtonOpts::secondary("测试连接").icon("check")).clicked() {
+                test_curseforge_key(app);
+            }
+        });
+        ui.add_space(8.0);
+
+        match app.cf_key_test.clone() {
+            Some(Ok(message)) => {
+                ui.horizontal(|ui| {
+                    ui::icon(ui, "check-circle", 15.0, p.success);
+                    ui.label(
+                        egui::RichText::new(message)
+                            .font(ui::font(12.0))
+                            .color(p.text_weak),
+                    );
+                });
+            }
+            Some(Err(message)) => {
+                ui.horizontal(|ui| {
+                    ui::icon(ui, "error", 15.0, p.danger);
+                    ui.label(
+                        egui::RichText::new(message)
+                            .font(ui::font(12.0))
+                            .color(p.text_weak),
+                    );
+                });
+            }
+            None => {}
+        }
+    });
+}
+
+/// 测一下 CurseForge 的 API Key 能不能用
+fn test_curseforge_key(app: &mut App) {
+    let key = app.cfg.download.curseforge_key();
+    let Some(key) = key else {
+        app.cf_key_test = Some(Err("还没有可用的 API Key".into()));
+        return;
+    };
+    app.cfg.download.curseforge_key = key.clone();
+    app.save_config();
+    app.cf_key_testing = true;
+    app.cf_key_test = None;
+
+    let source = app.cfg.download.source;
+    let timeout = app.cfg.download.timeout_secs.max(15);
+    app.spawn("测试 CurseForge 连接", false, move |job| {
+        let result = (|| -> anyhow::Result<String> {
+            let dl = crate::core::download::Downloader::new(source, timeout)?
+                .with_curseforge_key(Some(key));
+            // 拿一个固定项目的详情试一下，能通就说明 key 有效
+            let project = crate::core::content::curseforge::project(
+                &dl,
+                "238222",
+                crate::core::content::ContentKind::Modpack,
+            )?;
+            Ok(format!("连接正常，接口返回了「{}」", project.title))
+        })();
+        job.send(CoreEvent::CurseForgeKeyTest(result.map_err(|e| format!("{e}"))));
+        job.done(true, "");
+    });
 }
 
 /// 加载器与安装行为设置

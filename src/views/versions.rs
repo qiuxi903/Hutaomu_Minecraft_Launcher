@@ -512,15 +512,18 @@ fn reinstall_modpack(app: &mut App, instance_id: &str) {
     let opts = app.cfg.download.install_options();
     let java = app.java_for(&info.mc_version);
     let target = instance_id.to_string();
+    // 重新安装要回到整合包原来的平台去取文件
+    let source = crate::core::content::ContentSource::from_id(info.source.as_deref().unwrap_or(""));
 
     app.spawn_download(format!("重新安装 {name}"), move |dl, progress, job| {
-        let versions =
-            crate::core::content::modrinth::versions(&dl, &project_id, None, None).unwrap_or_default();
+        let versions = crate::core::content::versions(&dl, source, &project_id, None, None)
+            .unwrap_or_default();
         let Some(version) = versions.into_iter().find(|v| v.id == version_id) else {
             return Err(anyhow::anyhow!("找不到整合包对应的版本"));
         };
         let installed = crate::core::content::modpack::install_instance(
             &dl,
+            source,
             &project_id,
             &name,
             &target,
