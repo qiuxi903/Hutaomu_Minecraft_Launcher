@@ -31,6 +31,22 @@ fn window_icon() -> egui::IconData {
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().collect();
+    // --selftest-local 直接启动本地已装好的版本，用来验证整合包这类场景
+    if args.iter().any(|a| a == "--selftest-local") {
+        let index = args.iter().position(|a| a == "--selftest-local").unwrap_or(0);
+        let version = args
+            .get(index + 1)
+            .filter(|a| !a.starts_with("--"))
+            .cloned()
+            .unwrap_or_else(|| "26.2".to_string());
+        match selftest::run_local(&version) {
+            Ok(()) => std::process::exit(0),
+            Err(err) => {
+                eprintln!("自检失败: {err:#}");
+                std::process::exit(1);
+            }
+        }
+    }
     if args.iter().any(|a| a == "--selftest") {
         let index = args.iter().position(|a| a == "--selftest").unwrap_or(0);
         // 版本号是 --selftest 后的第一个非选项参数

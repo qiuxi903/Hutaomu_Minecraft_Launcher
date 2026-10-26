@@ -240,3 +240,72 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
     println!("=== 自检结束 ===");
     Ok(())
 }
+/// 直接启动本地已装好的版本，不重新下载安装
+///
+/// 用来验证整合包、加载器这类"装好了但起不来"的场景：
+/// `htmcl.exe --selftest-local fps`
+pub fn run_local(version_id: &str) -> anyhow::Result<()> {
+    crate::core::paths::migrate_legacy_layout();
+    crate::core::log::init();
+    println!("=== htmcl 本地版本自检（{version_id}）===");
+
+    let game_dir = paths::exe_dir().join(".minecraft");
+    let resolved = version::resolve(&game_dir, version_id)
+        .map_err(|e| anyhow::anyhow!("本地没有这个版本：{e}"))?;
+    let mc_version = version::detect_mc_version(&game_dir, version_id, &resolved.json);
+    println!(
+        "      Minecraft 版本 {mc_version}（版本描述 id={} 继承={:?}）",
+        resolved.json.id, resolved.json.inherits_from
+    );
+
+    let javas = java::brief_search();
+    let java = java::pick_for(&mc_version, &javas)
+        .ok_or_else(|| anyhow::anyhow!("没有满足 {mc_version} 要求的 Java"))?;
+    println!("      使用 Java {} ({})", java.version, java.path.display());
+
+    let account = auth::offline::create("HtmclTest");
+    let identity = account.to_identity();
+    let spec = launch::LaunchSpec {
+        version: &resolved,
+        identity: &identity,
+        java: &java,
+        memory_mb: 2048,
+        initial_memory_mb: 0,
+        width: 854,
+        height: 480,
+        fullscreen: false,
+        extra_jvm_args: "",
+        extra_game_args: "",
+        authlib_jar: None,
+        server: None,
+        garbage_collector: "auto",
+        no_default_jvm_args: false,
+        custom_title: "",
+        no_javaw: false,
+    };
+    let command = launch::build_command(&spec)?;
+    println!("      命令: {}", launch::describe_command(&command));
+
+    println!("[启动游戏] 最多观察 90 秒 ...");
+    let mut process = launch::spawn(command, version_id)?;
+    let mut last_len = 0usize;
+    for _ in 0..90 {
+        std::thread::sleep(Duration::from_secs(1));
+        let lines = process.log.snapshot(4000);
+        for line in lines.iter().skip(last_len) {
+            println!("      | {line}");
+        }
+        last_len = lines.len();
+        if let Ok(Some(status)) = process.child.try_wait() {
+            println!("      游戏进程退出，代码 {:?}", status.code());
+            return Ok(());
+        }
+    }
+    if process.is_running() {
+        println!("      游戏仍在运行，判定启动成功，结束进程");
+        process.kill();
+    } else {
+        println!("      游戏已经退出，没有成功启动");
+    }
+    Ok(())
+}
