@@ -89,12 +89,17 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 31;
+pub const SHOT_SCENES: usize = 33;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
         // 每次切换场景先关掉所有弹窗，避免互相遮挡
         self.home_ui.config_open = false;
+        self.versions_ui.loader_modal = None;
+        self.versions_ui.shader_modal = None;
+        self.versions_ui.confirm_delete = None;
+        self.versions_ui.rename_target = None;
+        self.download.install_target = None;
         match scene {
             0 => self.page = Page::Home,
             1 => {
@@ -304,11 +309,17 @@ impl App {
                 }
             }
             29 => {
-                // 更换加载器弹窗
+                // 加载器列表页
                 self.page = Page::Versions;
                 if let Some(id) = self.shot_loader_instance_id() {
                     views::versions::open_detail(self, &id);
-                    views::versions::open_loader_modal_for(self, &id);
+                    let mc = self
+                        .instances
+                        .iter()
+                        .find(|i| i.mc_version == id)
+                        .map(|i| i.real_mc_version())
+                        .unwrap_or_else(|| id.clone());
+                    views::versions::open_loaders_page(self, &mc);
                 }
             }
             30 => {
@@ -317,6 +328,22 @@ impl App {
                 if let Some(id) = self.shot_loader_instance_id() {
                     views::versions::open_detail(self, &id);
                     self.versions_ui.shader_modal = Some(id);
+                }
+            }
+            31 => {
+                // 版本详情 - 导出整合包
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = "export";
+                }
+            }
+            32 => {
+                // 版本详情 - 概览里的个性化与快捷方式
+                self.page = Page::Versions;
+                if let Some(id) = self.shot_loader_instance_id() {
+                    views::versions::open_detail(self, &id);
+                    self.versions_ui.section = "info";
                 }
             }
             _ => {
@@ -1316,6 +1343,19 @@ impl App {
             .clone()
             .filter(|id| self.local_versions.iter().any(|v| &v.id == id))
             .or_else(|| self.local_versions.first().map(|v| v.id.clone()))
+    }
+
+    /// 实例的显示名
+    ///
+    /// 用户在「概览 → 个性化」里改过名字就用他改的，
+    /// 没改过就还是 Minecraft 版本号或整合包名字。
+    pub fn instance_display_name(&self, inst: &crate::core::minecraft::GameInstance) -> String {
+        let meta = self.cfg.instance_meta(&inst.mc_version);
+        if !meta.name.trim().is_empty() {
+            meta.name.clone()
+        } else {
+            inst.display_name.clone()
+        }
     }
 
     /// 当前实例对应的 Minecraft 版本
@@ -3064,7 +3104,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         16 => "下载-光影",
         17 => "下载-项目详情",
         18 => "版本管理-详情",
-        19 => "版本管理-设置",
+        19 => "版本管理-启动选项",
         20 => "版本管理-模组",
         21 => "版本管理-光影",
         22 => "版本管理-资源包",
@@ -3073,8 +3113,10 @@ fn shot_scene_label(scene: usize) -> &'static str {
         26 => "版本管理-存档",
         27 => "下载-整合包详情",
         28 => "版本管理-整合包",
-        29 => "版本管理-更换加载器",
+        29 => "版本管理-加载器",
         30 => "版本管理-光影加载器",
+        31 => "版本管理-导出",
+        32 => "版本管理-概览",
         _ => "账号-皮肤站",
     }
 }

@@ -736,6 +736,52 @@ pub fn toggle(ui: &mut Ui, p: &Palette, value: &mut bool) -> Response {
     response
 }
 
+// ---------------------------------------------------------------- 勾选框
+
+/// 勾选框
+///
+/// 左边一个小方框，右边一行文字，两边都能点。
+pub fn checkbox(ui: &mut Ui, p: &Palette, value: &mut bool, label: &str) -> Response {
+    let size = Vec2::new(18.0, 18.0);
+    ui.horizontal(|ui| {
+        let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
+        let radius = CornerRadius::same(4);
+        if *value {
+            ui.painter().rect_filled(rect, radius, p.accent);
+            // 勾
+            let points = vec![
+                rect.left_top() + Vec2::new(4.0, 9.0),
+                rect.left_top() + Vec2::new(7.5, 12.5),
+                rect.left_top() + Vec2::new(14.0, 5.0),
+            ];
+            ui.painter()
+                .add(egui::Shape::line(points, Stroke::new(2.0, p.on_accent)));
+        } else {
+            ui.painter().rect_stroke(
+                rect,
+                radius,
+                Stroke::new(1.0, p.border_strong),
+                StrokeKind::Inside,
+            );
+        }
+        if response.clicked() {
+            *value = !*value;
+            response.mark_changed();
+        }
+        ui.add_space(7.0);
+        let label_response = ui.add(
+            egui::Label::new(egui::RichText::new(label).font(font(13.0)).color(p.text)),
+        );
+        // 点文字也算勾上
+        if label_response.clicked() {
+            *value = !*value;
+            response.mark_changed();
+        }
+        response
+    })
+    .inner
+}
+
 // ---------------------------------------------------------------- 分段选择
 
 /// 分段选择器

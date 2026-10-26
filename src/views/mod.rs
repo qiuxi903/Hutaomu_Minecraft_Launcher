@@ -3,6 +3,7 @@ pub mod accounts;
 pub mod download;
 pub mod home;
 pub mod home_config;
+pub mod instance;
 pub mod settings;
 pub mod versions;
 
@@ -153,7 +154,10 @@ pub fn launch_game(app: &mut App) {
     let identity = account.to_identity();
     let memory = app.cfg.effective_memory(&mc_version);
     let jvm_args = app.cfg.effective_jvm_args(&mc_version);
-    let extra_args = app.cfg.launch.extra_args.clone();
+    // 实例自己填的启动参数与窗口标题优先，没填才用全局的
+    let extra_args = app.cfg.effective_extra_args(&mc_version);
+    let custom_title = app.cfg.effective_custom_title(&mc_version);
+    let initial_memory_mb = app.cfg.effective_initial_memory(&mc_version);
     let fullscreen = app.cfg.launch.fullscreen;
     let width = app.cfg.launch.width;
     let height = app.cfg.launch.height;
@@ -179,7 +183,7 @@ pub fn launch_game(app: &mut App) {
         identity: &identity,
         java: &java,
         memory_mb: memory,
-        initial_memory_mb: app.cfg.launch.initial_memory_mb,
+        initial_memory_mb,
         width,
         height,
         fullscreen,
@@ -189,7 +193,7 @@ pub fn launch_game(app: &mut App) {
         server: None,
         garbage_collector: &app.cfg.launch.garbage_collector,
         no_default_jvm_args: app.cfg.launch.no_default_jvm_args,
-        custom_title: &app.cfg.launch.custom_title,
+        custom_title: &custom_title,
         no_javaw: app.cfg.launch.no_javaw,
     };
 
