@@ -12,6 +12,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Context, Result};
 
 use crate::core::content::modrinth;
+use crate::core::content::{self, ContentSource};
 use crate::core::download::{DownloadProgress, Downloader};
 use crate::core::java::JavaInfo;
 use crate::core::minecraft::install::InstallOptions;
@@ -41,6 +42,7 @@ pub struct InstalledModpack {
 #[allow(clippy::too_many_arguments)]
 pub fn install_instance(
     dl: &Downloader,
+    source: ContentSource,
     project_id: &str,
     project_title: &str,
     slug: &str,
@@ -52,10 +54,11 @@ pub fn install_instance(
     target_instance: Option<String>,
 ) -> Result<InstalledModpack> {
     // 1. 先把整合包下载解开，拿到它声明的 Minecraft 版本与加载器
-    let (extract_dir, deps) = modrinth::fetch_modpack(dl, pack_version, progress)?;
+    let (extract_dir, deps) = content::fetch_modpack(dl, source, pack_version, progress)?;
 
     let result = install_inner(
         dl,
+        source,
         project_id,
         project_title,
         slug,
@@ -77,6 +80,7 @@ pub fn install_instance(
 #[allow(clippy::too_many_arguments)]
 fn install_inner(
     dl: &Downloader,
+    source: ContentSource,
     project_id: &str,
     project_title: &str,
     slug: &str,
@@ -168,6 +172,7 @@ fn install_inner(
             loader_version: deps.loader_version.clone(),
             project_id: Some(project_id.to_string()),
             pack_version_id: Some(pack_version_id),
+            source: Some(source.id().to_string()),
         },
     )?;
 
@@ -175,7 +180,7 @@ fn install_inner(
     install::install_core(dl, game_dir, &instance_id, progress, opts)?;
 
     // 5. 整合包内容全部放进这个实例目录
-    modrinth::install_modpack_files(dl, extract_dir, &inst_dir, progress)?;
+    content::install_modpack_files(dl, source, extract_dir, &inst_dir, progress)?;
 
     Ok(InstalledModpack {
         instance_id,

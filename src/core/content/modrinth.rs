@@ -211,6 +211,9 @@ pub struct SearchHit {
     pub license: String,
     #[serde(default)]
     pub gallery: Vec<String>,
+    /// CurseForge 的项目 id，Modrinth 的结果没有这个
+    #[serde(default)]
+    pub cf_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -255,6 +258,9 @@ pub struct Project {
     pub gallery: Vec<GalleryImage>,
     #[serde(default)]
     pub license: License,
+    /// CurseForge 的项目 id，Modrinth 的项目没有这个
+    #[serde(default)]
+    pub cf_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -299,6 +305,11 @@ pub struct Version {
     pub files: Vec<VersionFile>,
     #[serde(default)]
     pub dependencies: Vec<Dependency>,
+    /// CurseForge 的项目 id 与文件 id，Modrinth 的版本没有这两个
+    #[serde(default)]
+    pub cf_mod_id: Option<u32>,
+    #[serde(default)]
+    pub cf_file_id: Option<u32>,
 }
 
 impl Version {
@@ -330,6 +341,11 @@ pub struct VersionFile {
     pub size: u64,
     #[serde(default)]
     pub hashes: Hashes,
+    /// CurseForge 的项目 id 与文件 id，Modrinth 的文件没有这两个
+    #[serde(default)]
+    pub cf_mod_id: Option<u32>,
+    #[serde(default)]
+    pub cf_file_id: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

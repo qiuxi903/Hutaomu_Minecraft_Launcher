@@ -1197,6 +1197,7 @@ mod tests {
                 loader_version: Some("0.20.1".into()),
                 project_id: None,
                 pack_version_id: None,
+                source: None,
             },
         )
         .unwrap();

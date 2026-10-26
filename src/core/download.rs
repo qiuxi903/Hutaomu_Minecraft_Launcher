@@ -214,6 +214,10 @@ pub struct FileTask {
     pub dest: PathBuf,
     pub sha1: Option<String>,
     pub size: u64,
+    /// 额外请求头
+    ///
+    /// CurseForge 的 CDN 要带 `x-api-key`，别的站用不上。
+    pub headers: Vec<(String, String)>,
 }
 
 impl FileTask {
@@ -223,7 +227,14 @@ impl FileTask {
             dest: dest.into(),
             sha1: None,
             size: 0,
+            headers: Vec::new(),
         }
+    }
+
+    /// 加一个请求头
+    pub fn with_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.headers.push((key.into(), value.into()));
+        self
     }
 
     pub fn with_sha1(mut self, sha1: impl Into<String>) -> Self {
@@ -425,11 +436,26 @@ pub struct Downloader {
     /// 走代理反而可能被拒绝。
     direct: reqwest::blocking::Client,
     pub source: DownloadSource,
+    /// CurseForge 的 API Key
+    ///
+    /// CurseForge 官方接口强制要这个头，没有就直接 403。
+    curseforge_key: Option<String>,
 }
 
 impl Downloader {
     pub fn new(source: DownloadSource, timeout_secs: u64) -> Result<Self> {
         Self::build(source, timeout_secs, use_system_proxy())
+    }
+
+    /// 带上 CurseForge 的 API Key
+    pub fn with_curseforge_key(mut self, key: Option<String>) -> Self {
+        self.curseforge_key = key.filter(|k| !k.trim().is_empty());
+        self
+    }
+
+    /// 当前用的 CurseForge API Key
+    pub fn curseforge_key(&self) -> Option<&str> {
+        self.curseforge_key.as_deref()
     }
 
     pub fn build(source: DownloadSource, timeout_secs: u64, use_proxy: bool) -> Result<Self> {
@@ -472,6 +498,7 @@ impl Downloader {
             client,
             direct,
             source,
+            curseforge_key: None,
         })
     }
 
@@ -602,6 +629,47 @@ impl Downloader {
             .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))
     }
 
+    /// 请求 CurseForge 接口，自动带上 `x-api-key`
+    ///
+    /// CurseForge 官方 API 强制要这个头，没有会直接 403。
+    pub fn get_json_curseforge<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
+        let mut req = self.client_for(url).get(url);
+        if let Some(key) = &self.curseforge_key {
+            req = req.header("x-api-key", key);
+        }
+        let resp = req.send().with_context(|| format!("请求失败: {url}"))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return Err(anyhow!("CurseForge 拒绝了这次请求：API Key 无效或还没设置"));
+        }
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status}: {}", truncate(&text, 300)));
+        }
+        serde_json::from_str(&text)
+            .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))
+    }
+
+    /// POST 请求 CurseForge 接口，自动带上 `x-api-key`
+    pub fn post_json_curseforge<B: Serialize + ?Sized, T: DeserializeOwned>(
+        &self,
+        url: &str,
+        body: &B,
+    ) -> Result<T> {
+        let mut req = self.client_for(url).post(url).json(body);
+        if let Some(key) = &self.curseforge_key {
+            req = req.header("x-api-key", key);
+        }
+        let resp = req.send().with_context(|| format!("请求失败: {url}"))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status}: {}", truncate(&text, 300)));
+        }
+        serde_json::from_str(&text)
+            .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))
+    }
+
     pub fn post_json_with_headers<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
         url: &str,
@@ -716,6 +784,9 @@ impl Downloader {
         }
 
         let mut req = self.client_for(url).get(url);
+        for (k, v) in &task.headers {
+            req = req.header(k.as_str(), v.as_str());
+        }
         if resume_from > 0 {
             req = req.header("Range", format!("bytes={resume_from}-"));
         }

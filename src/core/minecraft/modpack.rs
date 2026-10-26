@@ -39,6 +39,11 @@ pub struct ModpackInfo {
     /// 记下来才能在版本管理里对同一个整合包重新安装。
     #[serde(default)]
     pub pack_version_id: Option<String>,
+    /// 整合包来自哪个平台：`modrinth` 或 `curseforge`
+    ///
+    /// 重新安装时要回到原来的平台去取文件。
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 /// 标记文件在版本目录下的位置
@@ -181,12 +186,14 @@ mod tests {
             loader_version: Some("0.20.1".into()),
             project_id: Some("abc".into()),
             pack_version_id: Some("ver1".into()),
+            source: Some("curseforge".into()),
         };
         write_marker(&dir, &info).unwrap();
         let read = read_marker(&dir).unwrap();
         assert_eq!(read.name, "测试整合包");
         assert_eq!(read.mc_version, "26.2");
         assert_eq!(read.loader.as_deref(), Some("Fabric"));
+        assert_eq!(read.source.as_deref(), Some("curseforge"));
         assert!(is_instance(&dir));
         let _ = std::fs::remove_dir_all(&dir);
     }

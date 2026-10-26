@@ -1,0 +1,1305 @@
+//! CurseForge 平台支持
+//!
+//! CurseForge 的官方 API 必须带 `x-api-key`，不带就直接 403，
+//! 所以这里的所有请求都走 [`Downloader::get_json_curseforge`]。
+//!
+//! key 的来源有三个，优先级从高到低：
+//! 1. 设置里用户自己填的
+//! 2. 环境变量 `CURSEFORGE_API_KEY`
+//! 3. 作者内置进发布版的 [`BUILTIN_API_KEY`]
+//!
+//! CurseForge 返回的数据会被转成和 Modrinth 一样的结构
+//! （[`Project`] / [`Version`] / [`SearchHit`]），
+//! 这样下载页一套界面就能同时显示两个平台的内容。
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use anyhow::{anyhow, Context, Result};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use serde::Deserialize;
+
+use crate::core::content::modrinth::{
+    ContentKind, GalleryImage, Hashes, License, ModpackDeps, Project, SearchHit, SearchResponse,
+    Version, VersionFile,
+};
+use crate::core::download::{DownloadProgress, Downloader, FileTask};
+use crate::core::paths;
+
+/// CurseForge 官方 API 根地址
+pub const API: &str = "https://api.curseforge.com";
+
+/// Minecraft 在 CurseForge 上的游戏 id
+pub const GAME_ID: u32 = 432;
+
+/// 作者内置的 API Key
+///
+/// 正式发布版会把这个填上，用户开箱即用；
+/// 用户也可以在「设置 → 内容平台」里换成自己的 key。
+pub const BUILTIN_API_KEY: &str = "";
+
+/// 项目页地址
+pub fn project_url(class: ContentKind, slug: &str) -> String {
+    let category = match class {
+        ContentKind::Mod => "mc-mods",
+        ContentKind::Modpack => "modpacks",
+        ContentKind::ResourcePack => "texture-packs",
+        ContentKind::Shader => "shaders",
+        ContentKind::World => "worlds",
+    };
+    format!("https://www.curseforge.com/minecraft/{category}/{slug}")
+}
+
+// ------------------------------------------------------------------ 常量映射
+
+/// 内容类型对应的 CurseForge 分类 id
+///
+/// 取值与 CurseForge 官网的分类一致，见 PCL-CE 的 `ModComp.CompFile`。
+pub fn class_id(kind: ContentKind) -> u32 {
+    match kind {
+        ContentKind::Mod => 6,
+        ContentKind::Modpack => 4471,
+        ContentKind::Shader => 6552,
+        ContentKind::ResourcePack => 12,
+        ContentKind::World => 17,
+    }
+}
+
+/// CurseForge 的加载器编号
+///
+/// 0 = 任意，1 = Forge，3 = LiteLoader，4 = Fabric，5 = Quilt，6 = NeoForge。
+pub fn mod_loader_type(loader: &str) -> Option<u32> {
+    match loader.trim().to_lowercase().as_str() {
+        "forge" => Some(1),
+        "liteloader" => Some(3),
+        "fabric" => Some(4),
+        "quilt" => Some(5),
+        "neoforge" => Some(6),
+        _ => None,
+    }
+}
+
+/// 加载器编号对应的名字
+pub fn loader_name(loader_type: u32) -> Option<&'static str> {
+    match loader_type {
+        1 => Some("Forge"),
+        3 => Some("LiteLoader"),
+        4 => Some("Fabric"),
+        5 => Some("Quilt"),
+        6 => Some("NeoForge"),
+        _ => None,
+    }
+}
+
+/// 文件发布类型 → 统一的版本类型
+///
+/// CurseForge：1 = 正式版，2 = 测试版，3 = 预览版。
+pub fn release_type_label(release_type: u32) -> &'static str {
+    match release_type {
+        2 => "beta",
+        3 => "alpha",
+        _ => "release",
+    }
+}
+
+/// 依赖关系类型
+pub const RELATION_REQUIRED: u32 = 3;
+
+// ------------------------------------------------------------------ 接口原始结构
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfLinks {
+    #[serde(default)]
+    pub website_url: Option<String>,
+    /// 接口有时叫 `issueTrackerUrl`，有时叫 `issuesUrl`，两个都认
+    #[serde(rename = "issueTrackerUrl", alias = "issuesUrl", default)]
+    pub issue_tracker_url: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
+    #[serde(default)]
+    pub wiki_url: Option<String>,
+    #[serde(default)]
+    pub discord_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfCategory {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfAuthor {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfPicture {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub width: u32,
+    #[serde(default)]
+    pub height: u32,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct CfHash {
+    #[serde(default)]
+    pub value: String,
+    /// 1 = Sha1，2 = Md5
+    #[serde(default)]
+    pub algo: u32,
+}
+
+/// 文件的校验值表
+///
+/// 接口里 `hashes` 通常是一个数组，但也有地方只给单个对象，两种都收下。
+#[derive(Debug, Clone, Default)]
+pub struct CfHashes(pub Vec<CfHash>);
+
+impl<'de> Deserialize<'de> for CfHashes {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let items = match value {
+            serde_json::Value::Array(items) => items,
+            serde_json::Value::Object(_) => vec![value],
+            _ => return Ok(CfHashes::default()),
+        };
+        Ok(CfHashes(
+            items
+                .into_iter()
+                .filter_map(|item| serde_json::from_value(item).ok())
+                .collect(),
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfFile {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub game_id: u32,
+    #[serde(default)]
+    pub mod_id: u32,
+    #[serde(default)]
+    pub is_available: bool,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub file_name: String,
+    /// 1 = 正式版，2 = 测试版，3 = 预览版
+    #[serde(default)]
+    pub release_type: u32,
+    #[serde(default)]
+    pub file_status: u32,
+    #[serde(default)]
+    pub hashes: CfHashes,
+    #[serde(default)]
+    pub file_date: String,
+    #[serde(default)]
+    pub file_length: u64,
+    #[serde(default)]
+    pub download_count: u64,
+    #[serde(default)]
+    pub download_url: Option<String>,
+    /// 文件在 CDN 上的直链，部分接口会带
+    #[serde(default)]
+    pub cdn_url: Option<String>,
+    #[serde(default)]
+    pub game_versions: Vec<String>,
+    /// 该文件面向的加载器，部分接口会带这个字段
+    #[serde(default)]
+    pub mod_loader_type: Option<u32>,
+    #[serde(default)]
+    pub is_server_pack: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfProject {
+    #[serde(default)]
+    pub id: u32,
+    #[serde(default)]
+    pub game_id: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub slug: String,
+    #[serde(default)]
+    pub links: CfLinks,
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub status: u32,
+    #[serde(default)]
+    pub download_count: u64,
+    #[serde(default)]
+    pub is_featured: bool,
+    #[serde(default)]
+    pub primary_category_id: u32,
+    #[serde(default)]
+    pub categories: Vec<CfCategory>,
+    #[serde(default)]
+    pub class_id: u32,
+    #[serde(default)]
+    pub authors: Vec<CfAuthor>,
+    #[serde(default)]
+    pub logo: Option<CfPicture>,
+    #[serde(default)]
+    pub screenshots: Vec<CfPicture>,
+    #[serde(default)]
+    pub main_file_id: u32,
+    #[serde(default)]
+    pub latest_files: Vec<CfFile>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfDependency {
+    #[serde(default)]
+    pub mod_id: u32,
+    #[serde(default)]
+    pub file_id: u32,
+    /// 1 = 内嵌库，2 = 可选依赖，3 = 必须依赖，4 = 工具，5 = 不兼容，6 = 包含
+    #[serde(default)]
+    pub relation_type: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfPagination {
+    #[serde(default)]
+    pub index: u32,
+    #[serde(default)]
+    pub page_size: u32,
+    #[serde(default)]
+    pub result_count: u32,
+    #[serde(default)]
+    pub total_count: u32,
+}
+
+/// 单个数据的响应
+#[derive(Debug, Clone, Deserialize)]
+pub struct CfData<T> {
+    #[serde(default = "Vec::new")]
+    pub data: Vec<T>,
+    #[serde(default)]
+    pub pagination: Option<CfPagination>,
+}
+
+/// 单个值的数据响应
+#[derive(Debug, Clone, Deserialize)]
+pub struct CfValue<T> {
+    #[serde(default)]
+    pub data: T,
+}
+
+/// 列表数据的响应
+#[derive(Debug, Clone, Deserialize)]
+pub struct CfList<T> {
+    #[serde(default = "Vec::new")]
+    pub data: Vec<T>,
+    #[serde(default)]
+    pub pagination: Option<CfPagination>,
+}
+
+// ------------------------------------------------------------------ 整合包清单
+
+/// CurseForge 整合包里的 `manifest.json`
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfModpackManifest {
+    #[serde(default)]
+    pub minecraft: Option<CfMinecraft>,
+    #[serde(default)]
+    pub manifest_type: Option<String>,
+    #[serde(default)]
+    pub manifest_version: u32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub files: Vec<CfModpackFile>,
+    /// overrides 目录名，默认 `overrides`
+    #[serde(default)]
+    pub overrides: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfMinecraft {
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub mod_loaders: Vec<CfModLoader>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfModLoader {
+    /// 形如 `forge-47.2.0`、`fabric-0.15.7`
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub primary: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfModpackFile {
+    /// 清单里写的是 `projectID`，大写 D，不能靠驼峰规则转
+    #[serde(rename = "projectID", default)]
+    pub project_id: u32,
+    /// 清单里写的是 `fileID`
+    #[serde(rename = "fileID", default)]
+    pub file_id: u32,
+    #[serde(default)]
+    pub required: bool,
+}
+
+// ------------------------------------------------------------------ 转换
+
+fn encode(value: &str) -> String {
+    utf8_percent_encode(value, NON_ALPHANUMERIC).to_string()
+}
+
+/// 从 CurseForge 的哈希表里挑出 Sha1
+fn sha1_of(file: &CfFile) -> Option<String> {
+    file.hashes
+        .0
+        .iter()
+        .find(|h| h.algo == 1)
+        .map(|h| h.value.clone())
+}
+
+/// CurseForge 的文件对象 → 统一的项目详情
+fn project_to_unified(project: &CfProject, kind: ContentKind) -> Project {
+    let mut categories: Vec<String> = project
+        .categories
+        .iter()
+        .map(|c| c.slug.clone())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if categories.is_empty() {
+        if let Some(primary) = project.categories.first() {
+            categories.push(primary.name.clone());
+        }
+    }
+
+    // 加载器与支持的游戏版本从最新文件里取
+    let mut loaders: Vec<String> = Vec::new();
+    let mut game_versions: Vec<String> = Vec::new();
+    for file in &project.latest_files {
+        if let Some(loader_type) = file.mod_loader_type {
+            if let Some(name) = loader_name(loader_type) {
+                if !loaders.iter().any(|l| l == name) {
+                    loaders.push(name.to_string());
+                }
+            }
+        }
+        for game in &file.game_versions {
+            if !game_versions.contains(game) {
+                game_versions.push(game.clone());
+            }
+        }
+    }
+
+    let mut gallery: Vec<GalleryImage> = project
+        .screenshots
+        .iter()
+        .filter(|s| !s.url.is_empty())
+        .map(|s| GalleryImage {
+            url: s.url.clone(),
+            featured: false,
+            title: None,
+        })
+        .collect();
+    if let Some(logo) = &project.logo {
+        if !logo.url.is_empty() {
+            gallery.insert(
+                0,
+                GalleryImage {
+                    url: logo.url.clone(),
+                    featured: true,
+                    title: None,
+                },
+            );
+        }
+    }
+
+    Project {
+        id: project.id.to_string(),
+        slug: project.slug.clone(),
+        title: project.name.clone(),
+        description: project.summary.clone(),
+        body: project.summary.clone(),
+        icon_url: project.logo.as_ref().map(|l| l.url.clone()),
+        downloads: project.download_count,
+        followers: 0,
+        categories,
+        loaders,
+        game_versions,
+        project_type: kind.facet().to_string(),
+        published: String::new(),
+        updated: String::new(),
+        source_url: project
+            .links
+            .source_url
+            .clone()
+            .or_else(|| Some(project_url(kind, &project.slug))),
+        issues_url: project.links.issue_tracker_url.clone(),
+        wiki_url: project.links.wiki_url.clone(),
+        discord_url: project.links.discord_url.clone(),
+        gallery,
+        license: License {
+            id: "curseforge".into(),
+            name: "CurseForge 项目页".into(),
+        },
+        cf_id: Some(project.id),
+    }
+}
+
+/// CurseForge 的项目 → 统一的搜索结果
+fn project_to_hit(project: &CfProject, kind: ContentKind) -> SearchHit {
+    let mut versions: Vec<String> = Vec::new();
+    for file in &project.latest_files {
+        for game in &file.game_versions {
+            if !versions.contains(game) {
+                versions.push(game.clone());
+            }
+        }
+    }
+    SearchHit {
+        project_id: project.id.to_string(),
+        slug: project.slug.clone(),
+        title: project.name.clone(),
+        description: project.summary.clone(),
+        author: project
+            .authors
+            .first()
+            .map(|a| a.name.clone())
+            .unwrap_or_default(),
+        icon_url: project.logo.as_ref().map(|l| l.url.clone()),
+        downloads: project.download_count,
+        follows: 0,
+        categories: project
+            .categories
+            .iter()
+            .map(|c| c.slug.clone())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        versions,
+        project_type: kind.facet().to_string(),
+        date_modified: String::new(),
+        license: String::new(),
+        gallery: project
+            .screenshots
+            .iter()
+            .map(|s| s.url.clone())
+            .collect(),
+        cf_id: Some(project.id),
+    }
+}
+
+/// CurseForge 的文件 → 统一的版本
+fn file_to_unified(project_id: &str, file: &CfFile) -> Version {
+    let loaders = match file.mod_loader_type.and_then(loader_name) {
+        Some(name) => vec![name.to_string()],
+        None => Vec::new(),
+    };
+    let mut hashes = Hashes::default();
+    hashes.sha1 = sha1_of(file);
+    Version {
+        id: file.id.to_string(),
+        project_id: project_id.to_string(),
+        name: file.display_name.clone(),
+        version_number: file.display_name.clone(),
+        version_type: release_type_label(file.release_type).to_string(),
+        game_versions: file.game_versions.clone(),
+        loaders,
+        date_published: file.file_date.clone(),
+        downloads: file.download_count,
+        files: vec![VersionFile {
+            url: String::new(),
+            filename: file.file_name.clone(),
+            primary: true,
+            size: file.file_length,
+            hashes,
+            cf_mod_id: Some(file.mod_id),
+            cf_file_id: Some(file.id),
+        }],
+        dependencies: Vec::new(),
+        cf_mod_id: Some(file.mod_id),
+        cf_file_id: Some(file.id),
+    }
+}
+
+// ------------------------------------------------------------------ 接口调用
+
+/// 搜索内容
+pub fn search(
+    dl: &Downloader,
+    kind: ContentKind,
+    query: &str,
+    mc_version: Option<&str>,
+    loader: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> Result<SearchResponse> {
+    let mut url = format!(
+        "{API}/v1/mods/search?gameId={GAME_ID}&classId={}&sortOrder=desc&pageSize={}&index={}&sortField=6",
+        class_id(kind),
+        limit.clamp(1, 50),
+        offset
+    );
+    if let Some(version) = mc_version.filter(|v| !v.trim().is_empty()) {
+        url.push_str(&format!("&gameVersion={}", encode(version.trim())));
+    }
+    if let Some(loader_type) = loader
+        .filter(|l| !l.trim().is_empty())
+        .and_then(mod_loader_type)
+    {
+        url.push_str(&format!("&modLoaderType={loader_type}"));
+    }
+    let keyword = query.trim();
+    if !keyword.is_empty() {
+        url.push_str(&format!("&searchFilter={}", encode(keyword)));
+    }
+
+    let response: CfData<CfProject> = dl
+        .get_json_curseforge(&url)
+        .with_context(|| "CurseForge 搜索失败，请检查 API Key 与网络".to_string())?;
+    let hits = response
+        .data
+        .iter()
+        .map(|p| project_to_hit(p, kind))
+        .collect();
+    Ok(SearchResponse {
+        hits,
+        offset,
+        limit,
+        total_hits: response
+            .pagination
+            .map(|p| p.total_count)
+            .unwrap_or_default(),
+    })
+}
+
+/// 项目详情
+pub fn project(dl: &Downloader, id: &str, kind: ContentKind) -> Result<Project> {
+    let url = format!("{API}/v1/mods/{id}");
+    // 单个项目的 `data` 是个对象，不是数组
+    let response: CfValue<CfProject> = dl
+        .get_json_curseforge(&url)
+        .with_context(|| "获取 CurseForge 项目详情失败".to_string())?;
+    Ok(project_to_unified(&response.data, kind))
+}
+
+/// 项目的全部文件（可安装的版本）
+pub fn versions(
+    dl: &Downloader,
+    project_id: &str,
+    mc_version: Option<&str>,
+    loader: Option<&str>,
+) -> Result<Vec<Version>> {
+    let mut all: Vec<CfFile> = Vec::new();
+    let mut index = 0u32;
+    // 每页最多 50 个，逐页取完
+    for _ in 0..20 {
+        let url = format!("{API}/v1/mods/{project_id}/files?pageSize=50&index={index}");
+        let response: CfList<CfFile> = dl
+            .get_json_curseforge(&url)
+            .with_context(|| "获取 CurseForge 文件列表失败".to_string())?;
+        let count = response.data.len();
+        all.extend(response.data);
+        let total = response.pagination.map(|p| p.total_count).unwrap_or(0);
+        if count == 0 || all.len() as u32 >= total {
+            break;
+        }
+        index += 1;
+    }
+
+    let loader_type = loader
+        .filter(|l| !l.trim().is_empty())
+        .and_then(mod_loader_type);
+    let mut list: Vec<Version> = all
+        .into_iter()
+        .filter(|f| f.is_available)
+        .filter(|f| !f.is_server_pack)
+        .filter(|f| match (mc_version, loader_type) {
+            (Some(mc), _) if !mc.trim().is_empty() => {
+                f.game_versions.iter().any(|g| g == mc.trim())
+            }
+            _ => true,
+        })
+        .filter(|f| match (loader_type, f.mod_loader_type) {
+            // 只有文件自己标了加载器时才按加载器筛，没标就不筛
+            (Some(want), Some(have)) => want == have,
+            _ => true,
+        })
+        .map(|f| file_to_unified(project_id, &f))
+        .collect();
+
+    // 最新的排前面
+    list.sort_by(|a, b| b.date_published.cmp(&a.date_published));
+    Ok(list)
+}
+
+/// 文件的真实下载地址
+///
+/// CurseForge 的下载地址要先向接口换一次，CDN 地址直接拼不出来。
+pub fn download_url(dl: &Downloader, mod_id: u32, file_id: u32) -> Result<String> {
+    let url = format!("{API}/v1/mods/{mod_id}/files/{file_id}/download-url");
+    let response: CfValue<String> = dl
+        .get_json_curseforge(&url)
+        .with_context(|| "获取 CurseForge 下载地址失败".to_string())?;
+    let address = response.data;
+    if address.trim().is_empty() {
+        return Err(anyhow!("CurseForge 没有给出下载地址"));
+    }
+    Ok(address)
+}
+
+/// 文件的前置依赖
+pub fn dependencies(dl: &Downloader, mod_id: u32, file_id: u32) -> Result<Vec<CfDependency>> {
+    let url = format!("{API}/v1/mods/{mod_id}/files/{file_id}/dependencies");
+    let response: CfData<CfDependency> = match dl.get_json_curseforge(&url) {
+        Ok(response) => response,
+        Err(err) => {
+            log::warn!("获取 CurseForge 依赖失败: {err}");
+            return Ok(Vec::new());
+        }
+    };
+    Ok(response.data)
+}
+
+/// 把内容文件下载到对应目录，返回落地路径
+pub fn install(
+    dl: &Downloader,
+    kind: ContentKind,
+    version: &Version,
+    game_dir: &Path,
+    progress: &Arc<DownloadProgress>,
+) -> Result<PathBuf> {
+    let file = version
+        .primary_file()
+        .ok_or_else(|| anyhow!("该版本没有可下载的文件"))?;
+    let (mod_id, file_id) = match (version.cf_mod_id, version.cf_file_id) {
+        (Some(m), Some(f)) => (m, f),
+        _ => return Err(anyhow!("这个文件不是来自 CurseForge")),
+    };
+    let dir = if kind.install_dir().is_empty() {
+        game_dir.to_path_buf()
+    } else {
+        game_dir.join(kind.install_dir())
+    };
+    paths::ensure_dir(&dir)?;
+    let dest = dir.join(&file.filename);
+    let url = download_url(dl, mod_id, file_id)?;
+
+    progress.set_message(format!("正在下载 {} ...", file.filename));
+    progress.add_total(file.size);
+    let mut task = FileTask::new(url, dest.clone())
+        .with_size(file.size)
+        .with_optional_sha1(file.hashes.sha1.clone());
+    if let Some(key) = dl.curseforge_key() {
+        task = task.with_header("x-api-key", key);
+    }
+    dl.download(&task, progress)?;
+    Ok(dest)
+}
+
+/// 下载并解压整合包，返回解压目录与它声明的依赖
+pub fn fetch_modpack(
+    dl: &Downloader,
+    version: &Version,
+    progress: &Arc<DownloadProgress>,
+) -> Result<(PathBuf, ModpackDeps)> {
+    let file = version
+        .primary_file()
+        .ok_or_else(|| anyhow!("该整合包没有可下载的文件"))?;
+    let (mod_id, file_id) = match (version.cf_mod_id, version.cf_file_id) {
+        (Some(m), Some(f)) => (m, f),
+        _ => return Err(anyhow!("这个文件不是来自 CurseForge")),
+    };
+    let cache = paths::cache_dir().join("modpacks");
+    paths::ensure_dir(&cache)?;
+    let archive_path = cache.join(&file.filename);
+
+    progress.set_message("正在下载整合包 ...");
+    progress.add_total(file.size);
+    let url = download_url(dl, mod_id, file_id)?;
+    let mut task = FileTask::new(url, archive_path.clone())
+        .with_size(file.size)
+        .with_optional_sha1(file.hashes.sha1.clone());
+    if let Some(key) = dl.curseforge_key() {
+        task = task.with_header("x-api-key", key);
+    }
+    dl.download(&task, progress)?;
+
+    progress.set_message("正在解压整合包 ...");
+    let extract_dir = cache.join(format!("cf-extract-{}", version.id));
+    if extract_dir.is_dir() {
+        let _ = std::fs::remove_dir_all(&extract_dir);
+    }
+    paths::ensure_dir(&extract_dir)?;
+
+    let archive_file = std::fs::File::open(&archive_path)?;
+    let mut archive = zip::ZipArchive::new(archive_file)?;
+    archive.extract(&extract_dir)?;
+
+    let manifest = read_manifest(&extract_dir)?;
+    let deps = deps_from_manifest(&manifest);
+    Ok((extract_dir, deps))
+}
+
+/// 读取整合包里的清单文件
+pub fn read_manifest(extract_dir: &Path) -> Result<CfModpackManifest> {
+    let path = extract_dir.join("manifest.json");
+    let text = std::fs::read_to_string(&path).context("整合包缺少 manifest.json")?;
+    Ok(serde_json::from_str(&text)?)
+}
+
+/// 从清单里取出 Minecraft 版本与加载器
+pub fn deps_from_manifest(manifest: &CfModpackManifest) -> ModpackDeps {
+    let mut deps = ModpackDeps::default();
+    let Some(minecraft) = &manifest.minecraft else {
+        return deps;
+    };
+    deps.minecraft = minecraft.version.clone();
+    // 主加载器优先，没有标主加载器就用第一个
+    let loader = minecraft
+        .mod_loaders
+        .iter()
+        .find(|l| l.primary)
+        .or_else(|| minecraft.mod_loaders.first());
+    if let Some(loader) = loader {
+        let (kind, version) = split_loader_id(&loader.id);
+        deps.loader = kind;
+        deps.loader_version = version;
+    }
+    deps
+}
+
+/// 拆开整合包里的加载器标识
+///
+/// 形如 `forge-47.2.0`，拆成加载器名与版本号。
+pub fn split_loader_id(id: &str) -> (Option<String>, Option<String>) {
+    let id = id.trim();
+    if id.is_empty() {
+        return (None, None);
+    }
+    for (prefix, name) in [
+        ("neoforge-", "neoforge"),
+        ("forge-", "forge"),
+        ("fabric-", "fabric"),
+        ("quilt-", "quilt"),
+        ("liteloader-", "liteloader"),
+    ] {
+        if let Some(version) = id.strip_prefix(prefix) {
+            let version = version.trim();
+            return (
+                Some(name.to_string()),
+                if version.is_empty() {
+                    None
+                } else {
+                    Some(version.to_string())
+                },
+            );
+        }
+    }
+    match id.to_lowercase().as_str() {
+        "forge" => (Some("forge".into()), None),
+        "neoforge" => (Some("neoforge".into()), None),
+        "fabric" => (Some("fabric".into()), None),
+        "quilt" => (Some("quilt".into()), None),
+        "liteloader" => (Some("liteloader".into()), None),
+        _ => (None, None),
+    }
+}
+
+/// 把整合包里的文件装到目标目录
+///
+/// 清单里列的模组放进 `mods/`，`overrides` 目录的内容铺在实例根目录。
+pub fn install_modpack_files(
+    dl: &Downloader,
+    extract_dir: &Path,
+    target_dir: &Path,
+    progress: &Arc<DownloadProgress>,
+) -> Result<()> {
+    let manifest = read_manifest(extract_dir)?;
+    paths::ensure_dir(target_dir)?;
+    let mods_dir = target_dir.join("mods");
+    paths::ensure_dir(&mods_dir)?;
+
+    let entries: Vec<CfModpackFile> = manifest
+        .files
+        .iter()
+        .filter(|f| f.file_id > 0 && f.project_id > 0)
+        .cloned()
+        .collect();
+    if entries.is_empty() {
+        copy_overrides(extract_dir, target_dir, &manifest)?;
+        return Ok(());
+    }
+
+    // 一个整合包常有上百个依赖，逐个查接口要花不少时间，
+    // 这里并发查，顺便把文件大小与校验值一起拿到，进度条才算得准。
+    let resolved = resolve_files(dl, &entries, progress);
+
+    let mut tasks: Vec<FileTask> = Vec::new();
+    let mut total = 0u64;
+    let mut failed = 0usize;
+    for (_entry, resolved) in entries.iter().zip(resolved.iter()) {
+        let Some(resolved) = resolved else {
+            failed += 1;
+            continue;
+        };
+        let file_name = if resolved.file_name.is_empty() {
+            file_name_from_url(&resolved.url)
+        } else {
+            resolved.file_name.clone()
+        };
+        if file_name.is_empty() {
+            failed += 1;
+            continue;
+        }
+        let dest = mods_dir.join(&file_name);
+        total += resolved.size;
+        let mut task = FileTask::new(resolved.url.clone(), dest)
+            .with_size(resolved.size)
+            .with_optional_sha1(resolved.sha1.clone());
+        if let Some(key) = dl.curseforge_key() {
+            task = task.with_header("x-api-key", key);
+        }
+        tasks.push(task);
+    }
+
+    if failed > 0 {
+        log::warn!("整合包里有 {failed} 个文件没取到下载地址");
+    }
+    if !tasks.is_empty() {
+        progress.set_message(format!("正在下载整合包内容（{} 个文件）...", tasks.len()));
+        progress.total.store(total, std::sync::atomic::Ordering::Relaxed);
+        progress.done.store(0, std::sync::atomic::Ordering::Relaxed);
+        dl.download_batch(tasks, 8, progress)?;
+    }
+
+    copy_overrides(extract_dir, target_dir, &manifest)?;
+    Ok(())
+}
+
+/// 一个依赖文件查出来的信息
+#[derive(Debug, Clone, Default)]
+struct ResolvedFile {
+    url: String,
+    file_name: String,
+    size: u64,
+    sha1: Option<String>,
+}
+
+/// 并发查每个依赖文件的下载地址
+///
+/// 同一个项目只查一次文件列表，列表里能拿到的直接用，
+/// 拿不到再单独换下载地址。
+fn resolve_files(
+    dl: &Downloader,
+    entries: &[CfModpackFile],
+    progress: &Arc<DownloadProgress>,
+) -> Vec<Option<ResolvedFile>> {
+    // 按项目分组，一个项目一次请求
+    let mut projects: Vec<u32> = Vec::new();
+    for entry in entries {
+        if !projects.contains(&entry.project_id) {
+            projects.push(entry.project_id);
+        }
+    }
+    let workers = num_cpus::get().clamp(2, 8);
+    let chunk = projects.len().div_ceil(workers).max(1);
+
+    let mut lists: Vec<Vec<CfFile>> = vec![Vec::new(); projects.len()];
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = projects
+            .chunks(chunk)
+            .enumerate()
+            .map(|(index, group)| {
+                let dl = dl.clone();
+                let progress = progress.clone();
+                scope.spawn(move || -> Vec<(usize, Vec<CfFile>)> {
+                    let mut out = Vec::new();
+                    for (offset, project_id) in group.iter().enumerate() {
+                        if progress.is_cancelled() {
+                            break;
+                        }
+                        let slot = index * chunk + offset;
+                        match project_files(&dl, *project_id) {
+                            Ok(files) => out.push((slot, files)),
+                            Err(err) => {
+                                log::warn!("取 CurseForge 项目 {project_id} 的文件列表失败: {err}");
+                            }
+                        }
+                    }
+                    out
+                })
+            })
+            .collect();
+        for handle in handles {
+            for (slot, files) in handle.join().unwrap_or_default() {
+                lists[slot] = files;
+            }
+        }
+    });
+
+    let mut out: Vec<Option<ResolvedFile>> = vec![None; entries.len()];
+    for (slot, entry) in entries.iter().enumerate() {
+        let project_index = projects
+            .iter()
+            .position(|p| *p == entry.project_id)
+            .unwrap_or(0);
+        let file = lists[project_index]
+            .iter()
+            .find(|f| f.id == entry.file_id)
+            .cloned();
+        let mut resolved = match &file {
+            Some(file) => ResolvedFile {
+                url: String::new(),
+                file_name: file.file_name.clone(),
+                size: file.file_length,
+                sha1: sha1_of(file),
+            },
+            None => ResolvedFile::default(),
+        };
+        // 文件列表里的 cdnUrl 能直接用就省一次请求
+        let direct = file.as_ref().and_then(|f| f.cdn_url.clone());
+        resolved.url = match direct {
+            Some(url) if !url.trim().is_empty() => url,
+            _ => match download_url(dl, entry.project_id, entry.file_id) {
+                Ok(url) => url,
+                Err(err) => {
+                    log::warn!(
+                        "取不到 CurseForge 文件 {}/{} 的下载地址: {err}",
+                        entry.project_id,
+                        entry.file_id
+                    );
+                    continue;
+                }
+            },
+        };
+        out[slot] = Some(resolved);
+    }
+    out
+}
+
+/// 取某个项目的文件列表
+fn project_files(dl: &Downloader, project_id: u32) -> Result<Vec<CfFile>> {
+    let url = format!("{API}/v1/mods/{project_id}/files?pageSize=50");
+    let response: CfList<CfFile> = dl
+        .get_json_curseforge(&url)
+        .with_context(|| format!("获取 CurseForge 项目 {project_id} 的文件列表失败"))?;
+    Ok(response.data)
+}
+
+/// 把 overrides 目录的内容铺到实例根目录
+fn copy_overrides(
+    extract_dir: &Path,
+    target_dir: &Path,
+    manifest: &CfModpackManifest,
+) -> Result<()> {
+    let override_name = manifest.overrides.clone().unwrap_or_else(|| "overrides".into());
+    for name in [override_name.as_str(), "client-overrides"] {
+        let src = extract_dir.join(name);
+        if src.is_dir() {
+            copy_dir(&src, target_dir)?;
+        }
+    }
+    Ok(())
+}
+
+/// 从下载地址里取出文件名
+fn file_name_from_url(url: &str) -> String {
+    let last = url.split('/').next_back().unwrap_or_default();
+    percent_encoding::percent_decode_str(last)
+        .decode_utf8_lossy()
+        .to_string()
+}
+
+/// 复制目录
+fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
+    paths::ensure_dir(dst)?;
+    for entry in walkdir::WalkDir::new(src).into_iter().filter_map(|e| e.ok()) {
+        let rel = match entry.path().strip_prefix(src) {
+            Ok(rel) => rel,
+            Err(_) => continue,
+        };
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let target = dst.join(rel);
+        if entry.file_type().is_dir() {
+            paths::ensure_dir(&target)?;
+        } else if entry.file_type().is_file() {
+            if let Some(parent) = target.parent() {
+                paths::ensure_dir(parent)?;
+            }
+            std::fs::copy(entry.path(), &target).with_context(|| {
+                format!("复制整合包文件失败: {}", entry.path().display())
+            })?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn content_kind_maps_to_class_id() {
+        assert_eq!(class_id(ContentKind::Mod), 6);
+        assert_eq!(class_id(ContentKind::Modpack), 4471);
+        assert_eq!(class_id(ContentKind::Shader), 6552);
+        assert_eq!(class_id(ContentKind::ResourcePack), 12);
+        assert_eq!(class_id(ContentKind::World), 17);
+    }
+
+    #[test]
+    fn loader_names_map_to_type() {
+        assert_eq!(mod_loader_type("Forge"), Some(1));
+        assert_eq!(mod_loader_type("fabric"), Some(4));
+        assert_eq!(mod_loader_type("Quilt"), Some(5));
+        assert_eq!(mod_loader_type("neoforge"), Some(6));
+        assert_eq!(mod_loader_type("原版"), None);
+        assert_eq!(mod_loader_type(""), None);
+    }
+
+    #[test]
+    fn release_type_maps_to_version_type() {
+        assert_eq!(release_type_label(1), "release");
+        assert_eq!(release_type_label(2), "beta");
+        assert_eq!(release_type_label(3), "alpha");
+    }
+
+    #[test]
+    fn manifest_gives_minecraft_and_loader() {
+        let manifest: CfModpackManifest = serde_json::from_str(
+            r#"{
+                "minecraft": {
+                    "version": "1.20.1",
+                    "modLoaders": [{"id": "forge-47.2.0", "primary": true}]
+                },
+                "manifestType": "minecraftModpack",
+                "manifestVersion": 1,
+                "name": "测试整合包",
+                "version": "1.0.0",
+                "author": "作者",
+                "files": [
+                    {"projectID": 238222, "fileID": 4593548, "required": true}
+                ],
+                "overrides": "overrides"
+            }"#,
+        )
+        .unwrap();
+        let deps = deps_from_manifest(&manifest);
+        assert_eq!(deps.minecraft, "1.20.1");
+        assert_eq!(deps.loader.as_deref(), Some("forge"));
+        assert_eq!(deps.loader_version.as_deref(), Some("47.2.0"));
+        assert_eq!(manifest.files.len(), 1);
+        assert_eq!(manifest.files[0].project_id, 238222);
+    }
+
+    #[test]
+    fn manifest_without_loader_only_reports_minecraft() {
+        let manifest: CfModpackManifest = serde_json::from_str(
+            r#"{"minecraft":{"version":"1.16.5","modLoaders":[]},"files":[]}"#,
+        )
+        .unwrap();
+        let deps = deps_from_manifest(&manifest);
+        assert_eq!(deps.minecraft, "1.16.5");
+        assert!(deps.loader.is_none());
+    }
+
+    #[test]
+    fn loader_id_split_handles_bare_names() {
+        assert_eq!(
+            split_loader_id("fabric-0.15.7"),
+            (Some("fabric".to_string()), Some("0.15.7".to_string()))
+        );
+        assert_eq!(
+            split_loader_id("neoforge-47.1.84"),
+            (Some("neoforge".to_string()), Some("47.1.84".to_string()))
+        );
+        assert_eq!(split_loader_id("forge"), (Some("forge".to_string()), None));
+        assert_eq!(split_loader_id(""), (None, None));
+    }
+
+    #[test]
+    fn file_name_is_taken_from_download_url() {
+        assert_eq!(
+            file_name_from_url("https://mediafilez.forgecdn.net/files/238222/4593548/all-the-mods-9.jar"),
+            "all-the-mods-9.jar"
+        );
+        assert_eq!(
+            file_name_from_url("https://mediafilez.forgecdn.net/files/1/2/my%20mod.jar"),
+            "my mod.jar"
+        );
+    }
+
+    #[test]
+    fn project_converts_to_unified_shape() {
+        let project: CfProject = serde_json::from_str(
+            r#"{
+                "id": 238222,
+                "gameId": 432,
+                "name": "All The Mods 9",
+                "slug": "all-the-mods-9",
+                "summary": "一个整合包",
+                "status": 4,
+                "downloadCount": 123456,
+                "classId": 4471,
+                "authors": [{"id": 1, "name": "作者"}],
+                "logo": {"url": "https://mediafilez.forgecdn.net/logo.png"},
+                "categories": [{"id": 4, "name": "Adventure", "slug": "adventure"}],
+                "latestFiles": [{
+                    "id": 4593548,
+                    "modId": 238222,
+                    "isAvailable": true,
+                    "displayName": "9.0.0",
+                    "fileName": "all-the-mods-9.zip",
+                    "releaseType": 1,
+                    "fileLength": 1234,
+                    "gameVersions": ["1.20.1"],
+                    "hashes": [{"value": "ABCDEF", "algo": 1}]
+                }]
+            }"#,
+        )
+        .unwrap();
+        let unified = project_to_unified(&project, ContentKind::Modpack);
+        assert_eq!(unified.id, "238222");
+        assert_eq!(unified.title, "All The Mods 9");
+        assert_eq!(unified.downloads, 123456);
+        assert_eq!(unified.cf_id, Some(238222));
+        assert_eq!(unified.game_versions, vec!["1.20.1".to_string()]);
+
+        let version = file_to_unified("238222", &project.latest_files[0]);
+        assert_eq!(version.id, "4593548");
+        assert_eq!(version.cf_mod_id, Some(238222));
+        assert_eq!(version.cf_file_id, Some(4593548));
+        let file = version.primary_file().unwrap();
+        assert_eq!(file.filename, "all-the-mods-9.zip");
+        assert_eq!(file.size, 1234);
+        assert_eq!(file.hashes.sha1.as_deref(), Some("ABCDEF"));
+    }
+
+    #[test]
+    fn search_response_maps_to_hits() {
+        let project: CfProject = serde_json::from_str(
+            r#"{
+                "id": 238222,
+                "name": "All The Mods 9",
+                "slug": "all-the-mods-9",
+                "summary": "一个整合包",
+                "downloadCount": 10,
+                "classId": 4471,
+                "authors": [{"id": 1, "name": "作者"}],
+                "categories": [{"id": 4, "name": "Adventure", "slug": "adventure"}]
+            }"#,
+        )
+        .unwrap();
+        let hit = project_to_hit(&project, ContentKind::Modpack);
+        assert_eq!(hit.project_id, "238222");
+        assert_eq!(hit.author, "作者");
+        assert_eq!(hit.cf_id, Some(238222));
+        assert_eq!(hit.categories, vec!["adventure".to_string()]);
+    }
+
+    #[test]
+    fn single_project_response_has_object_data() {
+        // 单个项目的 data 是对象，列表的 data 才是数组
+        let response: CfValue<CfProject> = serde_json::from_str(
+            r#"{"data": {"id": 238222, "name": "整合包", "slug": "pack", "summary": "说明"}}"#,
+        )
+        .unwrap();
+        assert_eq!(response.data.id, 238222);
+        assert_eq!(response.data.name, "整合包");
+    }
+
+    #[test]
+    fn list_response_has_pagination() {
+        let response: CfList<CfProject> = serde_json::from_str(
+            r#"{"data": [{"id": 1, "name": "甲"}], "pagination": {"index": 0, "pageSize": 24, "resultCount": 1, "totalCount": 320}}"#,
+        )
+        .unwrap();
+        assert_eq!(response.data.len(), 1);
+        assert_eq!(response.pagination.map(|p| p.total_count), Some(320));
+    }
+
+    #[test]
+    fn hashes_accept_object_or_array() {
+        let array_form: CfFile = serde_json::from_str(
+            r#"{"id": 1, "modId": 2, "fileName": "a.jar", "hashes": [{"value": "AA", "algo": 1}]}"#,
+        )
+        .unwrap();
+        assert_eq!(sha1_of(&array_form).as_deref(), Some("AA"));
+
+        let object_form: CfFile = serde_json::from_str(
+            r#"{"id": 1, "modId": 2, "fileName": "a.jar", "hashes": {"value": "BB", "algo": 1}}"#,
+        )
+        .unwrap();
+        assert_eq!(sha1_of(&object_form).as_deref(), Some("BB"));
+
+        let md5_form: CfFile = serde_json::from_str(
+            r#"{"id": 1, "modId": 2, "fileName": "a.jar", "hashes": [{"value": "CC", "algo": 2}]}"#,
+        )
+        .unwrap();
+        assert_eq!(sha1_of(&md5_form), None);
+    }
+
+    #[test]
+    fn links_accept_issue_url_aliases() {
+        let with_issues: CfProject = serde_json::from_str(
+            r#"{"id": 1, "name": "甲", "links": {"issuesUrl": "https://example.com/issues"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_issues.links.issue_tracker_url.as_deref(),
+            Some("https://example.com/issues")
+        );
+
+        let with_tracker: CfProject = serde_json::from_str(
+            r#"{"id": 1, "name": "甲", "links": {"issueTrackerUrl": "https://example.com/bugs"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            with_tracker.links.issue_tracker_url.as_deref(),
+            Some("https://example.com/bugs")
+        );
+    }
+}

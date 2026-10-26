@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::core::content::ContentSource;
 use crate::core::download::DownloadSource;
 use crate::core::java::JavaInfo;
 use crate::core::paths;
@@ -99,6 +100,12 @@ pub struct DownloadSettings {
     pub cache_dir: Option<PathBuf>,
     /// 下载缓存上限（MB），0 表示不限制
     pub cache_limit_mb: u64,
+    /// 内容平台：Modrinth 或 CurseForge
+    pub content_source: ContentSource,
+    /// CurseForge 的 API Key
+    ///
+    /// 留空时依次找环境变量 `CURSEFORGE_API_KEY` 与内置的默认 key。
+    pub curseforge_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -231,6 +238,8 @@ impl Default for DownloadSettings {
             auto_threads: false,
             cache_dir: None,
             cache_limit_mb: 0,
+            content_source: ContentSource::default(),
+            curseforge_key: String::new(),
         }
     }
 }
@@ -260,6 +269,28 @@ impl DownloadSettings {
                 self.threads.clamp(1, 32)
             },
             install_assets: self.install_assets,
+        }
+    }
+
+    /// 实际使用的 CurseForge API Key
+    ///
+    /// 优先级：设置里填的 → 环境变量 `CURSEFORGE_API_KEY` → 内置的默认 key。
+    pub fn curseforge_key(&self) -> Option<String> {
+        let from_config = self.curseforge_key.trim();
+        if !from_config.is_empty() {
+            return Some(from_config.to_string());
+        }
+        if let Ok(value) = std::env::var("CURSEFORGE_API_KEY") {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
+            }
+        }
+        let builtin = crate::core::content::curseforge::BUILTIN_API_KEY.trim();
+        if builtin.is_empty() {
+            None
+        } else {
+            Some(builtin.to_string())
         }
     }
 }
