@@ -272,9 +272,35 @@ pub fn resolve(game_dir: &Path, id: &str) -> Result<ResolvedVersion> {
     })
 }
 
+/// 依赖库的去重键：只看 group 与 artifact，不看版本
+///
+/// 同一个库的版本不同就该由更后来的那份顶上，
+/// 所以版本号不能进键里。
+fn library_key(lib: &Library) -> String {
+    let mut parts = lib.name.split(':');
+    match (parts.next(), parts.next()) {
+        (Some(group), Some(artifact)) => format!("{group}:{artifact}"),
+        _ => lib.name.clone(),
+    }
+}
+
 fn merge(parent: &VersionJson, child: &VersionJson) -> VersionJson {
     let mut libraries = parent.libraries.clone();
     libraries.extend(child.libraries.clone());
+    // 同名库以子版本为准
+    //
+    // 加载器会带上自己那份更新的依赖（比如 Forge 带的是 log4j 2.15，
+    // Minecraft 1.16.5 自带的是 2.8.1）。两份都留着的话，
+    // 旧的那份在 classpath 靠前会先被加载，Forge 的日志转换器就会
+    // 因为 API 对不上而直接报错退出。这里按 group:artifact 去重。
+    let mut merged: Vec<Library> = Vec::with_capacity(libraries.len());
+    for lib in libraries {
+        match merged.iter().position(|old| library_key(old) == library_key(&lib)) {
+            Some(pos) => merged[pos] = lib,
+            None => merged.push(lib),
+        }
+    }
+    let libraries = merged;
 
     let arguments = match (&parent.arguments, &child.arguments) {
         (None, None) => None,
@@ -987,6 +1013,42 @@ mod tests {
         let instances = group_instances(&[vanilla, fabric], None);
         assert_eq!(instances.len(), 1);
         assert_eq!(instances[0].active, "fabric-loader-0.20.1-26.2");
+    }
+
+    /// 加载器带来的同名库要替换掉原版那份
+    ///
+    /// Forge 带的是 log4j 2.15，Minecraft 1.16.5 自带的是 2.8.1，
+    /// 两份都在的话旧的那份先被加载，Forge 的日志转换器会直接崩。
+    #[test]
+    fn child_library_replaces_parent_one() {
+        let parent = VersionJson {
+            libraries: vec![
+                Library {
+                    name: "org.apache.logging.log4j:log4j-core:2.8.1".into(),
+                    ..Default::default()
+                },
+                Library {
+                    name: "com.mojang:text2speech:1.11.3".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let child = VersionJson {
+            libraries: vec![Library {
+                name: "org.apache.logging.log4j:log4j-core:2.15.0".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let merged = merge(&parent, &child);
+        assert_eq!(merged.libraries.len(), 2, "同名库不该出现两份");
+        let core = merged
+            .libraries
+            .iter()
+            .find(|l| l.name.contains("log4j-core"))
+            .expect("应有 log4j-core");
+        assert_eq!(core.name, "org.apache.logging.log4j:log4j-core:2.15.0");
     }
 
     /// 子版本没写 name 时沿用父版本的名字
