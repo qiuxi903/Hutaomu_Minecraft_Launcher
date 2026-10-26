@@ -60,6 +60,11 @@ pub fn write_marker(version_dir: &Path, info: &ModpackInfo) -> Result<()> {
     Ok(())
 }
 
+/// 这个版本是不是整合包实例
+pub fn is_instance_dir(game_dir: &Path, id: &str) -> bool {
+    is_instance(&game_dir.join("versions").join(id))
+}
+
 /// 这个版本目录是不是一个整合包实例
 pub fn is_instance(version_dir: &Path) -> bool {
     marker_path(version_dir).is_file()

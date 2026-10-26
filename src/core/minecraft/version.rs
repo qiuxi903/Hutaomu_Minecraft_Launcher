@@ -272,15 +272,24 @@ pub fn resolve(game_dir: &Path, id: &str) -> Result<ResolvedVersion> {
     })
 }
 
-/// 依赖库的去重键：只看 group 与 artifact，不看版本
+/// 依赖库的去重键：group、artifact 与 classifier
 ///
-/// 同一个库的版本不同就该由更后来的那份顶上，
-/// 所以版本号不能进键里。
+/// 版本号不进键里：同一个库的版本不同就该由更后来的那份顶上。
+///
+/// classifier 一定要进键里。Minecraft 1.20.5 之后把 natives 拆成了单独的库条目，
+/// `org.lwjgl:lwjgl:3.4.3` 和 `org.lwjgl:lwjgl:3.4.3:natives-windows`
+/// 看着像同一个库，其实是两个文件，少了 classifier 就会把主 jar 顶掉，
+/// 到了游戏里就变成 `ClassNotFoundException`。
 fn library_key(lib: &Library) -> String {
-    let mut parts = lib.name.split(':');
-    match (parts.next(), parts.next()) {
-        (Some(group), Some(artifact)) => format!("{group}:{artifact}"),
-        _ => lib.name.clone(),
+    let parts: Vec<&str> = lib.name.split(':').collect();
+    match parts.len() {
+        0..=1 => lib.name.clone(),
+        2 => format!("{}:{}", parts[0], parts[1]),
+        _ => {
+            // group:artifact:version[:classifier]
+            let classifier = parts.get(3).copied().unwrap_or("");
+            format!("{}:{}:{}", parts[0], parts[1], classifier)
+        }
     }
 }
 
@@ -567,7 +576,12 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             .as_ref()
             .and_then(|m| m.loader.clone())
             .or_else(|| detect_loader(&id, &json));
-        let mc_version = detect_mc_version(game_dir, &id, &json);
+        let mc_version = if marker.is_some() {
+            // 整合包实例自己成一条，不跟原版版本合并
+            id.clone()
+        } else {
+            detect_mc_version(game_dir, &id, &json)
+        };
         let loader_version = marker
             .as_ref()
             .and_then(|m| m.loader_version.clone())
@@ -817,11 +831,6 @@ fn detect_loader(id: &str, json: &VersionJson) -> Option<String> {    let lower 
 }
 
 pub fn detect_mc_version(game_dir: &Path, id: &str, json: &VersionJson) -> String {
-    // 整合包实例虽然继承原版版本，但它是一个独立实例，
-    // 不能按继承链归到原版那个实例里去
-    if modpack::is_instance(&version_dir(game_dir, id)) {
-        return id.to_string();
-    }
     if json.inherits_from.is_some() {
         // 沿继承链找到最底层版本
         let mut current = json.inherits_from.clone();
@@ -1015,6 +1024,34 @@ mod tests {
         assert_eq!(instances[0].active, "fabric-loader-0.20.1-26.2");
     }
 
+    /// 整合包的版本 id 是它自己的名字，但 Minecraft 版本要看继承的那一层
+    ///
+    /// 拿不到就是最底层的原版版本
+    #[test]
+    fn detects_mc_version_through_inheritance() {
+        let dir = std::env::temp_dir().join(format!("htmcl-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let vanilla = VersionJson {
+            id: "26.3".into(),
+            version_type: "release".into(),
+            ..Default::default()
+        };
+        write_local_json(&dir, &vanilla).unwrap();
+        let pack = VersionJson {
+            id: "fps".into(),
+            inherits_from: Some("26.3".into()),
+            main_class: "net.fabricmc.loader.impl.launch.knot.KnotClient".into(),
+            ..Default::default()
+        };
+        write_local_json(&dir, &pack).unwrap();
+
+        let resolved = resolve(&dir, "fps").expect("应能解析整合包版本");
+        let mc = detect_mc_version(&dir, "fps", &resolved.json);
+        assert_eq!(mc, "26.3", "整合包要认出它底层的 Minecraft 版本");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 加载器带来的同名库要替换掉原版那份
     ///
     /// Forge 带的是 log4j 2.15，Minecraft 1.16.5 自带的是 2.8.1，
@@ -1049,6 +1086,35 @@ mod tests {
             .find(|l| l.name.contains("log4j-core"))
             .expect("应有 log4j-core");
         assert_eq!(core.name, "org.apache.logging.log4j:log4j-core:2.15.0");
+    }
+
+    /// 主 jar 与 natives jar 是两个文件，不能当成同一个库合并
+    #[test]
+    fn main_jar_is_not_merged_with_natives() {
+        let parent = VersionJson {
+            libraries: vec![Library {
+                name: "org.lwjgl:lwjgl-freetype:3.4.3".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let child = VersionJson {
+            libraries: vec![Library {
+                name: "org.lwjgl:lwjgl-freetype:3.4.3:natives-windows".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let merged = merge(&parent, &child);
+        assert_eq!(merged.libraries.len(), 2, "主 jar 与 natives jar 都得留着");
+        assert!(merged
+            .libraries
+            .iter()
+            .any(|l| l.name == "org.lwjgl:lwjgl-freetype:3.4.3"));
+        assert!(merged
+            .libraries
+            .iter()
+            .any(|l| l.name == "org.lwjgl:lwjgl-freetype:3.4.3:natives-windows"));
     }
 
     /// 子版本没写 name 时沿用父版本的名字

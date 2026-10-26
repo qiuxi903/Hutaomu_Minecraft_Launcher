@@ -106,11 +106,20 @@ pub fn launch_game(app: &mut App) {
         }
     };
 
+    // Minecraft 版本：整合包实例要认出它底层的原版版本，
+    // 不然会拿实例名去挑 Java，26.3 的游戏被挑了 Java 8 根本起不来
     let mc_version = crate::core::minecraft::version::detect_mc_version(
         &game_dir,
         &version_id,
         &resolved.json,
     );
+
+    // 实例目录用的 id：整合包用自己的名字，普通版本就是 Minecraft 版本
+    let dir_id = if crate::core::minecraft::modpack::is_instance_dir(&game_dir, &version_id) {
+        version_id.clone()
+    } else {
+        mc_version.clone()
+    };
 
     // 版本 JSON 里的 javaVersion 是 Mojang 官方声明的要求，
     // 比按版本号估算的表准（26.x 要求 Java 25）
@@ -150,9 +159,10 @@ pub fn launch_game(app: &mut App) {
     let height = app.cfg.launch.height;
     let authlib_jar = app.authlib_jar.clone();
 
-    // 版本隔离：游戏目录指向该 Minecraft 版本的实例目录，
-    // 原版与各加载器版本共用这一份，模组与存档不会各分一份
-    let effective_dir = app.cfg.effective_game_dir(&mc_version);
+    // 版本隔离：游戏目录指向该实例的目录，
+    // 原版与各加载器版本共用这一份，模组与存档不会各分一份；
+    // 整合包实例用自己的目录
+    let effective_dir = app.cfg.effective_game_dir(&dir_id);
     if let Err(err) = paths::ensure_dir(&effective_dir) {
         app.error(format!("创建游戏目录失败：{err}"));
         return;
