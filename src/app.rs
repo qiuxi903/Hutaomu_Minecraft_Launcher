@@ -8,6 +8,7 @@ use egui::{Align, Color32, CornerRadius, Layout, Margin, Pos2, Rect, Sense, Stro
 use crate::core::auth::{Account, SkinModel};
 use crate::core::config::Config;
 use crate::core::content::modrinth::{SearchResponse, Version as ModVersion};
+use crate::core::content::ContentSource;
 use crate::core::download::{DownloadProgress, DownloadSource, Downloader};
 use crate::core::java::JavaInfo;
 use crate::core::minecraft::launch::GameProcess;
@@ -89,7 +90,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 33;
+pub const SHOT_SCENES: usize = 34;
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -346,6 +347,18 @@ impl App {
                     self.versions_ui.section = "info";
                 }
             }
+            33 => {
+                // 下载页切到 CurseForge 平台
+                self.page = Page::Download;
+                self.download.tab = 2;
+                self.download.content_source = ContentSource::CurseForge;
+                self.cfg.download.content_source = ContentSource::CurseForge;
+                self.download.content_query = "sodium".into();
+                // 上一个场景可能停在详情页，这里退回列表
+                self.download.content_detail = None;
+                self.download.content_hits.clear();
+                self.download.content_loaded_tab = None;
+            }
             _ => {
                 // 提示条位置与动效检查
                 self.page = Page::Home;
@@ -524,6 +537,8 @@ pub enum CoreEvent {
     CurseForgeKeyTest(Result<String, String>),
     /// 本地内容反查到的 Modrinth 项目：文件名 → slug
     ContentSlugs(std::collections::HashMap<String, String>),
+    /// 本地内容反查到的 CurseForge 项目：文件名 → slug
+    ContentCurseForge(std::collections::HashMap<String, String>),
     /// 各实例里装了哪些模组自带的内容
     ModFeatures(
         std::collections::HashMap<String, Vec<crate::core::content::modfeature::ModFeature>>,
@@ -1920,6 +1935,11 @@ impl App {
                         self.versions_ui.content_slugs.insert(name, slug);
                     }
                 }
+                CoreEvent::ContentCurseForge(map) => {
+                    for (name, slug) in map {
+                        self.versions_ui.content_cf.insert(name, slug);
+                    }
+                }
                 CoreEvent::ModFeatures(map) => {
                     self.mod_features_scanning = false;
                     self.mod_features = map;
@@ -3117,6 +3137,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         30 => "版本管理-光影加载器",
         31 => "版本管理-导出",
         32 => "版本管理-概览",
+        33 => "下载-CurseForge",
         _ => "账号-皮肤站",
     }
 }

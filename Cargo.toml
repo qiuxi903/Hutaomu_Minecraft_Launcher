@@ -39,6 +39,7 @@ resvg = { version = "0.48", default-features = false, features = ["text"] }
 zip = { version = "9", default-features = false, features = ["deflate", "bzip2", "zstd"] }
 md-5 = "0.11"
 sha1 = "0.11"
+murmur2 = "0.1"
 uuid = { version = "1", features = ["v4", "serde"] }
 rfd = "0.17"
 dirs = "7"

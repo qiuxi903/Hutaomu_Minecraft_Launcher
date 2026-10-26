@@ -33,6 +33,10 @@ pub struct VersionsState {
     pub content_slugs: HashMap<String, String>,
     /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
     pub content_lookup_section: Option<&'static str>,
+    /// 本地文件名 → CurseForge 项目 slug（用文件指纹反查得到）
+    pub content_cf: HashMap<String, String>,
+    /// 已发起过 CurseForge 指纹反查的内容分区
+    pub content_cf_lookup_section: Option<&'static str>,
     /// 内容列表每行放几个（1 或 2）
     pub content_columns: usize,
     pub detail_memory: f32,
@@ -90,6 +94,8 @@ impl Default for VersionsState {
             section: "info",
             content_slugs: HashMap::new(),
             content_lookup_section: None,
+            content_cf: HashMap::new(),
+            content_cf_lookup_section: None,
             content_columns: 2,
             detail_memory: 4096.0,
             detail_memory_mode: "global".to_string(),
@@ -1382,6 +1388,16 @@ impl ContentKind {
         }
     }
 
+    /// CurseForge 的项目类型（决定主页链接的路径）
+    fn curseforge_type(self) -> crate::core::content::modrinth::ContentKind {
+        use crate::core::content::modrinth::ContentKind as Kind;
+        match self {
+            Self::Mod => Kind::Mod,
+            Self::Shader => Kind::Shader,
+            Self::ResourcePack => Kind::ResourcePack,
+        }
+    }
+
     /// 相对游戏目录的位置
     fn sub_dir(self) -> &'static str {
         match self {
@@ -1839,6 +1855,18 @@ fn content_tab(
         lookup_content_slugs(app, names);
     }
 
+    // CurseForge 认文件指纹，模组、光影、资源包都能反查出来
+    if app.cfg.download.content_source == crate::core::content::ContentSource::CurseForge
+        && app.versions_ui.content_cf_lookup_section != Some(section)
+    {
+        app.versions_ui.content_cf_lookup_section = Some(section);
+        let files: Vec<(String, PathBuf)> = items
+            .iter()
+            .map(|i| (i.file_name.clone(), i.path.clone()))
+            .collect();
+        lookup_curseforge_projects(app, files);
+    }
+
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new(format!("{} 个{}", items.len(), kind.label()))
@@ -1915,6 +1943,10 @@ fn content_tab(
                     .modrinth_slug
                     .clone()
                     .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
+                // CurseForge 的项目页用指纹反查，认出来就摆一个链接
+                let cf_slug = app.versions_ui.content_cf.get(&item.file_name).cloned();
+                let use_curseforge =
+                    app.cfg.download.content_source == crate::core::content::ContentSource::CurseForge;
                 ui.allocate_ui_with_layout(
                     Vec2::new(card_width, 0.0),
                     Layout::top_down(Align::Min),
@@ -2008,6 +2040,43 @@ fn content_tab(
                         });
                         // 右上角的角标：打开所在目录、用外部浏览器看项目主页
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
+                        // 外链角标指向当前平台的项目页，没有项目页就退回 MC 百科
+                        let (primary_url, primary_tip): (Option<String>, String) =
+                            if use_curseforge {
+                                match &cf_slug {
+                                    Some(slug) => (
+                                        Some(crate::core::content::curseforge::project_url(
+                                            kind.curseforge_type(),
+                                            slug,
+                                        )),
+                                        format!("在浏览器里打开 CurseForge：{slug}"),
+                                    ),
+                                    None => match &mcmod_url {
+                                        Some(url) => (
+                                            Some(url.clone()),
+                                            "在浏览器里打开 MC 百科".to_string(),
+                                        ),
+                                        None => (None, String::new()),
+                                    },
+                                }
+                            } else {
+                                match &modrinth_slug {
+                                    Some(slug) => (
+                                        Some(crate::core::content::modrinth::project_url(
+                                            kind.modrinth_type(),
+                                            slug,
+                                        )),
+                                        format!("在浏览器里打开 Modrinth：{slug}"),
+                                    ),
+                                    None => match &mcmod_url {
+                                        Some(url) => (
+                                            Some(url.clone()),
+                                            "在浏览器里打开 MC 百科".to_string(),
+                                        ),
+                                        None => (None, String::new()),
+                                    },
+                                }
+                            };
                         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                             // 打开所在目录
                             let folder = ui::round_icon_button(ui, &p, "folder-open", 22.0);
@@ -2023,38 +2092,17 @@ fn content_tab(
                             if folder.clicked() {
                                 paths::reveal(&item.path);
                             }
-                            if modrinth_slug.is_some() || mcmod_url.is_some() {
+                            if let Some(url) = &primary_url {
                                 let badge = ui::round_icon_button(ui, &p, "external-link", 22.0);
                                 if badge.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                    if let Some(slug) = &modrinth_slug {
-                                        badge.clone().on_hover_ui(|ui| {
-                                            ui.label(
-                                                egui::RichText::new(format!(
-                                                    "在浏览器里打开 Modrinth：{}",
-                                                    slug
-                                                ))
-                                                .font(ui::font(11.0)),
-                                            );
-                                        });
-                                    } else if mcmod_url.is_some() {
-                                        badge.clone().on_hover_ui(|ui| {
-                                            ui.label(
-                                                egui::RichText::new("在浏览器里打开 MC 百科")
-                                                    .font(ui::font(11.0)),
-                                            );
-                                        });
-                                    }
+                                    let tip = primary_tip.clone();
+                                    badge.clone().on_hover_ui(|ui| {
+                                        ui.label(egui::RichText::new(tip).font(ui::font(11.0)));
+                                    });
                                 }
                                 if badge.clicked() {
-                                    if let Some(slug) = &modrinth_slug {
-                                        let _ = open::that(crate::core::content::modrinth::project_url(
-                                            kind.modrinth_type(),
-                                            slug,
-                                        ));
-                                    } else if let Some(url) = &mcmod_url {
-                                        let _ = open::that(url);
-                                    }
+                                    let _ = open::that(url);
                                 }
                             }
                         });
@@ -2090,24 +2138,41 @@ fn content_tab(
                         // 相关网站：各自可点，点谁开谁
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // 当前平台的项目页，认出来才显示
+                            let mut links: Vec<(&str, String)> = Vec::new();
                             if let Some(url) = &mcmod_url {
-                                if site_link(ui, &p, "MC 百科").clicked() {
-                                    let _ = open::that(url);
-                                }
-                                ui.label(
-                                    egui::RichText::new("·")
-                                        .font(ui::font(10.5))
-                                        .color(p.text_faint),
-                                );
+                                links.push(("MC 百科", url.clone()));
                             }
-                            if let Some(slug) = &modrinth_slug {
-                                if site_link(ui, &p, "Modrinth").clicked() {
-                                    let _ = open::that(
-                                        crate::core::content::modrinth::project_url(
-                                            kind.modrinth_type(),
+                            if use_curseforge {
+                                if let Some(slug) = &cf_slug {
+                                    links.push((
+                                        "CurseForge",
+                                        crate::core::content::curseforge::project_url(
+                                            kind.curseforge_type(),
                                             slug,
                                         ),
+                                    ));
+                                }
+                            } else if let Some(slug) = &modrinth_slug {
+                                links.push((
+                                    "Modrinth",
+                                    crate::core::content::modrinth::project_url(
+                                        kind.modrinth_type(),
+                                        slug,
+                                    ),
+                                ));
+                            }
+                            // 链接之间用一个点隔开
+                            for (index, (label, url)) in links.iter().enumerate() {
+                                if index > 0 {
+                                    ui.label(
+                                        egui::RichText::new("·")
+                                            .font(ui::font(10.5))
+                                            .color(p.text_faint),
                                     );
+                                }
+                                if site_link(ui, &p, label).clicked() {
+                                    let _ = open::that(url);
                                 }
                             }
                         });
@@ -2317,6 +2382,30 @@ fn lookup_content_slugs(app: &mut App, names: Vec<String>) {
         })();
         if let Ok(map) = result {
             job.send(CoreEvent::ContentSlugs(map));
+        }
+        job.done(true, "");
+    });
+}
+
+/// 后台用文件指纹反查 CurseForge 项目
+///
+/// CurseForge 认的是文件指纹，算出来去问接口，
+/// 就能知道本地这个文件在 CurseForge 上属于哪个项目。
+fn lookup_curseforge_projects(app: &mut App, files: Vec<(String, PathBuf)>) {
+    if files.is_empty() {
+        return;
+    }
+    let timeout = app.cfg.download.timeout_secs;
+    let key = app.cfg.download.curseforge_key();
+    let mirror = app.cfg.download.source;
+    app.spawn("查找 CurseForge 项目", false, move |job| {
+        let result = (|| -> anyhow::Result<std::collections::HashMap<String, String>> {
+            let dl = crate::core::download::Downloader::new(mirror, timeout.max(20))?
+                .with_curseforge_key(key);
+            crate::core::content::curseforge_projects(&dl, &files)
+        })();
+        if let Ok(map) = result {
+            job.send(CoreEvent::ContentCurseForge(map));
         }
         job.done(true, "");
     });

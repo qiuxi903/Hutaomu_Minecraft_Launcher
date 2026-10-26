@@ -217,3 +217,99 @@ pub fn project_url(source: ContentSource, kind: ContentKind, project: &modrinth:
         ContentSource::CurseForge => curseforge::project_url(kind, &project.slug),
     }
 }
+
+/// 用文件指纹反查 CurseForge 项目
+///
+/// CurseForge 给每个文件算了一个指纹，
+/// 本地装着的模组拿指纹去问接口，就能知道它在 CurseForge 上属于哪个项目。
+///
+/// 返回的是「文件名 → 项目 slug」。
+pub fn curseforge_projects(
+    dl: &Downloader,
+    files: &[(String, PathBuf)],
+) -> Result<std::collections::HashMap<String, String>> {
+    let mut out = std::collections::HashMap::new();
+    if files.is_empty() {
+        return Ok(out);
+    }
+    // 先算指纹，一个文件算一次就够
+    let fingerprints = compute_fingerprints(files);
+    let mut owners: Vec<(String, u32)> = Vec::new();
+    let mut list: Vec<u32> = Vec::new();
+    for ((name, _), fingerprint) in files.iter().zip(fingerprints) {
+        if let Some(fingerprint) = fingerprint {
+            owners.push((name.clone(), fingerprint));
+            list.push(fingerprint);
+        }
+    }
+    if list.is_empty() {
+        return Ok(out);
+    }
+
+    // 指纹换项目编号
+    let hits = curseforge::fingerprints(dl, &list)?;
+    let mut project_of: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+    for (fingerprint, project_id) in hits {
+        project_of.insert(fingerprint, project_id);
+    }
+    if project_of.is_empty() {
+        return Ok(out);
+    }
+
+    // 项目编号换 slug，项目页地址要用 slug
+    let mut ids: Vec<u32> = project_of.values().copied().collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let slug_of: std::collections::HashMap<u32, String> =
+        curseforge::projects_by_ids(dl, &ids)?.into_iter().collect();
+
+    for (name, fingerprint) in owners {
+        let Some(project_id) = project_of.get(&fingerprint) else {
+            continue;
+        };
+        if let Some(slug) = slug_of.get(project_id) {
+            out.insert(name, slug.clone());
+        }
+    }
+    Ok(out)
+}
+
+/// 并行算文件的指纹
+///
+/// 算指纹要把整个文件读一遍，模组多了很费时间，
+/// 分几路同时算能快不少。
+fn compute_fingerprints(files: &[(String, PathBuf)]) -> Vec<Option<u32>> {
+    let threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2)
+        .clamp(1, 8);
+    if threads <= 1 || files.len() < 4 {
+        return files
+            .iter()
+            .map(|(_, path)| curseforge::file_fingerprint(path))
+            .collect();
+    }
+    let chunk_size = files.len().div_ceil(threads);
+    let mut out: Vec<Option<u32>> = Vec::with_capacity(files.len());
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = files
+            .chunks(chunk_size)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|(_, path)| curseforge::file_fingerprint(path))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for handle in handles {
+            match handle.join() {
+                Ok(part) => out.extend(part),
+                // 哪一路出错就当没算出来，不影响别的
+                Err(_) => out.extend(std::iter::repeat_n(None, chunk_size)),
+            }
+        }
+    });
+    out
+}

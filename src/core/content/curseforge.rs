@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::core::content::modrinth::{
     ContentKind, GalleryImage, Hashes, License, ModpackDeps, Project, SearchHit, SearchResponse,
@@ -1051,6 +1051,155 @@ fn file_name_from_url(url: &str) -> String {
         .to_string()
 }
 
+// ------------------------------------------------------------------ 指纹反查
+
+/// 本地文件的 CurseForge 指纹
+///
+/// CurseForge 给每个文件算了一个 32 位指纹（MurmurHash2，种子为 1），
+/// 拿这个指纹就能反查文件在 CurseForge 上属于哪个项目，
+/// 本地装着的模组也能认出是哪一页。
+///
+/// 算之前要先把制表符、换行、回车、空格滤掉，
+/// 不然同样的文件换个平台重新打包就对不上了。
+pub fn fingerprint_of(data: &[u8]) -> u32 {
+    let filtered: Vec<u8> = data
+        .iter()
+        .copied()
+        .filter(|b| !matches!(b, 9 | 10 | 13 | 32))
+        .collect();
+    murmur2::murmur2(&filtered, 1)
+}
+
+/// 读文件算指纹
+pub fn file_fingerprint(path: &Path) -> Option<u32> {
+    let data = std::fs::read(path).ok()?;
+    Some(fingerprint_of(&data))
+}
+
+/// 指纹反查的结果
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfFingerprintFile {
+    #[serde(default)]
+    pub id: u32,
+    /// 文件的指纹
+    #[serde(default)]
+    pub file_fingerprint: u32,
+    /// 文件在项目里的编号
+    #[serde(default)]
+    pub mod_id: u32,
+}
+
+/// 指纹命中的项目
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CfFingerprintHit {
+    /// 项目的编号
+    #[serde(default)]
+    pub id: u32,
+    /// 命中的文件
+    #[serde(default)]
+    pub file: Option<CfFingerprintFile>,
+}
+
+/// 指纹反查的响应
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CfFingerprintResponse {
+    #[serde(default)]
+    pub data: CfFingerprintData,
+}
+
+/// 指纹反查的正文
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CfFingerprintData {
+    /// 完全匹配上的文件
+    #[serde(default)]
+    pub exact_matches: Vec<CfFingerprintHit>,
+}
+
+/// 请求指纹反查的正文
+#[derive(Debug, Clone, Serialize)]
+struct CfFingerprintRequest {
+    fingerprints: Vec<u32>,
+}
+
+/// 一次最多查多少个指纹
+const FINGERPRINT_BATCH: usize = 100;
+
+/// 用指纹反查项目
+///
+/// 返回的是「指纹 → 项目编号」的对应关系。
+/// 接口一次最多吃 100 个，超了自动分批。
+pub fn fingerprints(dl: &Downloader, hashes: &[u32]) -> Result<Vec<(u32, u32)>> {
+    let mut out: Vec<(u32, u32)> = Vec::new();
+    for chunk in hashes.chunks(FINGERPRINT_BATCH) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let url = format!("{API}/v1/fingerprints/{GAME_ID}");
+        let body = CfFingerprintRequest {
+            fingerprints: chunk.to_vec(),
+        };
+        let response: CfFingerprintResponse = match dl.post_json_curseforge(&url, &body) {
+            Ok(response) => response,
+            Err(err) => {
+                // 一个批次查不动不影响别的批次，记下来继续
+                log::warn!("CurseForge 指纹反查失败: {err}");
+                continue;
+            }
+        };
+        for hit in &response.data.exact_matches {
+            let Some(file) = &hit.file else {
+                continue;
+            };
+            if file.file_fingerprint == 0 {
+                continue;
+            }
+            let project_id = if hit.id != 0 { hit.id } else { file.mod_id };
+            if project_id == 0 {
+                continue;
+            }
+            out.push((file.file_fingerprint, project_id));
+        }
+    }
+    Ok(out)
+}
+
+/// 批量取项目的简介
+///
+/// 指纹反查只给得出项目编号，项目页地址要用项目自己的 slug，
+/// 这里一次把几个项目都取回来。
+pub fn projects_by_ids(dl: &Downloader, ids: &[u32]) -> Result<Vec<(u32, String)>> {
+    let mut out: Vec<(u32, String)> = Vec::new();
+    for chunk in ids.chunks(50) {
+        if chunk.is_empty() {
+            continue;
+        }
+        #[derive(Serialize)]
+        struct IdsRequest<'a> {
+            mod_ids: &'a [u32],
+        }
+        let body = IdsRequest { mod_ids: chunk };
+        let response: CfList<CfProject> = match dl.post_json_curseforge(&format!("{API}/v1/mods"), &body)
+        {
+            Ok(response) => response,
+            Err(err) => {
+                log::warn!("CurseForge 批量取项目失败: {err}");
+                continue;
+            }
+        };
+        for project in &response.data {
+            if project.id == 0 || project.slug.is_empty() {
+                continue;
+            }
+            out.push((project.id, project.slug.clone()));
+        }
+    }
+    Ok(out)
+}
+
 /// 复制目录
 fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     paths::ensure_dir(dst)?;
@@ -1301,5 +1450,106 @@ mod tests {
             with_tracker.links.issue_tracker_url.as_deref(),
             Some("https://example.com/bugs")
         );
+    }
+
+    /// MurmurHash2 的参考实现
+    ///
+    /// 照着 Austin Appleby 的 C 版抄的，用来核对算法本身对不对，
+    /// 免得换依赖的时候算出来的东西对不上 CurseForge。
+    fn reference_murmur2(data: &[u8], seed: u32) -> u32 {
+        const M: u32 = 0x5bd1e995;
+        const R: u32 = 24;
+        let mut h = seed ^ (data.len() as u32);
+        let mut chunks = data.chunks_exact(4);
+        for c in &mut chunks {
+            let mut k = u32::from_le_bytes([c[0], c[1], c[2], c[3]]);
+            k = k.wrapping_mul(M);
+            k ^= k >> R;
+            k = k.wrapping_mul(M);
+            h = h.wrapping_mul(M);
+            h ^= k;
+        }
+        let tail = chunks.remainder();
+        match tail.len() {
+            3 => {
+                h ^= (tail[2] as u32) << 16;
+                h ^= (tail[1] as u32) << 8;
+                h ^= tail[0] as u32;
+                h = h.wrapping_mul(M);
+            }
+            2 => {
+                h ^= (tail[1] as u32) << 8;
+                h ^= tail[0] as u32;
+                h = h.wrapping_mul(M);
+            }
+            1 => {
+                h ^= tail[0] as u32;
+                h = h.wrapping_mul(M);
+            }
+            _ => {}
+        }
+        h ^= h >> 13;
+        h = h.wrapping_mul(M);
+        h ^= h >> 15;
+        h
+    }
+
+    #[test]
+    fn murmur_matches_reference_implementation() {
+        // 各种长度都过一遍，尾巴不足 4 字节的情况也要对
+        for len in 0..64usize {
+            let data: Vec<u8> = (0..len).map(|i| (i as u8).wrapping_mul(37).wrapping_add(11)).collect();
+            assert_eq!(
+                murmur2::murmur2(&data, 1),
+                reference_murmur2(&data, 1),
+                "长度 {len} 对不上"
+            );
+        }
+    }
+
+    #[test]
+    fn fingerprint_ignores_whitespace_bytes() {
+        // 制表符、换行、回车、空格都不参与计算
+        let base = b"hello world";
+        let padded = b"h e l l o\tworld\r\n";
+        assert_eq!(fingerprint_of(base), fingerprint_of(padded));
+
+        // 别的字节还是要算进去
+        assert_ne!(fingerprint_of(b"hello world"), fingerprint_of(b"hello_world"));
+    }
+
+    #[test]
+    fn fingerprint_matches_filtered_reference() {
+        let data: Vec<u8> = (0..97u32).map(|i| i as u8).collect();
+        let filtered: Vec<u8> = data
+            .iter()
+            .copied()
+            .filter(|b| !matches!(b, 9 | 10 | 13 | 32))
+            .collect();
+        assert_eq!(fingerprint_of(&data), reference_murmur2(&filtered, 1));
+    }
+
+    #[test]
+    fn fingerprint_response_is_parsed() {
+        let response: CfFingerprintResponse = serde_json::from_str(
+            r#"{
+                "data": {
+                    "exactMatches": [
+                        {
+                            "id": 238222,
+                            "file": {"id": 4593548, "modId": 238222, "fileFingerprint": 123456}
+                        }
+                    ],
+                    "partialMatches": []
+                }
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(response.data.exact_matches.len(), 1);
+        let hit = &response.data.exact_matches[0];
+        assert_eq!(hit.id, 238222);
+        let file = hit.file.as_ref().unwrap();
+        assert_eq!(file.file_fingerprint, 123456);
+        assert_eq!(file.mod_id, 238222);
     }
 }
