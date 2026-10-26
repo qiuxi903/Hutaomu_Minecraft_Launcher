@@ -69,9 +69,35 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
 
+    // 崩溃信息记进日志
+    //
+    // 发布版没有控制台，egui 的 panic 默认只打到 stderr，
+    // 出了事就只剩一个闪退，日志里留一笔才查得动。
+    install_panic_hook();
+
     eframe::run_native(
         "htmcl",
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)))),
     )
+}
+
+/// 把 panic 的内容写进日志文件
+fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = if let Some(s) = info.payload().downcast_ref::<&str>() {
+            (*s).to_string()
+        } else if let Some(s) = info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "未知原因".to_string()
+        };
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "位置未知".to_string());
+        log::error!("启动器崩溃：{message}（{location}）");
+        previous(info);
+    }));
 }

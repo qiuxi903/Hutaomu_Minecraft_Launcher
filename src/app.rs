@@ -2786,6 +2786,10 @@ impl eframe::App for App {
     }
 
     fn ui(&mut self, root: &mut Ui, frame: &mut eframe::Frame) {
+        // 记一下这一帧花了多久，卡住时日志里能看出是哪一页
+        let frame_start = std::time::Instant::now();
+        let page_before = self.page.page_index();
+
         if self.first_frame {
             self.first_frame = false;
             if let Ok(handle) = raw_window_handle::HasWindowHandle::window_handle(frame) {
@@ -2944,6 +2948,15 @@ impl eframe::App for App {
             }
         }
 
+        // 这一帧花了多久：卡住时日志里能看出是哪一页
+        let elapsed = frame_start.elapsed();
+        if elapsed.as_millis() > 300 {
+            log::warn!(
+                "界面渲染耗时 {} 毫秒（当前页面 {}）",
+                elapsed.as_millis(),
+                page_before
+            );
+        }
     }
 }
 
