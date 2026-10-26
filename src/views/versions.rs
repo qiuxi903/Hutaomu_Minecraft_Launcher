@@ -4,6 +4,7 @@
 //! 二级页面里的设置只对当前版本生效，会覆盖全局设置。
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 
 use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
@@ -43,6 +44,11 @@ pub struct VersionsState {
     pub rename_value: String,
     pub screenshots: HashMap<PathBuf, egui::TextureHandle>,
     pub loaded_for: Option<String>,
+    /// 本地内容列表的缓存
+    ///
+    /// 目录没变就用上次的列表，不用每帧重扫一遍，
+    /// 整合包上百个模组时差别很大。
+    pub content_cache: HashMap<String, (Option<std::time::SystemTime>, Arc<Vec<LocalContent>>)>,
 }
 
 impl Default for VersionsState {
@@ -66,6 +72,7 @@ impl Default for VersionsState {
             rename_value: String::new(),
             screenshots: HashMap::new(),
             loaded_for: None,
+            content_cache: HashMap::new(),
         }
     }
 }
@@ -1247,7 +1254,7 @@ impl ContentKind {
 }
 
 /// 本地内容的一个条目
-struct LocalContent {
+pub struct LocalContent {
     file_name: String,
     path: PathBuf,
     size: u64,
@@ -1270,10 +1277,35 @@ struct LocalContent {
 }
 
 /// 列出某个实例下的内容
-fn list_contents(app: &App, kind: ContentKind, game_dir: &Path) -> Vec<LocalContent> {
+///
+/// 目录没变就复用上次的列表：整合包动辄上百个模组，
+/// 每帧重扫一遍目录、重新解析 jar 元数据，界面会明显发涩。
+fn list_contents(
+    app: &mut App,
+    kind: ContentKind,
+    game_dir: &Path,
+) -> Arc<Vec<LocalContent>> {
     let dir = game_dir.join(kind.sub_dir());
+    let key = format!("{}|{}", dir.display(), kind.label());
+    let stamp = std::fs::metadata(&dir)
+        .ok()
+        .and_then(|m| m.modified().ok());
+    if let Some((cached, items)) = app.versions_ui.content_cache.get(&key) {
+        if *cached == stamp {
+            return items.clone();
+        }
+    }
+    let items = Arc::new(scan_contents(app, kind, &dir));
+    app.versions_ui
+        .content_cache
+        .insert(key, (stamp, items.clone()));
+    items
+}
+
+/// 真正去目录里扫一遍
+fn scan_contents(app: &App, kind: ContentKind, dir: &Path) -> Vec<LocalContent> {
     let mut items: Vec<LocalContent> = Vec::new();
-    let Ok(entries) = std::fs::read_dir(&dir) else {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return items;
     };
     for entry in entries.flatten() {

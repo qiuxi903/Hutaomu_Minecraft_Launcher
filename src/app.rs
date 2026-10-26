@@ -448,6 +448,13 @@ pub enum CoreEvent {
         path: PathBuf,
         model: SkinModel,
     },
+    /// 本地皮肤文件在后台读完了
+    ///
+    /// 文件可能在网络盘上，放到后台读，界面才不会卡住。
+    LocalSkinLoaded {
+        account_id: String,
+        image: Option<SkinImage>,
+    },
     ProjectDetail {
         project: Box<crate::core::content::modrinth::Project>,
         versions: Vec<ModVersion>,
@@ -542,9 +549,15 @@ pub struct App {
     pub images: HashMap<String, egui::TextureHandle>,
     /// 本地模组 jar 自带图标的纹理
     pub mod_icons: HashMap<String, egui::TextureHandle>,
+    /// 解码失败的本地图标，记下来免得每帧重试
+    mod_icon_failed: HashSet<String>,
     images_pending: HashSet<String>,
     pub skin_cache: HashMap<String, SkinTexture>,
     pub skin_pending: HashSet<String>,
+    /// 已经查过本地皮肤文件的账号
+    ///
+    /// 网络盘上的文件不能每帧都去戳，界面会卡住。
+    pub skin_local_checked: HashSet<String>,
     /// 皮肤预览的朝向
     ///
     /// 默认停在斜侧的角度（像角色侧着身看屏幕），拖动才会转。
@@ -655,9 +668,11 @@ impl App {
             versions_ui: Default::default(),
             images: HashMap::new(),
             mod_icons: HashMap::new(),
+            mod_icon_failed: HashSet::new(),
             images_pending: HashSet::new(),
             skin_cache: HashMap::new(),
             skin_pending: HashSet::new(),
+            skin_local_checked: HashSet::new(),
             preview_yaw: -0.55,
             background_frames: Vec::new(),
             background_delays: Vec::new(),
@@ -1065,6 +1080,8 @@ impl App {
             &self.local_versions,
             self.cfg.selected_version.as_deref(),
         );
+        // 目录可能被动过，内容列表的缓存要重新算
+        self.versions_ui.content_cache.clear();
         self.refresh_mod_features();
     }
 
@@ -1302,21 +1319,35 @@ impl App {
         };
 
         // 本地皮肤文件优先
-        if let Some(path) = account.skin_path() {
-            if path.is_file() {
-                match SkinImage::load(path) {
-                    Ok(image) => {
-                        let model = if account.skin_model() == SkinModel::Classic && image.detect_slim()
-                        {
-                            SkinModel::Slim
-                        } else {
-                            account.skin_model()
-                        };
-                        self.upload_skin(account_id, &image, model, SkinSource::Local);
-                        return;
-                    }
-                    Err(err) => log::warn!("读取皮肤失败: {err}"),
-                }
+        //
+        // 皮肤文件可能放在网络盘上，主线程去戳一下能把界面卡住几十秒，
+        // 所以检查与读取都放到后台线程去做，而且只做一次。
+        if let Some(path) = account.skin_path().map(|p| p.to_path_buf()) {
+            if self.skin_local_checked.contains(account_id) {
+                // 已经查过本地文件了，走在线或生成
+            } else {
+                self.skin_local_checked.insert(account_id.to_string());
+                self.skin_pending.insert(account_id.to_string());
+                let id = account_id.to_string();
+                self.spawn("读取本地皮肤", false, move |job| {
+                    let image = if path.is_file() {
+                        match SkinImage::load(&path) {
+                            Ok(image) => Some(image),
+                            Err(err) => {
+                                log::warn!("读取皮肤失败: {err}");
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    job.send(CoreEvent::LocalSkinLoaded {
+                        account_id: id,
+                        image,
+                    });
+                    job.done(true, "");
+                });
+                return;
             }
         }
 
@@ -1430,13 +1461,29 @@ impl App {
     /// 本地文件图标的纹理（版本目录里的自定义图标等）
     ///
     /// 与模组图标共用一份缓存，同一个文件只解码一次。
+    /// 解码失败的也要记下来，不然每帧都会重读一遍，界面直接卡住。
     pub fn file_icon_texture(&mut self, path: &std::path::Path) -> Option<egui::TextureHandle> {
         let key = path.to_string_lossy().to_string();
         if let Some(texture) = self.mod_icons.get(&key) {
             return Some(texture.clone());
         }
-        let bytes = std::fs::read(path).ok()?;
-        self.mod_icon_texture(&key, &bytes)
+        if self.mod_icon_failed.contains(&key) {
+            return None;
+        }
+        let bytes = match std::fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                self.mod_icon_failed.insert(key);
+                return None;
+            }
+        };
+        match self.mod_icon_texture(&key, &bytes) {
+            Some(texture) => Some(texture),
+            None => {
+                self.mod_icon_failed.insert(key);
+                None
+            }
+        }
     }
 
     /// 按需下载并缓存远程图片（项目图标等）。请求进入共享队列，
@@ -1733,6 +1780,22 @@ impl App {
                         }
                     }
                 }
+                CoreEvent::LocalSkinLoaded { account_id, image } => {
+                    self.skin_pending.remove(&account_id);
+                    if let Some(image) = image {
+                        let model = match self.accounts.get(&account_id) {
+                            Some(a) if a.skin_model() == SkinModel::Classic && image.detect_slim() => {
+                                SkinModel::Slim
+                            }
+                            Some(a) => a.skin_model(),
+                            None => SkinModel::Classic,
+                        };
+                        self.upload_skin(&account_id, &image, model, SkinSource::Local);
+                        return;
+                    }
+                    // 本地没有这个文件，接着走在线下载或自动生成
+                    self.ensure_skin(&account_id);
+                }
                 CoreEvent::ProjectDetail { project, versions } => {
                     self.download.content_versions_loading = false;
                     self.download.content_versions = versions;
@@ -1922,7 +1985,8 @@ impl App {
         let height = 40.0;
         let width = ui.available_width();
         let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-        let painter = ui.painter().clone();
+        // 直接借用 painter：克隆会把这一帧已绘制的图形全拷一遍
+        let painter = ui.painter();
         painter.rect_filled(rect, CornerRadius::ZERO, self.palette.surface);
         painter.line_segment(
             [rect.left_bottom(), rect.right_bottom()],
@@ -2879,6 +2943,7 @@ impl eframe::App for App {
                 }
             }
         }
+
     }
 }
 

@@ -1055,6 +1055,7 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                         }
                         app.save_accounts();
                         app.skin_cache.remove(&id);
+                        app.skin_local_checked.remove(&id);
                         app.ensure_skin(&id);
                     }
                     if let Some(url) = account.authlib_url() {
@@ -1069,6 +1070,7 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                         {
                             app.skin_cache.remove(&id);
                             app.skin_pending.remove(&id);
+                            app.skin_local_checked.remove(&id);
                             app.ensure_skin(&id);
                         }
                     }

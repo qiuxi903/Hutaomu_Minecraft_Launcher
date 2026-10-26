@@ -312,7 +312,9 @@ pub fn skin_preview(
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::drag());
 
-    let painter = ui.painter().clone();
+    // 直接借用 painter：克隆一份会把这一帧已绘制的图形全拷一遍，
+    // 页面上元素一多就是纯浪费，账号页有皮肤预览时尤其明显
+    let painter = ui.painter();
     let bg = Rect::from_center_size(rect.center(), Vec2::new(rect.width(), rect.height()));
     painter.rect_filled(bg, p.corner(0), p.surface_alt);
 
@@ -454,7 +456,7 @@ pub fn skin_preview(
 pub fn head_preview(ui: &mut Ui, texture: Option<&egui::TextureHandle>, yaw: f32, size: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     let Some(texture) = texture else { return };
-    let painter = ui.painter().clone();
+    let painter = ui.painter();
     let head = Part {
         center: V3::new(0.0, 0.0, 0.0),
         size: V3::new(8.0, 8.0, 8.0),
