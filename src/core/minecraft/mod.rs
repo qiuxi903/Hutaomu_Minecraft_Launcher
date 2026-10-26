@@ -5,6 +5,7 @@ pub mod launch;
 pub mod loaders;
 pub mod manifest;
 pub mod modpack;
+pub mod shader_loader;
 pub mod version;
 pub mod version_icon;
 

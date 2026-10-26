@@ -516,6 +516,54 @@ pub fn install_own(
     Ok(id)
 }
 
+/// 给已经装好的 Minecraft 版本追加一个加载器变体
+///
+/// 与 `install_bundle` 的区别：那边是「游戏和加载器一起装」，
+/// 这边是「游戏早就在本地了，只补加载器自己那份」。
+///
+/// - Fabric / Quilt 只下载自身声明的依赖库，原版那些不用重下；
+/// - Forge / NeoForge 要跑官方安装器，安装器会自己处理原版文件。
+///
+/// 返回新变体的版本 id，它通过 inheritsFrom 挂在原版版本下，
+/// 启动器扫描时自然会和原版归到同一个实例。
+pub fn install_variant(
+    dl: &Downloader,
+    kind: LoaderKind,
+    mc_version: &str,
+    loader_version: &str,
+    game_dir: &Path,
+    java: Option<&JavaInfo>,
+    progress: &Arc<DownloadProgress>,
+    opts: install::InstallOptions,
+) -> Result<String> {
+    match kind {
+        LoaderKind::Fabric | LoaderKind::Quilt => install_own(
+            dl,
+            kind,
+            mc_version,
+            loader_version,
+            game_dir,
+            progress,
+            opts,
+        ),
+        LoaderKind::Forge | LoaderKind::NeoForge => {
+            let java = java.ok_or_else(|| {
+                anyhow!("没有找到可用的 Java，运行 {} 安装器需要 Java 8 及以上版本", kind.label())
+            })?;
+            install(
+                dl,
+                kind,
+                mc_version,
+                loader_version,
+                game_dir,
+                java,
+                progress,
+                opts,
+            )
+        }
+    }
+}
+
 /// 下载并运行 Forge / NeoForge 安装器
 fn run_installer(
     dl: &Downloader,

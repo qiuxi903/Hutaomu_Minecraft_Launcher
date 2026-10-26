@@ -96,14 +96,61 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
     if let Some(loader_id) = &outcome.loader_id {
         println!("      加载器版本 id: {loader_id}");
     }
+
+    // 原版已经在本地了，再给它追加一个加载器变体。
+    // 这走的正是版本详情页「更换加载器」那条路：变体通过 inheritsFrom
+    // 挂在原版下面，扫描时会自动归到同一个实例里。
+    println!("[3.8/7] 给已装好的版本追加一个加载器变体 ...");
+    // 换一种加载器，别跟刚装的那个重样
+    let variant_kind = match kind {
+        Some(loaders::LoaderKind::Fabric) => loaders::LoaderKind::Quilt,
+        _ => loaders::LoaderKind::Fabric,
+    };
+    let mut variant_id: Option<String> = None;
+    if loaders::supports(variant_kind, version_id) {
+        let list = loaders::list_versions(&dl, variant_kind, version_id)?;
+        if let Some(picked) = loaders::pick_version(&list, loaders::LoaderPolicy::Stable) {
+            match loaders::install_variant(
+                &dl,
+                variant_kind,
+                version_id,
+                &picked,
+                &game_dir,
+                java::pick_for(version_id, &javas).as_ref(),
+                &progress,
+                install::InstallOptions {
+                    threads: 8,
+                    install_assets: false,
+                },
+            ) {
+                Ok(id) => {
+                    let resolved = version::resolve(&game_dir, &id)?;
+                    let detected =
+                        version::detect_mc_version(&game_dir, &id, &resolved.json);
+                    println!(
+                        "      变体 {id}（{} {picked}）归到的 Minecraft 版本：{detected}",
+                        variant_kind.label()
+                    );
+                    if detected == version_id {
+                        variant_id = Some(id);
+                    } else {
+                        println!("      变体没有归到 {version_id} 下面，换回原版本启动");
+                    }
+                }
+                Err(err) => println!("      追加变体失败：{err}"),
+            }
+        }
+    } else {
+        println!("      {} 不支持 Minecraft {version_id}，跳过", variant_kind.label());
+    }
+
+    let launch_id = variant_id
+        .clone()
+        .unwrap_or_else(|| outcome.loader_id.clone().unwrap_or_else(|| outcome.game_id.clone()));
+
     progress
         .finished
         .store(true, std::sync::atomic::Ordering::Relaxed);
-
-    let launch_id = outcome
-        .loader_id
-        .clone()
-        .unwrap_or_else(|| outcome.game_id.clone());
 
     println!("[4/5] 构建启动命令 ...");
     let resolved = version::resolve(&game_dir, &launch_id)?;
@@ -206,6 +253,44 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
                 }
             }
         }
+    }
+
+    println!("[6.5/7] 光影加载器安装（装到临时目录，不动用户数据） ...");
+    {
+        use crate::core::minecraft::shader_loader::{self, ShaderLoader};
+        let temp_dir = paths::cache_dir().join("selftest-shader");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        paths::ensure_dir(&temp_dir)?;
+        let dl2 = crate::core::download::Downloader::new(
+            crate::core::download::DownloadSource::Official,
+            60,
+        )?;
+        let progress = DownloadProgress::new();
+        match shader_loader::install(
+            &dl2,
+            ShaderLoader::Iris,
+            "1.20.1",
+            loaders::LoaderKind::Fabric,
+            &temp_dir,
+            &progress,
+        ) {
+            Ok((path, extra)) => {
+                println!(
+                    "      Iris 已装到 {}（前置依赖 {extra} 个）",
+                    path.display()
+                );
+                match shader_loader::detect(&temp_dir) {
+                    Some(inst) => println!(
+                        "      本地认出：{} {}",
+                        inst.kind.label(),
+                        inst.version
+                    ),
+                    None => println!("      本地没认出来"),
+                }
+            }
+            Err(err) => println!("      光影加载器安装失败：{err}"),
+        }
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     println!("[7/7] 资讯源与皮肤站接口 ...");
