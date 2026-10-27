@@ -34,6 +34,8 @@ pub struct ExportOptions {
     pub resourcepacks: bool,
     /// 光影包
     pub shaderpacks: bool,
+    /// 数据包
+    pub datapacks: bool,
     /// 单人存档
     pub saves: bool,
     /// 服务器列表
@@ -49,6 +51,7 @@ impl Default for ExportOptions {
             mods: true,
             resourcepacks: false,
             shaderpacks: false,
+            datapacks: false,
             saves: false,
             servers: false,
             others: true,
@@ -63,6 +66,7 @@ impl ExportOptions {
             && !self.mods
             && !self.resourcepacks
             && !self.shaderpacks
+            && !self.datapacks
             && !self.saves
             && !self.servers
             && !self.others
@@ -75,6 +79,7 @@ impl ExportOptions {
             ("模组", self.mods),
             ("资源包", self.resourcepacks),
             ("光影包", self.shaderpacks),
+            ("数据包", self.datapacks),
             ("单人存档", self.saves),
             ("服务器列表", self.servers),
             ("其它文件夹", self.others),
@@ -157,11 +162,12 @@ pub fn export_instance(
         }
     }
 
-    // ---- 模组、光影、资源包、存档 ----
+    // ---- 模组、光影、资源包、数据包、存档 ----
     for (enabled, folder) in [
         (opts.mods, "mods"),
         (opts.resourcepacks, "resourcepacks"),
         (opts.shaderpacks, "shaderpacks"),
+        (opts.datapacks, "datapacks"),
         (opts.saves, "saves"),
     ] {
         if !enabled {
@@ -288,6 +294,7 @@ mod tests {
             mods: false,
             resourcepacks: false,
             shaderpacks: false,
+            datapacks: false,
             saves: false,
             servers: false,
             others: false,

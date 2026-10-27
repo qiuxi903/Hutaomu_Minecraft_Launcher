@@ -58,6 +58,7 @@ pub fn project_url(class: ContentKind, slug: &str) -> String {
         ContentKind::Modpack => "modpacks",
         ContentKind::ResourcePack => "texture-packs",
         ContentKind::Shader => "shaders",
+        ContentKind::DataPack => "data-packs",
         ContentKind::World => "worlds",
     };
     format!("https://www.curseforge.com/minecraft/{category}/{slug}")
@@ -74,6 +75,7 @@ pub fn class_id(kind: ContentKind) -> u32 {
         ContentKind::Modpack => 4471,
         ContentKind::Shader => 6552,
         ContentKind::ResourcePack => 12,
+        ContentKind::DataPack => 6945,
         ContentKind::World => 17,
     }
 }
@@ -644,11 +646,14 @@ fn search_query(
     if let Some(version) = mc_version.filter(|v| !v.trim().is_empty()) {
         url.push_str(&format!("&gameVersion={}", encode(version.trim())));
     }
-    if let Some(loader_type) = loader
-        .filter(|l| !l.trim().is_empty())
-        .and_then(mod_loader_type)
-    {
-        url.push_str(&format!("&modLoaderType={loader_type}"));
+    // 数据包不分加载器，按加载器筛会把它们全筛掉
+    if kind != ContentKind::DataPack {
+        if let Some(loader_type) = loader
+            .filter(|l| !l.trim().is_empty())
+            .and_then(mod_loader_type)
+        {
+            url.push_str(&format!("&modLoaderType={loader_type}"));
+        }
     }
     let keyword = query.trim();
     if !keyword.is_empty() {

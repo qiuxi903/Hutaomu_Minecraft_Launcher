@@ -85,6 +85,12 @@ pub fn search(
 ) -> Result<modrinth::SearchResponse> {
     match source {
         ContentSource::Modrinth => {
+            // Modrinth 不收录数据包，别拿不存在的分类去搜
+            if kind == ContentKind::DataPack {
+                return Err(anyhow::anyhow!(
+                    "Modrinth 没有数据包分类，切到 CurseForge 平台就能搜"
+                ));
+            }
             modrinth::search(dl, kind, query, mc_version, loader, offset, limit)
         }
         ContentSource::CurseForge => {

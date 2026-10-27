@@ -16,16 +16,21 @@ pub enum ContentKind {
     Mod,
     Shader,
     ResourcePack,
+    /// 数据包，1.13 之后用来改配方、战利品这些玩法内容
+    ///
+    /// Modrinth 不收录数据包，只有 CurseForge 那边有。
+    DataPack,
     Modpack,
     World,
 }
 
 impl ContentKind {
-    pub fn all() -> [ContentKind; 5] {
+    pub fn all() -> [ContentKind; 6] {
         [
             Self::Mod,
             Self::Shader,
             Self::ResourcePack,
+            Self::DataPack,
             Self::Modpack,
             Self::World,
         ]
@@ -36,6 +41,7 @@ impl ContentKind {
             Self::Mod => "Mod",
             Self::Shader => "光影",
             Self::ResourcePack => "资源包",
+            Self::DataPack => "数据包",
             Self::Modpack => "整合包",
             Self::World => "世界",
         }
@@ -46,6 +52,7 @@ impl ContentKind {
             Self::Mod => "mod",
             Self::Shader => "shader",
             Self::ResourcePack => "resourcepack",
+            Self::DataPack => "datapack",
             Self::Modpack => "modpack",
             Self::World => "world",
         }
@@ -57,6 +64,7 @@ impl ContentKind {
             Self::Mod => "mods",
             Self::Shader => "shaderpacks",
             Self::ResourcePack => "resourcepacks",
+            Self::DataPack => "datapacks",
             Self::Modpack => "",
             Self::World => "saves",
         }
@@ -67,6 +75,7 @@ impl ContentKind {
             Self::Mod => "mod",
             Self::Shader => "shader",
             Self::ResourcePack => "resourcepack",
+            Self::DataPack => "datapack",
             Self::Modpack => "modpack",
             Self::World => "world",
         }
