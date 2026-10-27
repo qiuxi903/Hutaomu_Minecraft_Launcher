@@ -222,6 +222,18 @@ pub struct SearchHit {
     pub cf_id: Option<u32>,
 }
 
+/// 反查本地文件得到的线上项目
+///
+/// 光影、资源包这类文件本身不带图标，得去线上找到对应的项目，
+/// 找到后拿它的图标来显示，认不出就还是画分类图标。
+#[derive(Debug, Clone)]
+pub struct RemoteProject {
+    /// 项目 slug，用来拼项目页地址
+    pub slug: String,
+    /// 项目图标地址
+    pub icon_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Project {
     #[serde(default)]
@@ -440,6 +452,31 @@ pub fn find_by_slug(dl: &Downloader, slug: &str) -> Result<Option<Project>> {
         }
         Err(err) => Err(anyhow::anyhow!("请求失败: {err}")),
     }
+}
+
+/// 批量取项目资料
+///
+/// 一次请求就能把好几个项目连同图标地址取回来。
+/// 模组多的时候比一个个查快得多，也不容易撞上频率限制。
+pub fn projects_by_slugs(dl: &Downloader, slugs: &[String]) -> Result<Vec<Project>> {
+    let mut out: Vec<Project> = Vec::new();
+    // 一次别塞太多，接口对单个请求的长度有限制
+    for chunk in slugs.chunks(50) {
+        if chunk.is_empty() {
+            continue;
+        }
+        let ids = chunk
+            .iter()
+            .map(|slug| format!("\"{}\"", slug.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let url = format!("{API}/projects?ids=[{ids}]");
+        match dl.get_json_direct::<Vec<Project>>(&url) {
+            Ok(projects) => out.extend(projects),
+            Err(err) => log::warn!("Modrinth 批量取项目失败: {err}"),
+        }
+    }
+    Ok(out)
 }
 
 pub fn versions(

@@ -23,8 +23,8 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 
 use crate::core::content::modrinth::{
-    ContentKind, GalleryImage, Hashes, License, ModpackDeps, Project, SearchHit, SearchResponse,
-    Version, VersionFile,
+    ContentKind, GalleryImage, Hashes, License, ModpackDeps, Project, RemoteProject, SearchHit,
+    SearchResponse, Version, VersionFile,
 };
 use crate::core::download::{DownloadProgress, Downloader, FileTask};
 use crate::core::paths;
@@ -1289,9 +1289,9 @@ pub fn fingerprints(dl: &Downloader, hashes: &[u32]) -> Result<Vec<(u32, u32)>> 
 /// 批量取项目的简介
 ///
 /// 指纹反查只给得出项目编号，项目页地址要用项目自己的 slug，
-/// 这里一次把几个项目都取回来。
-pub fn projects_by_ids(dl: &Downloader, ids: &[u32]) -> Result<Vec<(u32, String)>> {
-    let mut out: Vec<(u32, String)> = Vec::new();
+/// 显示图标还要项目自己的 logo，这里一次把几个项目都取回来。
+pub fn projects_by_ids(dl: &Downloader, ids: &[u32]) -> Result<Vec<(u32, RemoteProject)>> {
+    let mut out: Vec<(u32, RemoteProject)> = Vec::new();
     for chunk in ids.chunks(50) {
         if chunk.is_empty() {
             continue;
@@ -1313,7 +1313,19 @@ pub fn projects_by_ids(dl: &Downloader, ids: &[u32]) -> Result<Vec<(u32, String)
             if project.id == 0 || project.slug.is_empty() {
                 continue;
             }
-            out.push((project.id, project.slug.clone()));
+            out.push((
+                project.id,
+                RemoteProject {
+                    slug: project.slug.clone(),
+                    // 缩略图比原图小得多，列表里的小图标用它更合适
+                    icon_url: project.logo.as_ref().map(|logo| {
+                        logo.thumbnail_url
+                            .clone()
+                            .filter(|url| !url.is_empty())
+                            .unwrap_or_else(|| logo.url.clone())
+                    }),
+                },
+            ));
         }
     }
     Ok(out)

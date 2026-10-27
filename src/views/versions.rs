@@ -29,12 +29,12 @@ pub struct VersionsState {
     pub detail: Option<String>,
     /// 详情页左侧导航选中项，对应 sections_for 里的 id
     pub section: &'static str,
-    /// 本地文件名 → Modrinth 项目 slug（后台反查得到，用于跳转官网）
-    pub content_slugs: HashMap<String, String>,
+    /// 本地文件名 → Modrinth 上的对应项目（后台反查得到，用于跳转官网与显示图标）
+    pub content_slugs: HashMap<String, crate::core::content::RemoteProject>,
     /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
     pub content_lookup_section: Option<&'static str>,
-    /// 本地文件名 → CurseForge 项目 slug（用文件指纹反查得到）
-    pub content_cf: HashMap<String, String>,
+    /// 本地文件名 → CurseForge 上的对应项目（用文件指纹反查得到）
+    pub content_cf: HashMap<String, crate::core::content::RemoteProject>,
     /// 已发起过 CurseForge 指纹反查的内容分区
     pub content_cf_lookup_section: Option<&'static str>,
     /// 内容列表每行放几个（1 或 2）
@@ -1850,11 +1850,15 @@ fn content_tab(
     let dir = game_dir.join(kind.sub_dir());
     let items = list_contents(app, kind, &game_dir);
 
-    // 光影与资源包没有内置词条，用文件名反查 Modrinth 项目
-    if kind != ContentKind::Mod && app.versions_ui.content_lookup_section != Some(section) {
+    // 反查 Modrinth 项目：模组能从 MCMod 词库拿到 slug，
+    // 光影与资源包只能靠文件名猜项目名
+    if app.versions_ui.content_lookup_section != Some(section) {
         app.versions_ui.content_lookup_section = Some(section);
-        let names: Vec<String> = items.iter().map(|i| i.file_name.clone()).collect();
-        lookup_content_slugs(app, names);
+        let list: Vec<(String, Option<String>)> = items
+            .iter()
+            .map(|i| (i.file_name.clone(), i.modrinth_slug.clone()))
+            .collect();
+        lookup_content_slugs(app, list);
     }
 
     // CurseForge 认文件指纹，模组、光影、资源包都能反查出来
@@ -1940,15 +1944,23 @@ fn content_tab(
                 let delay = ui::anim::stagger(current, 0.022);
                 let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("content", current)), delay);
                 ui.set_opacity(appear);
+                // 反查到的线上项目：项目页链接与图标都用它
+                let modrinth_project = app.versions_ui.content_slugs.get(&item.file_name).cloned();
+                let cf_project = app.versions_ui.content_cf.get(&item.file_name).cloned();
+                let use_curseforge =
+                    app.cfg.download.content_source == crate::core::content::ContentSource::CurseForge;
                 // 在线页面：模组用 MCMod 词库里的 slug，光影与资源包用后台反查的结果
                 let modrinth_slug = item
                     .modrinth_slug
                     .clone()
-                    .or_else(|| app.versions_ui.content_slugs.get(&item.file_name).cloned());
-                // CurseForge 的项目页用指纹反查，认出来就摆一个链接
-                let cf_slug = app.versions_ui.content_cf.get(&item.file_name).cloned();
-                let use_curseforge =
-                    app.cfg.download.content_source == crate::core::content::ContentSource::CurseForge;
+                    .or_else(|| modrinth_project.as_ref().map(|p| p.slug.clone()));
+                let cf_slug = cf_project.as_ref().map(|p| p.slug.clone());
+                // 图标：jar 自带的优先，没有就去线上项目取
+                let remote_icon = if use_curseforge {
+                    cf_project.as_ref().and_then(|p| p.icon_url.clone())
+                } else {
+                    modrinth_project.as_ref().and_then(|p| p.icon_url.clone())
+                };
                 ui.allocate_ui_with_layout(
                     Vec2::new(card_width, 0.0),
                     Layout::top_down(Align::Min),
@@ -1966,10 +1978,18 @@ fn content_tab(
                                 .map(|d| d.as_secs())
                                 .unwrap_or(0)
                         );
-                        let texture = item
+                        let mut texture = item
                             .icon
                             .as_ref()
                             .and_then(|bytes| app.mod_icon_texture(&icon_key, bytes));
+                        if texture.is_none() {
+                            // jar 里没有图标就用线上项目的图标，
+                            // 光影与资源包基本都靠这一条
+                            if let Some(url) = remote_icon.as_ref() {
+                                app.ensure_image(url);
+                                texture = app.image(url).cloned();
+                            }
+                        }
                         match texture {
                             Some(tex) => {
                                 let size = 30.0;
@@ -2358,24 +2378,65 @@ fn collect_feature_files(
     }
 }
 
-/// 后台用文件名反查 Modrinth 项目，结果回来后再显示官网链接
-fn lookup_content_slugs(app: &mut App, names: Vec<String>) {
-    if names.is_empty() {
+/// 后台反查 Modrinth 项目，结果回来后再显示官网链接与图标
+///
+/// 模组在 MCMod 词库里能直接拿到 slug，一次批量就能取回图标；
+/// 光影、资源包这些只能靠文件名猜项目名，再一个个查。
+fn lookup_content_slugs(app: &mut App, items: Vec<(String, Option<String>)>) {
+    if items.is_empty() {
         return;
     }
     let source = app.cfg.download.source;
     let timeout = app.cfg.download.timeout_secs;
     app.spawn("查找项目页面", false, move |job| {
-        let result = (|| -> anyhow::Result<std::collections::HashMap<String, String>> {
+        let result = (|| -> anyhow::Result<
+            std::collections::HashMap<String, crate::core::content::RemoteProject>,
+        > {
             let dl = crate::core::download::Downloader::new(source, timeout.max(20))?;
             let mut found = std::collections::HashMap::new();
-            for name in &names {
+
+            // 已经知道 slug 的，一次批量取回，省得一个个请求
+            let known: Vec<(String, String)> = items
+                .iter()
+                .filter_map(|(name, slug)| slug.as_ref().map(|s| (name.clone(), s.clone())))
+                .collect();
+            if !known.is_empty() {
+                let slugs: Vec<String> = known.iter().map(|(_, slug)| slug.clone()).collect();
+                let projects = crate::core::content::modrinth::projects_by_slugs(&dl, &slugs)
+                    .unwrap_or_default();
+                for project in projects {
+                    for (name, slug) in &known {
+                        if slug == &project.slug {
+                            found.insert(
+                                name.clone(),
+                                crate::core::content::RemoteProject {
+                                    slug: project.slug.clone(),
+                                    // 项目图标一并带回来，列表里直接拿来显示
+                                    icon_url: project.icon_url.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+
+            // 没 slug 的靠文件名猜项目名
+            for (name, slug) in items.iter() {
+                if slug.is_some() || found.contains_key(name) {
+                    continue;
+                }
                 let guess = guess_project_name(name);
                 for candidate in slug_candidates(&guess) {
                     if let Ok(Some(project)) =
                         crate::core::content::modrinth::find_by_slug(&dl, &candidate)
                     {
-                        found.insert(name.clone(), project.slug.clone());
+                        found.insert(
+                            name.clone(),
+                            crate::core::content::RemoteProject {
+                                slug: project.slug.clone(),
+                                icon_url: project.icon_url.clone(),
+                            },
+                        );
                         break;
                     }
                 }
@@ -2401,7 +2462,9 @@ fn lookup_curseforge_projects(app: &mut App, files: Vec<(String, PathBuf)>) {
     let key = app.cfg.download.curseforge_key();
     let mirror = app.cfg.download.source;
     app.spawn("查找 CurseForge 项目", false, move |job| {
-        let result = (|| -> anyhow::Result<std::collections::HashMap<String, String>> {
+        let result = (|| -> anyhow::Result<
+            std::collections::HashMap<String, crate::core::content::RemoteProject>,
+        > {
             let dl = crate::core::download::Downloader::new(mirror, timeout.max(20))?
                 .with_curseforge_key(key);
             crate::core::content::curseforge_projects(&dl, &files)

@@ -535,10 +535,10 @@ pub enum CoreEvent {
     McmodDbReady(crate::core::content::mcmod::Database),
     /// CurseForge API Key 连通性测试结果
     CurseForgeKeyTest(Result<String, String>),
-    /// 本地内容反查到的 Modrinth 项目：文件名 → slug
-    ContentSlugs(std::collections::HashMap<String, String>),
-    /// 本地内容反查到的 CurseForge 项目：文件名 → slug
-    ContentCurseForge(std::collections::HashMap<String, String>),
+    /// 本地内容反查到的 Modrinth 项目：文件名 → 项目
+    ContentSlugs(std::collections::HashMap<String, crate::core::content::RemoteProject>),
+    /// 本地内容反查到的 CurseForge 项目：文件名 → 项目
+    ContentCurseForge(std::collections::HashMap<String, crate::core::content::RemoteProject>),
     /// 各实例里装了哪些模组自带的内容
     ModFeatures(
         std::collections::HashMap<String, Vec<crate::core::content::modfeature::ModFeature>>,
@@ -1953,13 +1953,13 @@ impl App {
                     self.cf_key_test = Some(result);
                 }
                 CoreEvent::ContentSlugs(map) => {
-                    for (name, slug) in map {
-                        self.versions_ui.content_slugs.insert(name, slug);
+                    for (name, project) in map {
+                        self.versions_ui.content_slugs.insert(name, project);
                     }
                 }
                 CoreEvent::ContentCurseForge(map) => {
-                    for (name, slug) in map {
-                        self.versions_ui.content_cf.insert(name, slug);
+                    for (name, project) in map {
+                        self.versions_ui.content_cf.insert(name, project);
                     }
                 }
                 CoreEvent::ModFeatures(map) => {

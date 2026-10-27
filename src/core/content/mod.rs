@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::core::download::{DownloadProgress, Downloader};
 
 pub use modrinth::ContentKind;
+pub use modrinth::RemoteProject;
 
 /// 内容平台
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -223,11 +224,11 @@ pub fn project_url(source: ContentSource, kind: ContentKind, project: &modrinth:
 /// CurseForge 给每个文件算了一个指纹，
 /// 本地装着的模组拿指纹去问接口，就能知道它在 CurseForge 上属于哪个项目。
 ///
-/// 返回的是「文件名 → 项目 slug」。
+/// 返回的是「文件名 → 线上项目」，项目里带着 slug 与图标地址。
 pub fn curseforge_projects(
     dl: &Downloader,
     files: &[(String, PathBuf)],
-) -> Result<std::collections::HashMap<String, String>> {
+) -> Result<std::collections::HashMap<String, RemoteProject>> {
     let mut out = std::collections::HashMap::new();
     if files.is_empty() {
         return Ok(out);
@@ -256,19 +257,19 @@ pub fn curseforge_projects(
         return Ok(out);
     }
 
-    // 项目编号换 slug，项目页地址要用 slug
+    // 项目编号换项目资料，项目页地址与图标都要用它
     let mut ids: Vec<u32> = project_of.values().copied().collect();
     ids.sort_unstable();
     ids.dedup();
-    let slug_of: std::collections::HashMap<u32, String> =
+    let projects: std::collections::HashMap<u32, RemoteProject> =
         curseforge::projects_by_ids(dl, &ids)?.into_iter().collect();
 
     for (name, fingerprint) in owners {
         let Some(project_id) = project_of.get(&fingerprint) else {
             continue;
         };
-        if let Some(slug) = slug_of.get(project_id) {
-            out.insert(name, slug.clone());
+        if let Some(project) = projects.get(project_id) {
+            out.insert(name, project.clone());
         }
     }
     Ok(out)
