@@ -233,6 +233,20 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
                 crate::core::content::modrinth::format_downloads(hit.downloads)
             );
         }
+        // 批量取项目：本地列表靠它拿图标
+        {
+            let slugs = vec!["sodium".to_string(), "iris".to_string()];
+            let projects = crate::core::content::modrinth::projects_by_slugs(&dl2, &slugs)?;
+            let with_icon = projects
+                .iter()
+                .filter(|p| p.icon_url.is_some())
+                .count();
+            println!(
+                "      批量取项目 {} 个，其中有图标 {} 个",
+                projects.len(),
+                with_icon
+            );
+        }
         if let Some(first) = result.hits.first() {
             let versions = crate::core::content::modrinth::versions(
                 &dl2,
@@ -337,6 +351,23 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
                                             "没对上"
                                         }
                                     );
+                                    // 反查回来的项目要带着图标，列表里才能显示
+                                    let brief = curseforge::projects_by_ids(&dl2, &[mod_id])?
+                                        .into_iter()
+                                        .next()
+                                        .map(|(_, project)| project);
+                                    match brief {
+                                        Some(project) => println!(
+                                            "      反查项目：{}，图标 {}",
+                                            project.slug,
+                                            if project.icon_url.is_some() {
+                                                "有"
+                                            } else {
+                                                "无"
+                                            }
+                                        ),
+                                        None => println!("      反查项目：没取到"),
+                                    }
                                 }
                                 let _ = std::fs::remove_dir_all(&temp_dir);
                             }
