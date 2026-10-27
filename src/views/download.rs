@@ -278,6 +278,8 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     ui.set_opacity(1.0);
 
     install_modal(app, ui);
+    // 「再装一个」是从下载页发起的，弹窗得跟着这一页画
+    views::versions::new_instance_modal(app, ui);
 }
 
 // ------------------------------------------------------------------ 游戏本体
@@ -408,6 +410,18 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if installed {
+                        // 同一个版本想再要一份，就在这儿开
+                        if ui::button(ui, &p, ButtonOpts::secondary("再装一个").icon("plus")).clicked()
+                        {
+                            let inst_id = app
+                                .instances
+                                .iter()
+                                .find(|i| i.variants.iter().any(|v| v.id == entry.id))
+                                .map(|i| i.instance_id.clone());
+                            if let Some(id) = inst_id {
+                                views::versions::start_new_instance(app, &id);
+                            }
+                        }
                         if ui::button(ui, &p, ButtonOpts::secondary("打开目录")).clicked() {
                             views::open_version_dir(app, &entry.id);
                         }

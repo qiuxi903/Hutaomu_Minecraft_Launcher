@@ -771,9 +771,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                 }
                 // 同一个版本可以装多个实例，各自一份模组与存档
                 if ui::button(ui, &p, ButtonOpts::secondary("新建实例").icon("plus")).clicked() {
-                    app.versions_ui.new_instance_from = Some(inst.instance_id.clone());
-                    app.versions_ui.new_instance_name = format!("{} 副本", inst.display_name);
-                    app.versions_ui.new_instance_id = default_new_instance_id(app, &inst);
+                    start_new_instance(app, &inst.instance_id);
                 }
             });
         });
@@ -2776,11 +2774,36 @@ fn default_new_instance_id(app: &App, inst: &crate::core::minecraft::GameInstanc
     crate::core::minecraft::instance::unique_id(&inst.mc_version, &taken)
 }
 
+/// 打开「新建实例」弹窗
+///
+/// 以某个已有实例为基础复制一份。版本管理页与下载页都走这里。
+pub(crate) fn start_new_instance(app: &mut App, instance_id: &str) {
+    let Some(inst) = app
+        .instances
+        .iter()
+        .find(|i| i.instance_id == instance_id)
+        .cloned()
+    else {
+        app.error("找不到这个实例");
+        return;
+    };
+    app.versions_ui.new_instance_from = Some(inst.instance_id.clone());
+    // 整合包只复制游戏本体，名字按真实的 Minecraft 版本来，
+    // 免得出现「某某整合包 副本」这种名不副实的名字
+    let base = if inst.is_modpack {
+        inst.real_mc_version()
+    } else {
+        inst.display_name.clone()
+    };
+    app.versions_ui.new_instance_name = format!("{base} 副本");
+    app.versions_ui.new_instance_id = default_new_instance_id(app, &inst);
+}
+
 /// 「新建实例」弹窗
 ///
 /// 以当前实例为基础复制一份：客户端 jar、natives 与版本描述都复制过去，
 /// 模组、存档与配置不复制，新实例是干净的。
-fn new_instance_modal(app: &mut App, ui: &mut Ui) {
+pub(crate) fn new_instance_modal(app: &mut App, ui: &mut Ui) {
     let Some(from_id) = app.versions_ui.new_instance_from.clone() else {
         return;
     };
@@ -2800,15 +2823,25 @@ fn new_instance_modal(app: &mut App, ui: &mut Ui) {
     };
 
     let title = format!("新建实例 · {}", inst.display_name);
+    // 整合包实例带的是模组，复制不过去，得说清楚
+    let note = if inst.is_modpack {
+        format!(
+            "以 {} 为基础新建一个独立实例。只复制游戏本体，\
+             整合包的模组与配置不会带过去，新实例是干净的。",
+            active.variant_label()
+        )
+    } else {
+        format!(
+            "以 {} 为基础新建一个独立实例。游戏本体与加载器会复制过去，\
+             模组、存档与配置不复制，新实例是干净的。",
+            active.variant_label()
+        )
+    };
     widgets::modal(&ctx, &p, &mut open, &title, 460.0, |ui| {
         ui.label(
-            egui::RichText::new(format!(
-                "以 {} 为基础新建一个独立实例。游戏本体与加载器会复制过去，\
-                 模组、存档与配置不复制，新实例是干净的。",
-                active.variant_label()
-            ))
-            .font(ui::font(12.5))
-            .color(p.text_weak),
+            egui::RichText::new(note.clone())
+                .font(ui::font(12.5))
+                .color(p.text_weak),
         );
         ui.add_space(16.0);
         let mut name = app.versions_ui.new_instance_name.clone();
@@ -2880,8 +2913,8 @@ fn create_new_instance(
         ),
         // 解析不了就按版本号猜，复制不到 jar 时游戏会报错，但目录还是建好了
         Err(_) => (
-            version::version_dir(&game_dir, &inst.mc_version),
-            inst.mc_version.clone(),
+            version::version_dir(&game_dir, &inst.real_mc_version()),
+            inst.real_mc_version(),
         ),
     };
     let source = crate::core::minecraft::instance::InstanceSource {
@@ -2894,7 +2927,8 @@ fn create_new_instance(
         &game_dir,
         &source,
         new_id,
-        &inst.mc_version,
+        // 标记里记的是真正的 Minecraft 版本，整合包实例不能记它自己的名字
+        &inst.real_mc_version(),
         new_name,
     )?;
     Ok(())
