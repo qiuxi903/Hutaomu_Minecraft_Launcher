@@ -31,7 +31,7 @@ const REFERENCE_PROJECTS: [(&str, &str, &str, &str); 4] = [
     ),
 ];
 
-const LIBRARIES: [(&str, &str, &str); 18] = [
+const LIBRARIES: [(&str, &str, &str); 19] = [
     ("egui / eframe", "MIT OR Apache-2.0", "界面框架与窗口"),
     ("reqwest", "MIT OR Apache-2.0", "HTTP 客户端"),
     ("serde / serde_json", "MIT OR Apache-2.0", "配置与接口数据序列化"),
@@ -39,6 +39,7 @@ const LIBRARIES: [(&str, &str, &str); 18] = [
     ("resvg / tiny-skia", "MPL-2.0", "SVG 图标光栅化"),
     ("zip", "MIT", "压缩包与整合包解压"),
     ("md-5 / sha1", "MIT OR Apache-2.0", "离线 UUID 与文件校验"),
+    ("murmur2", "Apache-2.0", "CurseForge 文件指纹反查"),
     ("uuid", "MIT OR Apache-2.0", "账号与客户端标识"),
     ("rfd", "MIT", "系统文件选择对话框"),
     ("walkdir", "MIT OR Unlicense", "目录遍历与全盘 Java 搜索"),
@@ -52,7 +53,7 @@ const LIBRARIES: [(&str, &str, &str); 18] = [
     ("windows-sys / winresource", "MIT OR Apache-2.0", "Windows 系统接口与可执行文件图标"),
 ];
 
-const DATA_SOURCES: [(&str, &str, &str); 10] = [
+const DATA_SOURCES: [(&str, &str, &str); 12] = [
     ("Mojang API", "https://piston-meta.mojang.com", "游戏版本清单、客户端与依赖库"),
     ("BMCLAPI", "https://bmclapi2.bangbang93.com", "国内镜像加速"),
     ("Fabric Meta", "https://meta.fabricmc.net", "Fabric 加载器版本与描述"),
@@ -60,19 +61,31 @@ const DATA_SOURCES: [(&str, &str, &str); 10] = [
     ("MinecraftForge Maven", "https://maven.minecraftforge.net", "Forge 安装器与依赖"),
     ("NeoForged Maven", "https://maven.neoforged.net", "NeoForge 安装器与依赖"),
     ("Modrinth API", "https://api.modrinth.com", "Mod、光影、资源包与整合包"),
+    (
+        "CurseForge API",
+        "https://api.curseforge.com",
+        "CurseForge 平台的 Mod、光影、资源包与整合包",
+    ),
+    (
+        "CurseForge 社区镜像",
+        "https://api.curse.tools",
+        "官方搜索接口临时不可用时的备用地址",
+    ),
     ("MC 百科 MCMod", "https://www.mcmod.cn", "Mod 中文名、缩写与页面链接"),
     ("MC 镜像站翻译", "https://mod.mcimirror.top", "项目简介的中文翻译"),
     ("authlib-injector", "https://authlib-injector.yushi.moe", "皮肤站登录支持"),
 ];
 
 /// 已经在真实环境里跑通的功能
-const VERIFIED: [&str; 10] = [
+const VERIFIED: [&str; 12] = [
     "版本下载与安装（含资源文件）",
     "原版启动",
     "Fabric 加载器安装与启动",
     "游戏与加载器一次装好",
     "Java 简要搜索",
     "Modrinth 搜索与版本查询",
+    "CurseForge 搜索、下载与整合包安装",
+    "CurseForge 本地文件指纹反查",
     "MCMod 中文名与官网跳转",
     "整合包独立安装",
     "皮肤站登录与续期",
