@@ -888,22 +888,6 @@ fn game_section(app: &mut App, ui: &mut Ui) {
             });
         }
 
-        let mut show_log = app.cfg.launch.show_game_log;
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("游戏结束后自动展开日志面板")
-                    .font(ui::font(13.0))
-                    .color(p.text_weak),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::toggle(ui, &p, &mut show_log).changed() {
-                    app.cfg.launch.show_game_log = show_log;
-                    app.save_config();
-                }
-            });
-        });
-        ui.add_space(10.0);
-
         let mut log_dock = app.cfg.ui.log_dock;
         ui.horizontal(|ui| {
             ui.label(

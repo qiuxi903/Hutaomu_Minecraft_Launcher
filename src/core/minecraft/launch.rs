@@ -630,7 +630,10 @@ impl GameLog {
 }
 
 pub struct GameProcess {
-    pub child: Child,
+    /// 子进程句柄
+    ///
+    /// 截图自检会造一个没有真实进程的假进程，所以这里是可选的。
+    pub child: Option<Child>,
     pub pid: u32,
     pub log: Arc<GameLog>,
     pub version_id: String,
@@ -641,11 +644,26 @@ pub struct GameProcess {
 
 impl GameProcess {
     pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        match self.child.as_mut() {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            // 没有进程可等，就当它还开着
+            None => true,
+        }
     }
 
     pub fn kill(&mut self) {
-        let _ = self.child.kill();
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+        }
+    }
+
+    /// 进程要是已经退出了，返回退出码
+    pub fn try_exit(&mut self) -> Option<i32> {
+        let child = self.child.as_mut()?;
+        match child.try_wait() {
+            Ok(Some(status)) => Some(status.code().unwrap_or(-1)),
+            _ => None,
+        }
     }
 }
 
@@ -697,7 +715,7 @@ pub fn spawn(mut cmd: Command, version_id: &str) -> Result<GameProcess> {
     }
 
     Ok(GameProcess {
-        child,
+        child: Some(child),
         pid,
         log,
         version_id: version_id.to_string(),

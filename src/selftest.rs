@@ -196,8 +196,8 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
             println!("      | {}", line.text);
         }
         last_len = lines.len();
-        if let Ok(Some(status)) = process.child.try_wait() {
-            println!("      游戏进程退出，代码 {:?}", status.code());
+        if let Some(code) = process.try_exit() {
+            println!("      游戏进程退出，代码 {code:?}");
             break;
         }
     }
@@ -631,8 +631,8 @@ pub fn run_local(version_id: &str) -> anyhow::Result<()> {
             println!("      | {}", line.text);
         }
         last_len = lines.len();
-        if let Ok(Some(status)) = process.child.try_wait() {
-            println!("      游戏进程退出，代码 {:?}", status.code());
+        if let Some(code) = process.try_exit() {
+            println!("      游戏进程退出，代码 {code:?}");
             return Ok(());
         }
     }

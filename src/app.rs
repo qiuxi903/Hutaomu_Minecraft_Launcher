@@ -72,20 +72,15 @@ impl GamePhase {
     }
 }
 
-/// 游戏退出后留下的收尾信息
+/// 游戏日志面板只在游戏跑着的时候出现
 ///
-/// 进程没了，但日志还在：崩溃原因往往就写在那几行里，
-/// 留着面板用户随时能翻，不用重新启动一次游戏去找。
-pub struct LastGame {
-    pub version: String,
-    pub log: Arc<GameLog>,
-    pub exit_code: Option<i32>,
-    /// 一共跑了多少秒
-    pub ran_secs: u64,
-    /// 崩溃报告文件，有就带上
-    pub crash: Option<PathBuf>,
-    /// 游戏目录，日志和崩溃报告都在这底下
-    pub game_dir: PathBuf,
+/// 游戏一关，面板、整页日志、右边的小标签全部收掉，
+/// 屏幕上不留任何跟上次运行有关的东西。
+pub fn clear_game_log_ui(app: &mut App) {
+    app.game_log_open = false;
+    app.game_log_docked = false;
+    app.show_game_log_page = false;
+    app.game_log_filter.clear();
 }
 
 impl Page {
@@ -435,12 +430,12 @@ impl App {
             34 => {
                 // 右侧停靠的游戏日志面板
                 self.page = Page::Home;
-                self.shot_mock_game_log(true);
+                self.shot_mock_game_log();
             }
             35 => {
                 // 启动过场：居中的卡片，底下还看得见启动器
                 self.page = Page::Home;
-                self.shot_mock_game_log(true);
+                self.shot_mock_game_log();
                 self.game_starting = true;
             }
             _ => {
@@ -452,7 +447,7 @@ impl App {
     }
 
     /// 造一份假的游戏日志，用来检查日志面板的样子
-    fn shot_mock_game_log(&mut self, running: bool) {
+    fn shot_mock_game_log(&mut self) {
         let log = Arc::new(GameLog::default());
         for (i, text) in SHOT_MOCK_LOG.iter().enumerate() {
             let source = if i % 6 == 5 {
@@ -462,19 +457,17 @@ impl App {
             };
             log.push((*text).to_string(), source);
         }
-        self.last_game = Some(LastGame {
-            version: "1.20.1-Fabric".into(),
+        // 假进程没有真实的子进程，跑起来的时间倒着算，好让「已运行」有数值
+        let started = std::time::Instant::now() - std::time::Duration::from_secs(372);
+        self.game = Some(GameProcess {
+            child: None,
+            pid: 0,
             log,
-            exit_code: None,
-            ran_secs: 372,
-            crash: None,
+            version_id: "1.20.1-Fabric".into(),
+            started,
             game_dir: self.cfg.game_dir.clone(),
         });
-        self.game_phase = if running {
-            GamePhase::Running
-        } else {
-            GamePhase::Exited
-        };
+        self.game_phase = GamePhase::Running;
         self.game_log_docked = true;
     }
 }
@@ -770,8 +763,6 @@ pub struct App {
     pub window_handle: Option<isize>,
     /// 游戏当前的状态
     pub game_phase: GamePhase,
-    /// 游戏退出后留下的日志，方便回看崩溃原因
-    pub last_game: Option<LastGame>,
     /// 游戏日志面板是否停靠在右侧
     pub game_log_docked: bool,
     /// 日志面板的过滤词
@@ -885,7 +876,6 @@ impl App {
             game_starting: false,
             window_handle: None,
             game_phase: GamePhase::Starting,
-            last_game: None,
             game_log_docked: log_dock,
             game_log_filter: String::new(),
             game_ready_announced: false,
@@ -2177,17 +2167,20 @@ impl App {
         let version = game.version_id.clone();
         let mut exit: Option<(i32, u64, PathBuf, Arc<GameLog>)> = None;
         let mut broken = false;
-        match game.child.try_wait() {
-            Ok(Some(status)) => {
-                let code = status.code().unwrap_or(-1);
-                let ran_secs = game.started.elapsed().as_secs();
-                let game_dir = game.game_dir.clone();
-                let log = game.log.clone();
-                log.set_exit(code);
-                exit = Some((code, ran_secs, game_dir, log));
-            }
-            Ok(None) => {}
-            Err(_) => broken = true,
+        match game.child.as_mut() {
+            Some(child) => match child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.code().unwrap_or(-1);
+                    let ran_secs = game.started.elapsed().as_secs();
+                    let game_dir = game.game_dir.clone();
+                    let log = game.log.clone();
+                    log.set_exit(code);
+                    exit = Some((code, ran_secs, game_dir, log));
+                }
+                Ok(None) => {}
+                Err(_) => broken = true,
+            },
+            None => {}
         }
         // 到这里对 game 的借用结束了，下面可以放心改 App 的状态
         if ready {
@@ -2199,7 +2192,7 @@ impl App {
                 crate::core::sound::play_done();
             }
         }
-        if let Some((code, ran_secs, game_dir, log)) = exit {
+        if let Some((code, ran_secs, game_dir, _log)) = exit {
             self.game = None;
             self.game_starting = false;
             self.game_ready_announced = false;
@@ -2214,14 +2207,8 @@ impl App {
             } else {
                 None
             };
-            self.last_game = Some(LastGame {
-                version: version.clone(),
-                log,
-                exit_code: Some(code),
-                ran_secs,
-                crash: crash.clone(),
-                game_dir,
-            });
+            // 游戏没了，日志相关的界面也一起收掉，屏幕上不留上次运行的东西
+            clear_game_log_ui(self);
             self.handle_events();
             if code == 0 {
                 self.info(format!("{version} 已退出"));
@@ -2234,10 +2221,7 @@ impl App {
             } else {
                 self.error(format!("{version} 异常退出（代码 {code}）"));
             }
-            // 异常退出一定把日志摊开，正常退出按设置来
-            if code != 0 || self.cfg.launch.show_game_log {
-                self.game_log_docked = true;
-            }
+            let _ = ran_secs;
             self.refresh_local_versions();
             // 游戏结束了，按设置把启动器恢复回来
             self.restore_launcher_after_game();
@@ -2245,6 +2229,7 @@ impl App {
             self.game = None;
             self.game_starting = false;
             self.game_phase = GamePhase::Failed;
+            clear_game_log_ui(self);
         } else {
             self.egui_ctx
                 .request_repaint_after(std::time::Duration::from_millis(500));
@@ -2715,6 +2700,8 @@ impl App {
                 game.kill();
             }
             self.game = None;
+            // 手动结束也算游戏关了，日志相关的界面一起收掉
+            clear_game_log_ui(self);
             self.info("已结束游戏进程");
         }
         if open_log {
@@ -2916,30 +2903,22 @@ impl App {
     }
 
     /// 现在还有没有日志可以看
+    ///
+    /// 只认正在跑的游戏：游戏一关，日志相关的界面全部撤掉。
     pub fn has_game_log(&self) -> bool {
-        self.game.is_some() || self.last_game.is_some()
+        self.game.is_some()
     }
 
     /// 当前这份日志的出处：版本、状态、跑了多久、日志本体、游戏目录
     fn game_log_info(&self) -> Option<(String, GamePhase, u64, Arc<GameLog>, PathBuf)> {
-        if let Some(game) = &self.game {
-            return Some((
-                game.version_id.clone(),
-                self.game_phase,
-                game.started.elapsed().as_secs(),
-                game.log.clone(),
-                game.game_dir.clone(),
-            ));
-        }
-        self.last_game.as_ref().map(|last| {
-            (
-                last.version.clone(),
-                self.game_phase,
-                last.ran_secs,
-                last.log.clone(),
-                last.game_dir.clone(),
-            )
-        })
+        let game = self.game.as_ref()?;
+        Some((
+            game.version_id.clone(),
+            self.game_phase,
+            game.started.elapsed().as_secs(),
+            game.log.clone(),
+            game.game_dir.clone(),
+        ))
     }
 
     /// 右侧停靠的游戏日志面板
@@ -3011,21 +2990,6 @@ impl App {
                             .font(ui::font(12.0))
                             .color(palette.text_weak),
                     );
-                    if phase == GamePhase::Failed {
-                        if let Some(last) = &self.last_game {
-                            if let Some(crash) = &last.crash {
-                                let name = crash
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                ui.label(
-                                    egui::RichText::new(format!("崩溃报告 {name}"))
-                                        .font(ui::font(12.0))
-                                        .color(palette.danger),
-                                );
-                            }
-                        }
-                    }
                 });
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {

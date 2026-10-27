@@ -73,7 +73,6 @@ pub struct LaunchSettings {
     pub extra_args: String,
     /// 版本隔离：每个版本使用独立的存档/模组目录
     pub isolation: bool,
-    pub show_game_log: bool,
     /// 自动分配内存：按物理内存推算，不再手动填
     pub auto_memory: bool,
     /// 初始内存 -Xms，0 表示不设置
@@ -238,7 +237,6 @@ impl Default for LaunchSettings {
             height: 720,
             extra_args: String::new(),
             isolation: true,
-            show_game_log: true,
             auto_memory: false,
             initial_memory_mb: 0,
             custom_title: String::new(),
