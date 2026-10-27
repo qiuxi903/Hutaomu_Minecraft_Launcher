@@ -131,14 +131,27 @@ pub fn launch_game(app: &mut App) {
         .map(|v| v.major_version)
         .unwrap_or_else(|| crate::core::java::required_major(&mc_version));
 
+    // Java：实例自己指定的优先，没指定才用全局的，
+    // 两处都没指定就按游戏版本自动挑一个够用的
+    let manual_java = app.cfg.effective_java(&dir_id);
     let Some(java) = crate::core::java::pick_for_version(
         required_major,
-        app.cfg.java.path.as_deref(),
+        manual_java.as_deref(),
         &app.javas,
     ) else {
         app.error("没有找到可用的 Java，请到「设置 - Java」搜索或手动指定");
         return;
     };
+    // Java 主版本不够时游戏起不来，先拦一下，
+    // 总让人对着「Unrecognized option」猜是哪里的问题
+    if !app.cfg.launch.no_jvm_check && !crate::core::java::compatible(&java, required_major) {
+        app.error(format!(
+            "当前用的是 Java {}，这个版本需要 Java {} 以上，换一个再启动\
+             （可在「设置 → 游戏」里关掉兼容性检查）",
+            java.version, required_major
+        ));
+        return;
+    }
 
     let authlib_url = account.authlib_url().map(|s| s.to_string());
     if authlib_url.is_some() && app.authlib_jar.is_none() {
@@ -152,12 +165,14 @@ pub fn launch_game(app: &mut App) {
     }
 
     let identity = account.to_identity();
-    let memory = app.cfg.effective_memory(&mc_version);
-    let jvm_args = app.cfg.effective_jvm_args(&mc_version);
+    // 实例级设置按实例 id 取：普通实例的 id 就是 Minecraft 版本，
+    // 整合包实例的 id 是它自己的名字（界面上也是按这个存的）
+    let memory = app.cfg.effective_memory(&dir_id);
+    let jvm_args = app.cfg.effective_jvm_args(&dir_id);
     // 实例自己填的启动参数与窗口标题优先，没填才用全局的
-    let extra_args = app.cfg.effective_extra_args(&mc_version);
-    let custom_title = app.cfg.effective_custom_title(&mc_version);
-    let initial_memory_mb = app.cfg.effective_initial_memory(&mc_version);
+    let extra_args = app.cfg.effective_extra_args(&dir_id);
+    let custom_title = app.cfg.effective_custom_title(&dir_id);
+    let initial_memory_mb = app.cfg.effective_initial_memory(&dir_id);
     let fullscreen = app.cfg.launch.fullscreen;
     let width = app.cfg.launch.width;
     let height = app.cfg.launch.height;

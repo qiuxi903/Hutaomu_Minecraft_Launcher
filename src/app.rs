@@ -1401,6 +1401,28 @@ impl App {
         )
     }
 
+    /// 当前选中的实例
+    ///
+    /// 配置里存的是版本目录 id，整合包实例的 id 是它自己的名字，
+    /// 所以要靠变体列表反查回是哪一条实例。
+    pub fn selected_instance(&self) -> Option<&crate::core::minecraft::GameInstance> {
+        let id = self.cfg.selected_version.as_deref()?;
+        self.instances
+            .iter()
+            .find(|i| i.variants.iter().any(|v| v.id == id))
+    }
+
+    /// 当前实例启动时实际会用到的 Java
+    ///
+    /// 和启动流程同一套逻辑：实例自己指定的优先，
+    /// 没指定就按游戏版本自动挑一个够用的。
+    pub fn java_for_current(&self) -> Option<JavaInfo> {
+        let inst = self.selected_instance()?;
+        let required = crate::core::java::required_major(&inst.real_mc_version());
+        let manual = self.cfg.effective_java(&inst.mc_version);
+        crate::core::java::pick_for_version(required, manual.as_deref(), &self.javas)
+    }
+
     // ------------------------------------------------------------ 皮肤
 
     pub fn ensure_skin(&mut self, account_id: &str) {

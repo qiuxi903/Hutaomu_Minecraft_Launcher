@@ -538,3 +538,83 @@ pub fn pick_for_version(
     }
     pick_for_major(required, javas)
 }
+
+/// 这个 Java 带不带得起该游戏
+///
+/// 主版本低于游戏要求就带不动：1.18 之后的游戏要 Java 17，
+/// 1.20.5 之后要 Java 21，版本太老的 Java 会在启动参数那一步就报错。
+pub fn compatible(java: &JavaInfo, required: u32) -> bool {
+    java.major >= required
+}
+
+/// 按游戏版本给 Java 排序，推荐的排前面
+///
+/// 够用的按主版本从小到大排（够用就行，不必用最新的）；
+/// 不够用的排在后面但仍然保留 —— 用户有时就是想拿旧 Java 试试。
+pub fn sort_by_fit(javas: &mut [JavaInfo], required: u32) {
+    javas.sort_by(|a, b| {
+        let too_old = |j: &JavaInfo| u8::from(j.major < required);
+        too_old(a)
+            .cmp(&too_old(b))
+            .then_with(|| a.major.cmp(&b.major))
+            .then_with(|| b.bits.cmp(&a.bits))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn java(major: u32, bits: u32) -> JavaInfo {
+        JavaInfo {
+            path: format!("C:\\java\\{major}").into(),
+            version: format!("{major}.0.1"),
+            major,
+            vendor: "Test".into(),
+            bits,
+            runtime: "Test".into(),
+        }
+    }
+
+    #[test]
+    fn required_major_follows_minecraft_rules() {
+        assert_eq!(required_major("1.8.9"), 8);
+        assert_eq!(required_major("1.12.2"), 8);
+        assert_eq!(required_major("1.16.5"), 8);
+        assert_eq!(required_major("1.17"), 16);
+        assert_eq!(required_major("1.17.1"), 16);
+        assert_eq!(required_major("1.18.2"), 17);
+        assert_eq!(required_major("1.20.4"), 17);
+        assert_eq!(required_major("1.20.5"), 21);
+        assert_eq!(required_major("1.21.1"), 21);
+        // 26.x 起用新的版本号方案，对应 Java 25
+        assert_eq!(required_major("26.3"), 25);
+    }
+
+    #[test]
+    fn picks_the_lowest_version_that_is_still_enough() {
+        let javas = vec![java(8, 64), java(17, 64), java(21, 64), java(25, 64)];
+        let picked = pick_for_major(17, &javas).expect("应当挑到一个");
+        assert_eq!(picked.major, 17);
+        let picked = pick_for_major(21, &javas).expect("应当挑到一个");
+        assert_eq!(picked.major, 21);
+    }
+
+    #[test]
+    fn no_java_is_new_enough_falls_back_to_the_highest() {
+        let javas = vec![java(8, 64), java(8, 32)];
+        let picked = pick_for_major(21, &javas).expect("兜底也要挑一个");
+        assert_eq!(picked.major, 8);
+        // 但兼容性判断要如实说是带不动的
+        assert!(!compatible(&picked, 21));
+    }
+
+    #[test]
+    fn sorting_puts_enough_javas_first() {
+        let mut javas = vec![java(8, 64), java(25, 64), java(17, 64), java(21, 64)];
+        sort_by_fit(&mut javas, 17);
+        let majors: Vec<u32> = javas.iter().map(|j| j.major).collect();
+        assert_eq!(majors, vec![17, 21, 25, 8]);
+    }
+}
