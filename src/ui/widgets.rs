@@ -1519,6 +1519,52 @@ pub fn toast_layer(
 
 // ---------------------------------------------------------------- 模态框
 
+/// 弹窗被拖动后偏离中心多远，按标题记着
+///
+/// 弹窗本身是个自由函数，拿不到 App 的状态，就在这里按标题记一份。
+/// 同一个弹窗下次打开还在原来的位置。
+static MODAL_OFFSETS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, Vec2>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn modal_offset(title: &str) -> Vec2 {
+    MODAL_OFFSETS
+        .lock()
+        .ok()
+        .and_then(|map| map.get(title).copied())
+        .unwrap_or(Vec2::ZERO)
+}
+
+fn set_modal_offset(title: &str, offset: Vec2) {
+    if let Ok(mut map) = MODAL_OFFSETS.lock() {
+        map.insert(title.to_string(), offset);
+    }
+}
+
+/// 标题栏可以拖着挪位置
+///
+/// 返回拖动量，交给调用方去改弹窗的落点。
+pub fn drag_title_bar(ui: &mut Ui, rect: Rect, id: Id) -> Vec2 {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return Vec2::ZERO;
+    }
+    // 右边留出关闭按钮的位置，别把按钮的点击抢走
+    let drag_rect = Rect::from_min_max(
+        rect.min,
+        Pos2::new(rect.right() - 46.0, rect.bottom()),
+    );
+    let response = ui.interact(drag_rect, id, Sense::drag());
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+    }
+    if !response.dragged() {
+        return Vec2::ZERO;
+    }
+    // 拖着的时候换成抓手
+    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+    response.drag_delta()
+}
+
 pub fn modal(
     ctx: &egui::Context,
     p: &Palette,
@@ -1534,6 +1580,12 @@ pub fn modal(
     }
     let mut close = false;
     let screen = ctx.content_rect();
+    // 拖出来的位置要在屏幕里待着
+    let limit = Vec2::new(
+        (screen.width() * 0.5 - 80.0).max(0.0),
+        (screen.height() * 0.5 - 60.0).max(0.0),
+    );
+    let mut offset = modal_offset(title).clamp(-limit, limit);
 
     egui::Area::new(Id::new("htmcl_modal_backdrop"))
         .order(egui::Order::Middle)
@@ -1555,7 +1607,7 @@ pub fn modal(
         .order(egui::Order::Foreground)
         .anchor(
             Align2::CENTER_CENTER,
-            Vec2::new(0.0, (1.0 - progress) * 12.0),
+            Vec2::new(offset.x, offset.y + (1.0 - progress) * 12.0),
         )
         .show(ctx, |ui| {
             ui.set_opacity(progress);
@@ -1567,6 +1619,7 @@ pub fn modal(
                 .inner_margin(Margin::same(20))
                 .show(ui, |ui| {
                     ui.set_width(width);
+                    let mut header_rect = Rect::NOTHING;
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(title)
@@ -1579,7 +1632,15 @@ pub fn modal(
                                 close = true;
                             }
                         });
+                        header_rect = ui.min_rect();
                     });
+                    // 标题栏可以拖着挪弹窗
+                    let delta = drag_title_bar(ui, header_rect, ui.id().with("modal_drag"));
+                    if delta != Vec2::ZERO {
+                        offset += delta;
+                        offset = offset.clamp(-limit, limit);
+                        set_modal_offset(title, offset);
+                    }
                     ui.add_space(6.0);
                     add(ui);
                 });
@@ -1748,5 +1809,57 @@ mod tests {
         assert!(!super::super::animations_enabled());
         super::super::set_animations_enabled(true);
         assert!(super::super::animations_enabled());
+    }
+
+    /// 标题栏能拖着挪位置
+    ///
+    /// 这一条是给「悬浮窗没法调整位置」兜底：
+    /// 按下、拖动，拖动量必须真的传出来。
+    #[test]
+    fn title_bar_can_be_dragged() {
+        let ctx = egui::Context::default();
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let mut header = Rect::NOTHING;
+        let mut delta = Vec2::ZERO;
+
+        // 每一帧都摆一条 300 宽的标题栏，位置保持一致
+        let mut frame = |ui: &mut Ui, header: &mut Rect, delta: &mut Vec2| {
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(300.0, 24.0), Sense::hover());
+                ui.label("下载中心");
+                *header = rect;
+            });
+            *delta = drag_title_bar(ui, *header, ui.id().with("drag"));
+        };
+
+        // 第一帧：把标题栏摆出来
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        let _ = ctx.run_ui(input, |ui| frame(ui, &mut header, &mut delta));
+
+        // 第二帧：在标题栏上按下
+        let press = header.center();
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        input.events.push(egui::Event::PointerMoved(press));
+        input.events.push(egui::Event::PointerButton {
+            pos: press,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        let _ = ctx.run_ui(input, |ui| frame(ui, &mut header, &mut delta));
+
+        // 第三帧：拖着走 40×25，拖动量应该原样传出来
+        let moved = press + Vec2::new(40.0, 25.0);
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        input.events.push(egui::Event::PointerMoved(moved));
+        let _ = ctx.run_ui(input, |ui| frame(ui, &mut header, &mut delta));
+
+        assert!(
+            (delta - Vec2::new(40.0, 25.0)).length() < 1.0,
+            "拖动量不对，实际 {delta:?}"
+        );
     }
 }

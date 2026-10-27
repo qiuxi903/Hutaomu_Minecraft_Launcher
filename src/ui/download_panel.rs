@@ -77,12 +77,27 @@ impl App {
         } else {
             0.0
         };
+        // 用户拖过之后记住新位置
+        let mut offset = Vec2::new(
+            self.cfg.ui.download_panel_offset[0],
+            self.cfg.ui.download_panel_offset[1],
+        );
+        let screen = ctx.content_rect();
+        let limit = Vec2::new(
+            (screen.width() - 440.0).max(0.0),
+            (screen.height() - 160.0).max(0.0),
+        );
+        offset = offset.clamp(Vec2::new(-limit.x, -limit.y), Vec2::ZERO);
+        let mut dragged = Vec2::ZERO;
 
         egui::Area::new(egui::Id::new("htmcl_download_panel"))
             .order(egui::Order::Foreground)
             .anchor(
                 egui::Align2::RIGHT_BOTTOM,
-                Vec2::new(-20.0 - dodge + shift, -20.0 + shift),
+                Vec2::new(
+                    -20.0 - dodge + shift + offset.x,
+                    -20.0 + shift + offset.y,
+                ),
             )
             .show(ctx, |ui| {
                 ui.set_opacity(anim);
@@ -94,6 +109,7 @@ impl App {
                     .corner_radius(radius)
                     .inner_margin(Margin::same(14))
                     .show(ui, |ui| {
+                        let mut header_rect = Rect::NOTHING;
                         ui.horizontal(|ui| {
                             icons::paint(
                                 ui.ctx(),
@@ -124,7 +140,14 @@ impl App {
                                     close = true;
                                 }
                             });
+                            header_rect = ui.min_rect();
                         });
+                        // 标题栏可以拖着挪位置
+                        dragged = crate::ui::widgets::drag_title_bar(
+                            ui,
+                            header_rect,
+                            ui.id().with("download_drag"),
+                        );
                         ui.add_space(8.0);
 
                         if active.is_empty() {
@@ -160,6 +183,12 @@ impl App {
                 );
             });
 
+        if dragged != Vec2::ZERO {
+            offset += dragged;
+            offset = offset.clamp(Vec2::new(-limit.x, -limit.y), Vec2::ZERO);
+            self.cfg.ui.download_panel_offset = [offset.x, offset.y];
+            self.save_config();
+        }
         if close {
             self.download_panel_open = false;
         }
@@ -178,10 +207,18 @@ impl App {
         let mut open = false;
         // 游戏在跑时右下角挂着悬浮球，胶囊往上让，别叠在一起
         let lift = if self.game.is_some() { 78.0 } else { 0.0 };
+        // 面板被拖走过以后，胶囊跟着待在同一个地方
+        let offset = Vec2::new(
+            self.cfg.ui.download_panel_offset[0],
+            self.cfg.ui.download_panel_offset[1],
+        );
 
         egui::Area::new(egui::Id::new("htmcl_download_chip"))
             .order(egui::Order::Foreground)
-            .anchor(egui::Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -20.0 - lift))
+            .anchor(
+                egui::Align2::RIGHT_BOTTOM,
+                Vec2::new(-20.0 + offset.x, -20.0 - lift + offset.y),
+            )
             .show(ctx, |ui| {
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(196.0, 48.0), Sense::click());
                 let radius = CornerRadius::same(24);

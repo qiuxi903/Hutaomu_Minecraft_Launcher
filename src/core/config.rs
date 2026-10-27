@@ -146,6 +146,8 @@ pub struct UiSettings {
     pub max_log_lines: usize,
     /// 游戏跑起来时，日志面板默认就停靠在右边
     pub log_dock: bool,
+    /// 下载中心悬浮面板被拖动后偏离右下角多少（x, y）
+    pub download_panel_offset: [f32; 2],
     /// 自动清理启动器日志（30 天前）
     pub auto_purge_logs: bool,
     /// 调试模式：日志里输出更详细的信息
@@ -340,6 +342,7 @@ impl Default for UiSettings {
             max_fps: 0,
             max_log_lines: 4000,
             log_dock: true,
+            download_panel_offset: [0.0, 0.0],
             auto_purge_logs: false,
             debug_mode: false,
         }
