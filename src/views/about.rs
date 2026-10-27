@@ -1,8 +1,9 @@
-use egui::{Align, Layout, Rect, Sense, Ui, Vec2};
+use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
 
 use crate::app::App;
 use crate::icons;
 use crate::ui::{self, widgets, ButtonOpts};
+use crate::theme::Palette;
 
 const REFERENCE_PROJECTS: [(&str, &str, &str, &str); 4] = [
     (
@@ -103,12 +104,12 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     widgets::page_title(ui, &p, "关于", "胡桃木 Minecraft 启动器");
 
-    // 应用信息
+    // ------------------------------------------------------------ 应用信息
     ui::card(ui, &p, |ui| {
         ui.horizontal_top(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(72.0), Sense::hover());
             icons::paint(ui.ctx(), ui.painter(), "cube", rect, p.accent);
-            ui.add_space(14.0);
+            ui.add_space(16.0);
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new("胡桃木 Minecraft 启动器")
@@ -130,91 +131,178 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                     widgets::badge(ui, &p, "AGPL-3.0", p.text_weak);
                     widgets::badge(ui, &p, "Rust + egui", p.text_weak);
                 });
-                ui.add_space(10.0);
-                ui.horizontal_wrapped(|ui| {
-                    if ui::button(ui, &p, ButtonOpts::secondary("GitHub 仓库").icon("git-branch")).clicked()
-                    {
-                        let _ = open::that("https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher");
-                    }
-                    if ui::button(ui, &p, ButtonOpts::secondary("更新日志").icon("clock")).clicked() {
-                        let _ = open::that(
-                            "https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/commits/main",
-                        );
-                    }
-                    if ui::button(ui, &p, ButtonOpts::secondary("反馈问题").icon("external-link")).clicked()
-                    {
-                        let _ = open::that("https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/issues");
-                    }
-                    if ui::button(ui, &p, ButtonOpts::secondary("打开启动器目录").icon("folder")).clicked()
-                    {
-                        crate::core::paths::reveal(&crate::core::paths::exe_dir());
-                    }
+            });
+            // 按钮摆在右侧，两行两列，别拉成一长条
+            ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        if ui::button(ui, &p, ButtonOpts::secondary("GitHub 仓库").icon("git-branch"))
+                            .clicked()
+                        {
+                            let _ = open::that("https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher");
+                        }
+                        if ui::button(ui, &p, ButtonOpts::secondary("更新日志").icon("clock")).clicked() {
+                            let _ = open::that(
+                                "https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/commits/main",
+                            );
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if ui::button(ui, &p, ButtonOpts::secondary("反馈问题").icon("external-link"))
+                            .clicked()
+                        {
+                            let _ = open::that(
+                                "https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/issues",
+                            );
+                        }
+                        if ui::button(ui, &p, ButtonOpts::secondary("打开启动器目录").icon("folder"))
+                            .clicked()
+                        {
+                            crate::core::paths::reveal(&crate::core::paths::exe_dir());
+                        }
+                    });
                 });
             });
         });
     });
 
-    ui.add_space(14.0);
+    ui.add_space(12.0);
 
-    // 测试版声明
+    // ------------------------------------------------------------ 项目速览
     ui::card(ui, &p, |ui| {
-        widgets::section_title(ui, &p, "测试版声明");
-        ui.label(
-            egui::RichText::new(format!(
-                "当前版本 {} 是胡桃木启动器的公开测试版（Beta）。功能仍在快速迭代，配置文件字段、目录结构与界面都可能在下个版本变化；升级前请备份 accounts.json 与游戏目录；遇到问题请到 GitHub Issues 反馈。",
-                env!("CARGO_PKG_VERSION")
-            ))
-            .font(ui::font(12.5))
-            .color(p.text_weak),
+        stat_tiles(
+            ui,
+            &p,
+            &[
+                (env!("CARGO_PKG_VERSION"), "当前版本", p.accent),
+                (&LIBRARIES.len().to_string(), "开源组件", p.text),
+                (&DATA_SOURCES.len().to_string(), "数据来源", p.text),
+                (&REFERENCE_PROJECTS.len().to_string(), "参考项目", p.text),
+                (&VERIFIED.len().to_string(), "已验证功能", p.success),
+            ],
         );
-        ui.add_space(14.0);
+    });
 
-        // 验证情况分两栏列出来，比一整段文字好找
-        ui.columns(2, |columns| {
-            columns[0].label(
-                egui::RichText::new("已验证")
+    ui.add_space(12.0);
+
+    // ------------------------------------------------------------ 功能验证
+    ui.columns(2, |cols| {
+        // 左：已验证与待验证
+        let left_width = cols[0].available_width();
+        ui::card(&mut cols[0], &p, |ui| {
+            // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
+            ui.set_width((left_width - 36.0).max(220.0));
+            widgets::section_title(ui, &p, "功能验证情况");
+            ui.label(
+                egui::RichText::new("下面这些是在真实环境里跑通过的，不是纸面功能。")
+                    .font(ui::font(12.0))
+                    .color(p.text_weak),
+            );
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new(format!("已验证 {} 项", VERIFIED.len()))
                     .font(ui::font(13.0))
                     .color(p.success)
                     .strong(),
             );
-            columns[0].add_space(6.0);
-            for item in VERIFIED {
-                columns[0].horizontal(|ui| {
-                    icons::paint(ui.ctx(), ui.painter(), "check", Rect::from_min_size(ui.cursor().min, Vec2::splat(13.0)), p.success);
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(item)
-                            .font(ui::font(12.0))
-                            .color(p.text_weak),
-                    );
-                });
-                columns[0].add_space(3.0);
+            ui.add_space(8.0);
+            // 一项一行，字号不大才排得下
+            for item in VERIFIED.iter() {
+                check_item(ui, &p, item, p.success, "check");
+                ui.add_space(3.0);
             }
-            columns[1].label(
-                egui::RichText::new("待验证")
+            ui.add_space(14.0);
+            ui.label(
+                egui::RichText::new(format!("待验证 {} 项", UNVERIFIED.len()))
                     .font(ui::font(13.0))
                     .color(p.warning)
                     .strong(),
             );
-            columns[1].add_space(6.0);
+            ui.add_space(8.0);
             for item in UNVERIFIED {
-                columns[1].horizontal(|ui| {
-                    icons::paint(ui.ctx(), ui.painter(), "clock", Rect::from_min_size(ui.cursor().min, Vec2::splat(13.0)), p.warning);
-                    ui.add_space(4.0);
-                    ui.label(
-                        egui::RichText::new(item)
-                            .font(ui::font(12.0))
-                            .color(p.text_weak),
-                    );
-                });
-                columns[1].add_space(3.0);
+                check_item(ui, &p, item, p.warning, "clock");
+                ui.add_space(3.0);
             }
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new(
+                    "这几项要么需要特定的运行环境，要么还没来得及在真实机器上跑一遍。\
+                     遇到问题欢迎到 GitHub Issues 反馈。",
+                )
+                .font(ui::font(12.0))
+                .color(p.text_faint),
+            );
+        });
+
+        // 右：运行环境
+        let right_width = cols[1].available_width();
+        ui::card(&mut cols[1], &p, |ui| {
+            ui.set_width((right_width - 36.0).max(220.0));
+            widgets::section_title(ui, &p, "运行环境");
+            // 六个键值排两列，一眼能扫完
+            let rows: Vec<(&str, String)> = vec![
+                ("启动器版本", env!("CARGO_PKG_VERSION").to_string()),
+                (
+                    "构建配置",
+                    if cfg!(debug_assertions) { "Debug" } else { "Release" }.to_string(),
+                ),
+                (
+                    "配置文件",
+                    crate::core::paths::config_file().display().to_string(),
+                ),
+                (
+                    "账号文件",
+                    crate::core::paths::accounts_file().display().to_string(),
+                ),
+                ("游戏目录", app.cfg.game_dir_display()),
+                (
+                    "日志目录",
+                    crate::core::paths::logs_dir().display().to_string(),
+                ),
+            ];
+            // 一行一项，路径长了才有地方显示
+            for (key, value) in rows.iter() {
+                kv_row(ui, &p, key, value);
+                ui.add_space(7.0);
+            }
+            ui.add_space(8.0);
+            widgets::divider(ui, &p);
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("本地文件")
+                    .font(ui::font(13.0))
+                    .color(p.text)
+                    .strong(),
+            );
+            ui.add_space(8.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if ui::button(ui, &p, ButtonOpts::ghost("启动器目录").icon("folder")).clicked() {
+                    crate::core::paths::reveal(&crate::core::paths::exe_dir());
+                }
+                if ui::button(ui, &p, ButtonOpts::ghost("日志目录").icon("terminal")).clicked() {
+                    crate::core::paths::ensure_dir(&crate::core::paths::logs_dir());
+                    crate::core::paths::reveal(&crate::core::paths::logs_dir());
+                }
+                if ui::button(ui, &p, ButtonOpts::ghost("配置文件").icon("file-text")).clicked() {
+                    crate::core::paths::reveal(&crate::core::paths::config_file());
+                }
+                if ui::button(ui, &p, ButtonOpts::ghost("游戏目录").icon("cube")).clicked() {
+                    crate::core::paths::reveal(&app.cfg.game_dir);
+                }
+            });
+            ui.add_space(12.0);
+            ui.label(
+                egui::RichText::new("作者：邱息 / qiuxi903")
+                    .font(ui::font(12.0))
+                    .color(p.text_faint),
+            );
         });
     });
 
-    ui.add_space(14.0);
+    ui.add_space(12.0);
 
-    // 参考项目
+    // ------------------------------------------------------------ 参考项目
     ui::card(ui, &p, |ui| {
         widgets::section_title(ui, &p, "参考项目");
         ui.label(
@@ -223,9 +311,13 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 .color(p.text_weak),
         );
         ui.add_space(12.0);
-        for (name, url, license, note) in REFERENCE_PROJECTS {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
+        ui.columns(2, |cols| {
+            for (i, (name, url, license, note)) in REFERENCE_PROJECTS.into_iter().enumerate() {
+                let col = if i % 2 == 0 { &mut cols[0] } else { &mut cols[1] };
+                // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
+                let width = col.available_width();
+                ui::card(col, &p, |ui| {
+                    ui.set_width((width - 36.0).max(160.0));
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(name)
@@ -233,98 +325,69 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                                 .color(p.text)
                                 .strong(),
                         );
-                        widgets::badge(ui, &p, license, p.text_faint);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui::ghost(ui, &p, "打开").clicked() {
+                                let _ = open::that(url);
+                            }
+                        });
                     });
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(note)
-                            .font(ui::font(12.0))
-                            .color(p.text_weak),
-                    );
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        widgets::badge(ui, &p, license, p.text_faint);
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(note)
+                                .font(ui::font(11.5))
+                                .color(p.text_weak),
+                        );
+                    });
                 });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui::ghost(ui, &p, "打开").clicked() {
-                        let _ = open::that(url);
-                    }
-                });
-            });
+                col.add_space(10.0);
+            }
+        });
+    });
+
+    ui.add_space(12.0);
+
+    // ------------------------------------------------------------ 组件与数据源
+    ui.columns(2, |cols| {
+        // 左：开源组件
+        let left_width = cols[0].available_width();
+        ui::card(&mut cols[0], &p, |ui| {
+            // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
+            ui.set_width((left_width - 36.0).max(220.0));
+            widgets::section_title(ui, &p, "使用的开源组件");
+            ui.label(
+                egui::RichText::new(format!("共 {} 个组件，许可均为宽松协议。", LIBRARIES.len()))
+                    .font(ui::font(12.0))
+                    .color(p.text_weak),
+            );
             ui.add_space(10.0);
-        }
+            for (name, license, usage) in LIBRARIES.into_iter() {
+                component_row(ui, &p, name, usage, license);
+            }
+        });
+
+        // 右：数据来源
+        let right_width = cols[1].available_width();
+        ui::card(&mut cols[1], &p, |ui| {
+            ui.set_width((right_width - 36.0).max(220.0));
+            widgets::section_title(ui, &p, "数据来源");
+            ui.label(
+                egui::RichText::new(format!("共 {} 个接口与站点。", DATA_SOURCES.len()))
+                    .font(ui::font(12.0))
+                    .color(p.text_weak),
+            );
+            ui.add_space(10.0);
+            for (name, url, usage) in DATA_SOURCES.into_iter() {
+                source_row(ui, &p, name, url, usage);
+            }
+        });
     });
 
-    ui.add_space(14.0);
+    ui.add_space(12.0);
 
-    // 开源组件
-    ui::card(ui, &p, |ui| {
-        widgets::section_title(ui, &p, "使用的开源组件");
-        for (name, license, usage) in LIBRARIES {
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(name)
-                        .font(ui::font(12.5))
-                        .color(p.text),
-                );
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new(license)
-                            .font(ui::font(11.0))
-                            .color(p.text_faint),
-                    );
-                    ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new(usage)
-                            .font(ui::font(11.5))
-                            .color(p.text_weak),
-                    );
-                });
-            });
-            ui.add_space(5.0);
-        }
-    });
-
-    ui.add_space(14.0);
-
-    // 数据来源
-    ui::card(ui, &p, |ui| {
-        widgets::section_title(ui, &p, "数据来源");
-        for (name, url, usage) in DATA_SOURCES {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new(name)
-                            .font(ui::font(12.5))
-                            .color(p.text),
-                    );
-                    ui.label(
-                        egui::RichText::new(usage)
-                            .font(ui::font(11.5))
-                            .color(p.text_weak),
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui::ghost(ui, &p, "访问").clicked() {
-                        let _ = open::that(url);
-                    }
-                    // 地址太长会挤成一片，这里只显示域名，完整地址放悬停提示
-                    let short = url
-                        .trim_start_matches("https://")
-                        .trim_start_matches("http://")
-                        .trim_end_matches('/');
-                    ui.label(
-                        egui::RichText::new(short)
-                            .font(ui::font(11.0))
-                            .color(p.text_faint),
-                    )
-                    .on_hover_text(url);
-                });
-            });
-            ui.add_space(8.0);
-        }
-    });
-
-    ui.add_space(14.0);
-
-    // 协议与声明
+    // ------------------------------------------------------------ 协议与声明
     ui::card(ui, &p, |ui| {
         widgets::section_title(ui, &p, "开源协议与声明");
         ui.label(
@@ -344,7 +407,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
             .font(ui::font(12.5))
             .color(p.text_weak),
         );
-        ui.add_space(12.0);
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
             if ui::button(ui, &p, ButtonOpts::secondary("查看 AGPL-3.0 全文").icon("scale")).clicked() {
                 let _ = open::that("https://www.gnu.org/licenses/agpl-3.0.html");
@@ -354,32 +417,15 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 if path.is_file() {
                     let _ = open::that(path);
                 } else {
-                    let _ = open::that("https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/blob/main/LICENSE");
+                    let _ = open::that(
+                        "https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/blob/main/LICENSE",
+                    );
                 }
             }
         });
-        ui.add_space(12.0);
-        ui.label(
-            egui::RichText::new("作者：邱息 / qiuxi903")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
     });
 
-    ui.add_space(14.0);
-
-    // 运行环境
-    ui::card(ui, &p, |ui| {
-        widgets::section_title(ui, &p, "运行环境");
-        widgets::key_value(ui, &p, "启动器版本", env!("CARGO_PKG_VERSION"));
-        widgets::key_value(ui, &p, "构建配置", if cfg!(debug_assertions) { "Debug" } else { "Release" });
-        widgets::key_value(ui, &p, "配置文件", &crate::core::paths::config_file().display().to_string());
-        widgets::key_value(ui, &p, "账号文件", &crate::core::paths::accounts_file().display().to_string());
-        widgets::key_value(ui, &p, "游戏目录", &app.cfg.game_dir_display());
-        widgets::key_value(ui, &p, "日志目录", &crate::core::paths::logs_dir().display().to_string());
-    });
-
-    ui.add_space(20.0);
+    ui.add_space(18.0);
     ui.vertical_centered(|ui| {
         ui.label(
             egui::RichText::new("胡桃木 Minecraft 启动器 · 用 Rust 写的 Minecraft 启动器")
@@ -387,4 +433,143 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 .color(p.text_faint),
         );
     });
+}
+
+// ------------------------------------------------------------------ 小部件
+
+/// 一排统计小方块
+fn stat_tiles(ui: &mut Ui, p: &Palette, items: &[(&str, &str, Color32)]) {
+    let count = items.len().max(1) as f32;
+    let spacing = 10.0;
+    let width = ((ui.available_width() - spacing * (count - 1.0)) / count).max(90.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = spacing;
+        for (value, label, color) in items {
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 64.0), Sense::hover());
+            ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
+            let value_galley = ui
+                .painter()
+                .layout_no_wrap(value.to_string(), ui::font(18.0), *color);
+            ui.painter().galley(
+                Pos2::new(rect.left() + 13.0, rect.top() + 11.0),
+                value_galley,
+                *color,
+            );
+            let label_galley = ui
+                .painter()
+                .layout_no_wrap(label.to_string(), ui::font(11.5), p.text_weak);
+            ui.painter().galley(
+                Pos2::new(
+                    rect.left() + 13.0,
+                    rect.bottom() - label_galley.size().y - 10.0,
+                ),
+                label_galley,
+                p.text_weak,
+            );
+        }
+    });
+}
+
+/// 带勾的条目，图标跟文字对齐
+fn check_item(ui: &mut Ui, p: &Palette, text: &str, color: Color32, icon: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+        icons::paint(
+            ui.ctx(),
+            ui.painter(),
+            icon,
+            Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
+            color,
+        );
+        ui.add_space(7.0);
+        // 剩下的宽度放不下就截断，文字不会顶出这一栏
+        ui.add(
+            egui::Label::new(egui::RichText::new(text).font(ui::font(12.0)).color(p.text_weak))
+                .truncate(),
+        );
+    });
+}
+
+/// 运行环境里的一行：左边是名字，右边是值
+///
+/// 值一般是路径，可能很长，截断后把完整内容放进悬停提示里。
+fn kv_row(ui: &mut Ui, p: &Palette, key: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(egui::RichText::new(key).font(ui::font(12.5)).color(p.text_weak))
+                .truncate(),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let resp = ui.add(
+                egui::Label::new(
+                    egui::RichText::new(value)
+                        .font(ui::font(12.5))
+                        .color(p.accent)
+                        .strong(),
+                )
+                .truncate(),
+            );
+            // 路径被截断时，悬停能看到完整内容
+            resp.on_hover_text(value);
+        });
+    });
+}
+
+/// 开源组件一行：名字、用途、许可
+///
+/// 名字占左边，许可靠右对齐。右对齐那一格里只放一个标签，
+/// 放两个就会互相压字。
+fn component_row(ui: &mut Ui, p: &Palette, name: &str, usage: &str, license: &str) {
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(egui::RichText::new(name).font(ui::font(12.0)).color(p.text)).truncate(),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(license)
+                        .font(ui::font(10.5))
+                        .color(p.text_faint),
+                )
+                .truncate(),
+            );
+        });
+    });
+    ui.label(
+        egui::RichText::new(usage)
+            .font(ui::font(10.5))
+            .color(p.text_weak),
+    );
+    ui.add_space(6.0);
+}
+
+/// 数据来源一行：名字、用途、域名
+fn source_row(ui: &mut Ui, p: &Palette, name: &str, url: &str, usage: &str) {
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(egui::RichText::new(name).font(ui::font(12.0)).color(p.text)).truncate(),
+        );
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if ui::ghost(ui, p, "访问").clicked() {
+                let _ = open::that(url);
+            }
+        });
+    });
+    // 地址太长会挤成一片，这里只显示域名，完整地址放悬停提示
+    let short = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    ui.label(
+        egui::RichText::new(short)
+            .font(ui::font(10.5))
+            .color(p.text_faint),
+    )
+    .on_hover_text(url);
+    ui.label(
+        egui::RichText::new(usage)
+            .font(ui::font(10.5))
+            .color(p.text_weak),
+    );
+    ui.add_space(7.0);
 }
