@@ -298,7 +298,7 @@ fn personalization_card(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
                         ui.ctx(),
                         ui.painter(),
                         inst.category.icon(),
-                        rect.shrink(7.0),
+                        rect.shrink(3.0),
                         p.text_faint,
                     );
                 }

@@ -473,7 +473,7 @@ fn instance_card(
                 ui.ctx(),
                 ui.painter(),
                 inst.category.icon(),
-                icon_rect.shrink(9.0),
+                icon_rect.shrink(4.0),
                 p.text_weak,
             );
         }
@@ -682,7 +682,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                         ui.ctx(),
                         ui.painter(),
                         inst.category.icon(),
-                        rect.shrink(12.0),
+                        rect.shrink(6.0),
                         p.text_weak,
                     );
                 }

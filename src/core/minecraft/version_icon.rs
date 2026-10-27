@@ -36,11 +36,16 @@ impl VersionCategory {
     }
 
     /// 对应的图标名（assets/icons 里的文件名）
+    ///
+    /// 这几张都是方块像素画，跟 Minecraft 里的方块一个路子：
+    /// 正式版草方块、快照命令方块、旧版 Beta 圆石、旧版 Alpha 石头、
+    /// 愚人节苦力怕脸。图标自带颜色，不跟着主题色走。
     pub fn icon(self) -> &'static str {
         match self {
             Self::Release => "grass",
             Self::Snapshot => "command",
-            Self::OldBeta | Self::OldAlpha => "cobble",
+            Self::OldBeta => "cobble",
+            Self::OldAlpha => "stone",
             Self::AprilFools => "april",
         }
     }

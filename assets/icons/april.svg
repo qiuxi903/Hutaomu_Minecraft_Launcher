@@ -1,1 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4.2c-3.7 0-6.4 2.7-6.4 6.2s2.7 6.2 6.4 6.2 6.4-2.7 6.4-6.2-2.7-6.2-6.4-6.2z"/><path d="M12 4.2V2.6"/><path d="M8.6 3.4c.9.6 1.6.9 2.2 1"/><path d="M15.4 3.4c-.9.6-1.6.9-2.2 1"/><circle cx="9.4" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><circle cx="14.6" cy="9.6" r="0.9" fill="currentColor" stroke="none"/><path d="M12 11.4v2"/><path d="M8.4 14.6 9.9 13.7 11.3 14.8 12.7 13.9 14.1 15 15.6 14.1"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+<rect width="16" height="16" fill="#5EA144"/>
+<g fill="#4C8A33">
+<rect x="1" y="1" width="2" height="1"/>
+<rect x="12" y="2" width="2" height="1"/>
+<rect x="3" y="14" width="2" height="1"/>
+<rect x="14" y="12" width="2" height="2"/>
+<rect x="0" y="9" width="1" height="2"/>
+</g>
+<g fill="#6FB84D">
+<rect x="6" y="1" width="2" height="1"/>
+<rect x="9" y="14" width="2" height="1"/>
+<rect x="14" y="6" width="2" height="1"/>
+</g>
+<g fill="#16250F">
+<rect x="2" y="4" width="4" height="4"/>
+<rect x="10" y="4" width="4" height="4"/>
+<rect x="4" y="9" width="3" height="3"/>
+<rect x="9" y="9" width="3" height="3"/>
+<rect x="4" y="11" width="8" height="2"/>
+<rect x="4" y="13" width="3" height="3"/>
+<rect x="9" y="13" width="3" height="3"/>
+</g>
+</svg>
