@@ -45,6 +45,10 @@ pub const GAME_ID: u32 = 432;
 /// 或环境变量 `HTMCL_CURSEFORGE_KEY` 取，取到就编进 exe，
 /// 官方发布的版本因此开箱即用；自己从仓库编译则是空串，
 /// 用户可以在「设置 → 内容平台」里填自己的 key。
+///
+/// 官方搜索端点偶尔会对请求做临时拦截或限流，返回 403，
+/// 但同一个 key 过一会儿又能正常拿到数据，并非 key 权限问题。
+/// 碰上这种时候 [`search`] 会自动改走社区镜像兜底。
 pub const BUILTIN_API_KEY: &str = BUILD_CURSEFORGE_KEY;
 
 /// 项目页地址
@@ -244,6 +248,9 @@ pub struct CfFile {
     /// 该文件面向的加载器，部分接口会带这个字段
     #[serde(default)]
     pub mod_loader_type: Option<u32>,
+    /// CurseForge 自己算的文件指纹（MurmurHash2）
+    #[serde(default)]
+    pub file_fingerprint: u32,
     #[serde(default)]
     pub is_server_pack: bool,
 }
@@ -540,9 +547,11 @@ fn project_to_hit(project: &CfProject, kind: ContentKind) -> SearchHit {
 
 /// CurseForge 的文件 → 统一的版本
 fn file_to_unified(project_id: &str, file: &CfFile) -> Version {
+    let (mc_versions, loaders) = split_game_versions(&file.game_versions);
     let loaders = match file.mod_loader_type.and_then(loader_name) {
+        // 接口给了加载器编号就以它为准
         Some(name) => vec![name.to_string()],
-        None => Vec::new(),
+        None => loaders,
     };
     let mut hashes = Hashes::default();
     hashes.sha1 = sha1_of(file);
@@ -552,7 +561,7 @@ fn file_to_unified(project_id: &str, file: &CfFile) -> Version {
         name: file.display_name.clone(),
         version_number: file.display_name.clone(),
         version_type: release_type_label(file.release_type).to_string(),
-        game_versions: file.game_versions.clone(),
+        game_versions: mc_versions,
         loaders,
         date_published: file.file_date.clone(),
         downloads: file.download_count,
@@ -571,20 +580,63 @@ fn file_to_unified(project_id: &str, file: &CfFile) -> Version {
     }
 }
 
+/// 把 gameVersions 拆成游戏版本与加载器
+///
+/// CurseForge 把加载器名也塞在 `gameVersions` 里，
+/// 形如 `["Fabric", "Client", "1.20.1", "Quilt"]`：
+/// 数字开头的是 Minecraft 版本，其余是加载器或标记。
+fn split_game_versions(versions: &[String]) -> (Vec<String>, Vec<String>) {
+    let mut mc = Vec::new();
+    let mut loaders = Vec::new();
+    for value in versions {
+        let name = value.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+            mc.push(name.to_string());
+        } else if let Some(loader) = loader_from_name(name) {
+            loaders.push(loader.to_string());
+        }
+    }
+    (mc, loaders)
+}
+
+/// gameVersions 里的加载器名 → 统一的加载器名
+fn loader_from_name(name: &str) -> Option<&'static str> {
+    match name.trim().to_lowercase().as_str() {
+        "fabric" => Some("Fabric"),
+        "quilt" => Some("Quilt"),
+        "forge" => Some("Forge"),
+        "neoforge" => Some("NeoForge"),
+        "liteloader" => Some("LiteLoader"),
+        "rift" => Some("Rift"),
+        _ => None,
+    }
+}
+
 // ------------------------------------------------------------------ 接口调用
 
-/// 搜索内容
-pub fn search(
-    dl: &Downloader,
+/// 搜索接口的备用地址
+///
+/// 官方搜索端点偶尔会对请求做临时拦截或限流，返回 403，
+/// 详情、文件、下载这些端点却都正常，说明不是 key 权限问题。
+/// 这时改用社区镜像，路径与返回结构都跟官方一致，不用改解析。
+const SEARCH_MIRROR: &str = "https://api.curse.tools/v1";
+
+/// 拼搜索用的查询串
+///
+/// 官方与镜像的参数完全一样，拼一次两边都用。
+fn search_query(
     kind: ContentKind,
     query: &str,
     mc_version: Option<&str>,
     loader: Option<&str>,
     offset: u32,
     limit: u32,
-) -> Result<SearchResponse> {
+) -> String {
     let mut url = format!(
-        "{API}/v1/mods/search?gameId={GAME_ID}&classId={}&sortOrder=desc&pageSize={}&index={}&sortField=6",
+        "gameId={GAME_ID}&classId={}&sortOrder=desc&pageSize={}&index={}&sortField=6",
         class_id(kind),
         limit.clamp(1, 50),
         offset
@@ -602,10 +654,40 @@ pub fn search(
     if !keyword.is_empty() {
         url.push_str(&format!("&searchFilter={}", encode(keyword)));
     }
+    url
+}
 
-    let response: CfData<CfProject> = dl
-        .get_json_curseforge(&url)
-        .with_context(|| "CurseForge 搜索失败，请检查 API Key 与网络".to_string())?;
+/// 搜索内容
+///
+/// 先打官方接口，官方拒绝（403）就换社区镜像。
+pub fn search(
+    dl: &Downloader,
+    kind: ContentKind,
+    query: &str,
+    mc_version: Option<&str>,
+    loader: Option<&str>,
+    offset: u32,
+    limit: u32,
+) -> Result<SearchResponse> {
+    let params = search_query(kind, query, mc_version, loader, offset, limit);
+    let official = format!("{API}/v1/mods/search?{params}");
+
+    let (response, via_mirror): (CfData<CfProject>, bool) =
+        match dl.get_json_curseforge_allow_denied(&official)? {
+            Some(response) => (response, false),
+            None => {
+                // 官方搜索被临时拦截或限流，换社区镜像兜底
+                log::info!("CurseForge 官方搜索被拒，改用社区镜像");
+                let mirror = format!("{SEARCH_MIRROR}/mods/search?{params}");
+                // 镜像不需要 Key，也不该把 Key 发给第三方
+                let response = dl
+                    .get_json_with_headers(&mirror, &[])
+                    .with_context(|| {
+                        "CurseForge 搜索失败：官方接口与备用镜像都没给出结果".to_string()
+                    })?;
+                (response, true)
+            }
+        };
     let hits = response
         .data
         .iter()
@@ -615,6 +697,7 @@ pub fn search(
         hits,
         offset,
         limit,
+        via_mirror,
         total_hits: response
             .pagination
             .map(|p| p.total_count)
@@ -640,10 +723,11 @@ pub fn versions(
     loader: Option<&str>,
 ) -> Result<Vec<Version>> {
     let mut all: Vec<CfFile> = Vec::new();
-    let mut index = 0u32;
-    // 每页最多 50 个，逐页取完
+    // `index` 是偏移量不是页码，每页 50 个就往后挪 50
+    const PAGE_SIZE: u32 = 50;
+    let mut offset = 0u32;
     for _ in 0..20 {
-        let url = format!("{API}/v1/mods/{project_id}/files?pageSize=50&index={index}");
+        let url = format!("{API}/v1/mods/{project_id}/files?pageSize={PAGE_SIZE}&index={offset}");
         let response: CfList<CfFile> = dl
             .get_json_curseforge(&url)
             .with_context(|| "获取 CurseForge 文件列表失败".to_string())?;
@@ -653,26 +737,37 @@ pub fn versions(
         if count == 0 || all.len() as u32 >= total {
             break;
         }
-        index += 1;
+        offset += PAGE_SIZE;
     }
 
-    let loader_type = loader
+    let want_loader = loader
         .filter(|l| !l.trim().is_empty())
-        .and_then(mod_loader_type);
+        .map(|l| l.trim().to_lowercase());
     let mut list: Vec<Version> = all
         .into_iter()
         .filter(|f| f.is_available)
         .filter(|f| !f.is_server_pack)
-        .filter(|f| match (mc_version, loader_type) {
-            (Some(mc), _) if !mc.trim().is_empty() => {
-                f.game_versions.iter().any(|g| g == mc.trim())
+        .filter(|f| {
+            // 游戏版本只认数字开头的那部分，加载器名不算
+            let (mc_versions, _) = split_game_versions(&f.game_versions);
+            match mc_version {
+                Some(mc) if !mc.trim().is_empty() => {
+                    mc_versions.iter().any(|g| g == mc.trim())
+                }
+                _ => true,
             }
-            _ => true,
         })
-        .filter(|f| match (loader_type, f.mod_loader_type) {
-            // 只有文件自己标了加载器时才按加载器筛，没标就不筛
-            (Some(want), Some(have)) => want == have,
-            _ => true,
+        .filter(|f| match (&want_loader, f.mod_loader_type) {
+            // 接口给了加载器编号就按编号比
+            (Some(want), Some(have)) => {
+                loader_name(have).is_some_and(|name| name.to_lowercase() == *want)
+            }
+            // 没给编号就从 gameVersions 里认
+            (Some(want), None) => {
+                let (_, loaders) = split_game_versions(&f.game_versions);
+                loaders.iter().any(|l| l.to_lowercase() == *want)
+            }
+            (None, _) => true,
         })
         .map(|f| file_to_unified(project_id, &f))
         .collect();
@@ -1083,6 +1178,21 @@ pub fn fingerprint_of(data: &[u8]) -> u32 {
 pub fn file_fingerprint(path: &Path) -> Option<u32> {
     let data = std::fs::read(path).ok()?;
     Some(fingerprint_of(&data))
+}
+
+/// 问接口要某个文件自己的指纹
+///
+/// CurseForge 在文件信息里就带着指纹，
+/// 拿它跟本地算出来的对一下，能验证算法有没有算错。
+pub fn file_fingerprint_of(dl: &Downloader, mod_id: u32, file_id: u32) -> Option<u32> {
+    let url = format!("{API}/v1/mods/{mod_id}/files/{file_id}");
+    let response: CfValue<CfFile> = dl.get_json_curseforge(&url).ok()?;
+    let fingerprint = response.data.file_fingerprint;
+    if fingerprint == 0 {
+        None
+    } else {
+        Some(fingerprint)
+    }
 }
 
 /// 指纹反查的结果
@@ -1539,8 +1649,39 @@ mod tests {
     }
 
     #[test]
-    fn fingerprint_response_is_parsed() {
-        let response: CfFingerprintResponse = serde_json::from_str(
+    fn game_versions_split_loaders_from_versions() {
+        // CurseForge 把加载器名也塞在 gameVersions 里
+        let (mc, loaders) = split_game_versions(&[
+            "Fabric".to_string(),
+            "Client".to_string(),
+            "1.20.1".to_string(),
+            "Quilt".to_string(),
+            "26.3".to_string(),
+        ]);
+        assert_eq!(mc, vec!["1.20.1".to_string(), "26.3".to_string()]);
+        assert_eq!(loaders, vec!["Fabric".to_string(), "Quilt".to_string()]);
+
+        // 没有加载器时就只有版本
+        let (mc, loaders) = split_game_versions(&["1.20.1".to_string()]);
+        assert_eq!(mc, vec!["1.20.1".to_string()]);
+        assert!(loaders.is_empty());
+    }
+
+    #[test]
+    fn search_query_uses_offset_not_page() {
+        // index 是偏移量，翻页时要往后挪一整页
+        let query = search_query(ContentKind::Mod, "sodium", Some("1.20.1"), Some("fabric"), 50, 25);
+        assert!(query.contains("index=50"), "{query}");
+        assert!(query.contains("pageSize=25"), "{query}");
+        assert!(query.contains("classId=6"), "{query}");
+        // 版本号里的点会被转义成 %2E
+        assert!(query.contains("gameVersion=1%2E20%2E1"), "{query}");
+        assert!(query.contains("modLoaderType=4"), "{query}");
+        assert!(query.contains("searchFilter=sodium"), "{query}");
+    }
+
+    #[test]
+    fn fingerprint_response_is_parsed() {        let response: CfFingerprintResponse = serde_json::from_str(
             r#"{
                 "data": {
                     "exactMatches": [

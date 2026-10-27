@@ -179,6 +179,12 @@ pub struct SearchResponse {
     pub limit: u32,
     #[serde(default)]
     pub total_hits: u32,
+    /// 搜索是不是走了社区镜像
+    ///
+    /// CurseForge 官方搜索端点偶尔会临时拦截请求并返回 403，
+    /// 这时改用社区镜像，界面上说一声，免得用户蒙在鼓里。
+    #[serde(default)]
+    pub via_mirror: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]

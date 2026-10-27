@@ -65,6 +65,8 @@ pub struct DownloadState {
     pub content_total: u32,
     pub content_loading: bool,
     pub content_error: Option<String>,
+    /// 搜索是不是走了 CurseForge 的社区镜像
+    pub content_via_mirror: bool,
     pub content_seq: u64,
     pub content_detail: Option<Box<Project>>,
     /// 当前详情页的中文简介（翻译服务不可用时为空）
@@ -110,6 +112,7 @@ impl Default for DownloadState {
             content_total: 0,
             content_loading: false,
             content_error: None,
+            content_via_mirror: false,
             content_seq: 0,
             content_detail: None,
             content_translation: None,
@@ -134,10 +137,12 @@ impl DownloadState {
                 self.content_total = response.total_hits;
                 self.content_hits = response.hits;
                 self.content_error = None;
+                self.content_via_mirror = response.via_mirror;
             }
             Err(err) => {
                 self.content_error = Some(err);
                 self.content_hits.clear();
+                self.content_via_mirror = false;
             }
         }
     }
@@ -1105,6 +1110,19 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
         });
     });
     ui.add_space(10.0);
+
+    // 走了社区镜像就说一声，别让人以为数据来自官方
+    if app.download.content_via_mirror {
+        ui.horizontal(|ui| {
+            ui::icon(ui, "info", 13.0, p.text_faint);
+            ui.label(
+                egui::RichText::new("官方搜索接口暂时不可用，结果来自 CurseForge 社区镜像")
+                    .font(ui::font(11.5))
+                    .color(p.text_faint),
+            );
+        });
+        ui.add_space(10.0);
+    }
 
     // 过滤条件
     //

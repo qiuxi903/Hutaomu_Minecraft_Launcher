@@ -650,6 +650,29 @@ impl Downloader {
             .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))
     }
 
+    /// 请求 CurseForge 接口，被拒绝时返回 None 而不是报错
+    ///
+    /// CurseForge 搜索端点偶尔会临时拦截请求并返回 403，
+    /// 调用方要能分辨「被拒了」与「真出错了」，好换备用地址。
+    pub fn get_json_curseforge_allow_denied<T: DeserializeOwned>(&self, url: &str) -> Result<Option<T>> {
+        let mut req = self.client_for(url).get(url);
+        if let Some(key) = &self.curseforge_key {
+            req = req.header("x-api-key", key);
+        }
+        let resp = req.send().with_context(|| format!("请求失败: {url}"))?;
+        let status = resp.status();
+        let text = resp.text().unwrap_or_default();
+        if status == reqwest::StatusCode::FORBIDDEN {
+            return Ok(None);
+        }
+        if !status.is_success() {
+            return Err(anyhow!("HTTP {status}: {}", truncate(&text, 300)));
+        }
+        let value = serde_json::from_str(&text)
+            .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))?;
+        Ok(Some(value))
+    }
+
     /// POST 请求 CurseForge 接口，自动带上 `x-api-key`
     pub fn post_json_curseforge<B: Serialize + ?Sized, T: DeserializeOwned>(
         &self,
