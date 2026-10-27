@@ -514,24 +514,72 @@ pub fn describe_command(cmd: &Command) -> String {
     text
 }
 
+/// 日志来源
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogSource {
+    /// 进程的标准输出
+    Stdout,
+    /// 进程的标准错误
+    Stderr,
+    /// 游戏自己写的 logs/latest.log
+    Game,
+}
+
+impl LogSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Stdout => "输出",
+            Self::Stderr => "错误",
+            Self::Game => "游戏",
+        }
+    }
+}
+
+/// 日志的一行
+#[derive(Debug, Clone)]
+pub struct GameLogLine {
+    pub text: String,
+    pub source: LogSource,
+}
+
+/// 内存里保留的日志行数上限
+///
+/// 与设置里的「最大日志行数」上限对齐，
+/// 免得用户把上限调到两万，缓冲却只有四千行。
+const MAX_GAME_LOG_LINES: usize = 20000;
+
+/// 游戏客户端窗口拉起来之前会打印的日志
+///
+/// 看到其中一条，就说明游戏已经真的跑起来了，
+/// 这时候再报「启动完成」才是准的。
+const READY_MARKERS: [&str; 7] = [
+    "Created: ",
+    "Sound engine started",
+    "Narrator library",
+    "OpenGL",
+    "GLFW",
+    "Backend library",
+    "Time elapsed",
+];
+
 #[derive(Default)]
 pub struct GameLog {
-    lines: Mutex<VecDeque<String>>,
+    lines: Mutex<VecDeque<GameLogLine>>,
     pub exit_code: Mutex<Option<i32>>,
     pub pid: Mutex<Option<u32>>,
 }
 
 impl GameLog {
-    pub fn push(&self, line: String) {
+    pub fn push(&self, line: String, source: LogSource) {
         if let Ok(mut lines) = self.lines.lock() {
-            if lines.len() >= 4000 {
+            if lines.len() >= MAX_GAME_LOG_LINES {
                 lines.pop_front();
             }
-            lines.push_back(line);
+            lines.push_back(GameLogLine { text: line, source });
         }
     }
 
-    pub fn snapshot(&self, count: usize) -> Vec<String> {
+    pub fn snapshot(&self, count: usize) -> Vec<GameLogLine> {
         self.lines
             .lock()
             .map(|lines| {
@@ -539,6 +587,15 @@ impl GameLog {
                 lines.iter().skip(start).cloned().collect()
             })
             .unwrap_or_default()
+    }
+
+    /// 清空显示
+    ///
+    /// 只清内存里这份，磁盘上的日志文件不动。
+    pub fn clear(&self) {
+        if let Ok(mut lines) = self.lines.lock() {
+            lines.clear();
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -558,6 +615,18 @@ impl GameLog {
     pub fn exit_code(&self) -> Option<i32> {
         self.exit_code.lock().ok().and_then(|g| *g)
     }
+
+    /// 游戏是不是已经起来了
+    pub fn client_ready(&self) -> bool {
+        let Ok(lines) = self.lines.lock() else {
+            return false;
+        };
+        lines
+            .iter()
+            .rev()
+            .take(400)
+            .any(|line| READY_MARKERS.iter().any(|m| line.text.contains(m)))
+    }
 }
 
 pub struct GameProcess {
@@ -566,6 +635,8 @@ pub struct GameProcess {
     pub log: Arc<GameLog>,
     pub version_id: String,
     pub started: std::time::Instant,
+    /// 游戏目录，退出后要靠它找崩溃报告
+    pub game_dir: PathBuf,
 }
 
 impl GameProcess {
@@ -583,6 +654,9 @@ pub fn spawn(mut cmd: Command, version_id: &str) -> Result<GameProcess> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.stdin(Stdio::null());
+
+    // 游戏目录从命令里拿，省得再传一遍
+    let game_dir = cmd.get_current_dir().map(|p| p.to_path_buf());
 
     let mut child = cmd.spawn().context("启动 Java 进程失败")?;
     let pid = child.id();
@@ -603,14 +677,22 @@ pub fn spawn(mut cmd: Command, version_id: &str) -> Result<GameProcess> {
         let log = log.clone();
         let file = file.as_ref().and_then(|f| f.try_clone().ok());
         std::thread::spawn(move || {
-            read_stream(stdout, log, file);
+            read_stream(stdout, log, file, LogSource::Stdout);
         });
     }
     if let Some(stderr) = child.stderr.take() {
         let log = log.clone();
         let file = file.as_ref().and_then(|f| f.try_clone().ok());
         std::thread::spawn(move || {
-            read_stream(stderr, log, file);
+            read_stream(stderr, log, file, LogSource::Stderr);
+        });
+    }
+    // 游戏自己写的日志才是大头，接着把它也收进来
+    if let Some(dir) = game_dir.clone() {
+        let log = log.clone();
+        let file = file.as_ref().and_then(|f| f.try_clone().ok());
+        std::thread::spawn(move || {
+            tail_latest_log(dir, log, file);
         });
     }
 
@@ -620,6 +702,7 @@ pub fn spawn(mut cmd: Command, version_id: &str) -> Result<GameProcess> {
         log,
         version_id: version_id.to_string(),
         started: std::time::Instant::now(),
+        game_dir: game_dir.unwrap_or_default(),
     })
 }
 
@@ -627,13 +710,14 @@ fn read_stream<R: std::io::Read + Send + 'static>(
     stream: R,
     log: Arc<GameLog>,
     mut file: Option<std::fs::File>,
+    source: LogSource,
 ) {
     use std::io::Write;
     let reader = BufReader::new(stream);
     for line in reader.lines() {
         match line {
             Ok(line) => {
-                log.push(line.clone());
+                log.push(line.clone(), source);
                 if let Some(f) = file.as_mut() {
                     let _ = writeln!(f, "{line}");
                 }
@@ -641,6 +725,84 @@ fn read_stream<R: std::io::Read + Send + 'static>(
             Err(_) => break,
         }
     }
+}
+
+/// 盯着游戏目录里的 logs/latest.log，把新写的行也收进日志缓冲
+///
+/// Minecraft 自己把日志写在游戏目录的 `logs/latest.log` 里。
+/// 默认用 javaw 启动时进程没有控制台，标准输出几乎没东西，
+/// 只接标准输出的话日志就只剩寥寥几行，看着像「日志不全」。
+///
+/// 这个文件是按天追加的：上一次运行的内容还在里面，
+/// 所以启动时先记下当前文件大小，只读之后新增的部分，
+/// 免得把上一次的内容当成这次的重复一遍。
+fn tail_latest_log(game_dir: PathBuf, log: Arc<GameLog>, mut file: Option<std::fs::File>) {
+    use std::io::{Read, Seek, SeekFrom, Write};
+    let path = game_dir.join("logs").join("latest.log");
+    let mut offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        let len = meta.len();
+        if len < offset {
+            // 文件被换掉了（跨天滚动），从头接着读
+            offset = 0;
+        }
+        if len == offset {
+            continue;
+        }
+        let Ok(mut f) = std::fs::File::open(&path) else {
+            continue;
+        };
+        if f.seek(SeekFrom::Start(offset)).is_err() {
+            continue;
+        }
+        let mut bytes = Vec::new();
+        if f.read_to_end(&mut bytes).is_err() {
+            continue;
+        }
+        // 只取到最后一个完整行，剩下的半行等下次再来
+        let Some(last_nl) = bytes.iter().rposition(|b| *b == b'\n') else {
+            continue;
+        };
+        let complete = &bytes[..=last_nl];
+        offset += complete.len() as u64;
+        for line in complete.split(|b| *b == b'\n') {
+            if line.is_empty() {
+                continue;
+            }
+            let text = String::from_utf8_lossy(line).to_string();
+            log.push(text.clone(), LogSource::Game);
+            if let Some(f) = file.as_mut() {
+                let _ = writeln!(f, "{text}");
+            }
+        }
+    }
+}
+
+/// 游戏目录里最新的崩溃报告
+///
+/// 游戏崩了会在 `crash-reports` 里丢一个文件，
+/// 报「异常退出」时把文件名给出来，用户不用自己翻目录。
+pub fn latest_crash_report(game_dir: &Path) -> Option<PathBuf> {
+    let dir = game_dir.join("crash-reports");
+    let mut newest: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(&dir).ok()? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("txt") {
+            continue;
+        }
+        let Ok(time) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if newest.as_ref().is_none_or(|(best, _)| time > *best) {
+            newest = Some((time, path));
+        }
+    }
+    newest.map(|(_, path)| path)
 }
 
 /// authlib-injector 在启动器缓存目录里的位置

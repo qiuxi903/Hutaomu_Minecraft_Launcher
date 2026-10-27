@@ -2661,7 +2661,7 @@ impl App {
                 }
                 if ui::ghost(ui, &palette, "清空显示").clicked() {
                     if let Some(game) = self.game.as_ref() {
-                        let _ = game.log.snapshot(0);
+                        game.log.clear();
                     }
                 }
             });
@@ -2682,7 +2682,7 @@ impl App {
                             // 日志要能选中复制，所以这里单独打开可选
                             ui.add(
                                 egui::Label::new(
-                                    egui::RichText::new(line)
+                                    egui::RichText::new(line.text.clone())
                                         .font(ui::mono(11.5))
                                         .color(palette.text),
                                 )
@@ -2814,7 +2814,7 @@ impl App {
             root.painter().text(
                 Pos2::new(center.x, center.y + 112.0 + i as f32 * 18.0),
                 egui::Align2::CENTER_CENTER,
-                line.clone(),
+                line.text.clone(),
                 ui::mono(11.0),
                 palette.text_faint,
             );
@@ -2867,7 +2867,7 @@ impl App {
                             ui.set_width(ui.available_width());
                             for line in &lines {
                                 ui.label(
-                                    egui::RichText::new(line)
+                                    egui::RichText::new(line.text.clone())
                                         .font(ui::mono(11.5))
                                         .color(palette.text),
                                 );
@@ -2877,7 +2877,7 @@ impl App {
         });
         if clear {
             if let Some(game) = self.game.as_ref() {
-                let _ = game.log.snapshot(0);
+                game.log.clear();
             }
         }
         if collapse {

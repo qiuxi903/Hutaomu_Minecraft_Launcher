@@ -193,7 +193,7 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
         std::thread::sleep(Duration::from_secs(1));
         let lines = process.log.snapshot(4000);
         for line in lines.iter().skip(last_len) {
-            println!("      | {line}");
+            println!("      | {}", line.text);
         }
         last_len = lines.len();
         if let Ok(Some(status)) = process.child.try_wait() {
@@ -628,7 +628,7 @@ pub fn run_local(version_id: &str) -> anyhow::Result<()> {
         std::thread::sleep(Duration::from_secs(1));
         let lines = process.log.snapshot(4000);
         for line in lines.iter().skip(last_len) {
-            println!("      | {line}");
+            println!("      | {}", line.text);
         }
         last_len = lines.len();
         if let Ok(Some(status)) = process.child.try_wait() {
