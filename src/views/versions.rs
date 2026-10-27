@@ -352,13 +352,13 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
     } else {
         1
     };
-    let card_width = (width - 14.0 * (columns as f32 - 1.0)) / columns as f32;
+    let card_width = (width - 16.0 * (columns as f32 - 1.0)) / columns as f32;
 
     let mut open: Option<String> = None;
     let mut index = 0usize;
     for chunk in instances.chunks(columns) {
         ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
+            ui.spacing_mut().item_spacing.x = 16.0;
             for inst in chunk {
                 // 卡片逐个淡入，网格不会整片糊上来
                 let delay = ui::anim::stagger(index, 0.035);
@@ -391,7 +391,7 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
                 ui.set_opacity(1.0);
             }
         });
-        ui.add_space(14.0);
+        ui.add_space(16.0);
     }
 
     if let Some(id) = open {
@@ -403,6 +403,9 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
 ///
 /// 整张卡片用 painter 绘制：egui 的 Label 即使设了 truncate，测量宽度仍是原文，
 /// 版本号一长就会把整行布局撑开，所以这里自己截断文本。
+///
+/// 版面分三层：图标加标题、副信息、底部的占用与时间。
+/// 中间用一条细线把「这是什么」和「占了多大」分开，扫一眼就能看完一张卡。
 fn instance_card(
     ui: &mut Ui,
     p: &crate::theme::Palette,
@@ -412,15 +415,18 @@ fn instance_card(
     is_current: bool,
     icon_texture: Option<egui::TextureHandle>,
 ) -> egui::Response {
-    const CARD_HEIGHT: f32 = 88.0;
-    const PAD: f32 = 12.0;
-    const ICON_SIZE: f32 = 26.0;
+    const CARD_HEIGHT: f32 = 116.0;
+    const PAD: f32 = 14.0;
+    const ICON_SIZE: f32 = 38.0;
+    const TITLE_SIZE: f32 = 14.5;
+    const META_SIZE: f32 = 12.0;
+    const FOOT_SIZE: f32 = 11.5;
 
     let (rect, response) =
         ui.allocate_exact_size(Vec2::new(card_width, CARD_HEIGHT), Sense::click());
     // 悬停时轻微上浮并把边框染上主色，让人知道这张卡能点
     let hovered = response.hovered();
-    let lift = if hovered && ui::animations_enabled() { 1.5 } else { 0.0 };
+    let lift = if hovered && ui::animations_enabled() { 2.0 } else { 0.0 };
     let rect = rect.translate(Vec2::new(0.0, -lift));
     let border = if is_current {
         p.accent
@@ -457,7 +463,7 @@ fn instance_card(
         Some(texture) => {
             ui.painter().image(
                 texture.id(),
-                icon_rect.shrink(4.0),
+                icon_rect.shrink(5.0),
                 Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                 Color32::WHITE,
             );
@@ -467,25 +473,26 @@ fn instance_card(
                 ui.ctx(),
                 ui.painter(),
                 inst.category.icon(),
-                icon_rect.shrink(6.0),
+                icon_rect.shrink(9.0),
                 p.text_weak,
             );
         }
     }
 
     // 标题：自行截断，保证不超出卡片
-    let text_x = icon_rect.right() + 8.0;
-    let avail = (rect.right() - PAD - text_x).max(40.0);
-    let title = widgets::ellipsize(display_name, avail, 13.0);
+    let text_x = icon_rect.right() + 12.0;
+    // 右上角要留给「当前使用」标记，标题不能压到它
+    let avail = (rect.right() - PAD - text_x - if is_current { 58.0 } else { 0.0 }).max(40.0);
+    let title = widgets::ellipsize(display_name, avail, TITLE_SIZE);
     ui.painter().text(
-        Pos2::new(text_x, icon_rect.center().y),
+        Pos2::new(text_x, icon_rect.top() + 10.0),
         egui::Align2::LEFT_CENTER,
         title,
-        ui::font(13.0),
+        ui::font(TITLE_SIZE),
         p.text,
     );
 
-    // 副信息：加载器 · 变体数 · 当前状态
+    // 副信息：加载器 · 变体数
     let mut meta: Vec<String> = vec![inst.loader_label()];
     // 版本分类，正式版就不用重复写了
     if inst.category != crate::core::minecraft::VersionCategory::Release {
@@ -494,34 +501,57 @@ fn instance_card(
     if inst.variant_count() > 1 {
         meta.push(format!("{} 个变体", inst.variant_count()));
     }
-    if is_current {
-        meta.push("当前使用".to_string());
-    }
-    let meta_y = icon_rect.bottom() + 15.0;
     ui.painter().text(
-        Pos2::new(text_x, meta_y),
+        Pos2::new(text_x, icon_rect.top() + 32.0),
         egui::Align2::LEFT_CENTER,
-        widgets::ellipsize(&meta.join(" · "), avail, 11.0),
-        ui::font(11.0),
+        widgets::ellipsize(&meta.join(" · "), avail, META_SIZE),
+        ui::font(META_SIZE),
         p.text_weak,
     );
 
-    // 底部：占用与时间（坐标相对卡片，不能用屏幕坐标）
-    let bottom = format!(
-        "{} · {}",
-        paths::format_size(inst.size()),
-        inst.last_modified()
-            .map(|t| {
-                let dt: chrono::DateTime<chrono::Local> = t.into();
-                dt.format("%m-%d %H:%M").to_string()
-            })
-            .unwrap_or_else(|| "未知时间".into())
+    // 当前使用中的实例在右上角标一下，跟别的卡一眼能分开
+    if is_current {
+        ui.painter().text(
+            Pos2::new(rect.right() - PAD, icon_rect.top() + 10.0),
+            egui::Align2::RIGHT_CENTER,
+            "当前使用",
+            ui::font(11.5),
+            p.accent,
+        );
+    }
+
+    // 分隔线：把「是什么」和「占了多大」隔开
+    let divider_y = icon_rect.bottom() + 14.0;
+    ui.painter().rect_filled(
+        Rect::from_min_max(
+            Pos2::new(rect.left() + PAD, divider_y),
+            Pos2::new(rect.right() - PAD, divider_y + 1.0),
+        ),
+        egui::CornerRadius::ZERO,
+        p.border,
     );
+
+    // 底部：左边占用，右边最后修改时间（坐标相对卡片，不能用屏幕坐标）
+    let foot_y = rect.bottom() - PAD;
     ui.painter().text(
-        Pos2::new(rect.left() + PAD, rect.bottom() - PAD),
+        Pos2::new(rect.left() + PAD, foot_y),
         egui::Align2::LEFT_BOTTOM,
-        bottom,
-        ui::font(10.5),
+        paths::format_size(inst.size()),
+        ui::font(FOOT_SIZE),
+        p.text_faint,
+    );
+    let modified = inst
+        .last_modified()
+        .map(|t| {
+            let dt: chrono::DateTime<chrono::Local> = t.into();
+            dt.format("%m-%d %H:%M").to_string()
+        })
+        .unwrap_or_else(|| "未知时间".into());
+    ui.painter().text(
+        Pos2::new(rect.right() - PAD, foot_y),
+        egui::Align2::RIGHT_BOTTOM,
+        modified,
+        ui::font(FOOT_SIZE),
         p.text_faint,
     );
 
@@ -636,13 +666,13 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
 
     ui::card(ui, &p, |ui| {
         ui.horizontal(|ui| {
-            let (rect, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(Vec2::splat(54.0), Sense::hover());
             ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
             match icon_texture.as_ref() {
                 Some(texture) => {
                     ui.painter().image(
                         texture.id(),
-                        rect.shrink(6.0),
+                        rect.shrink(7.0),
                         Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
                         Color32::WHITE,
                     );
@@ -652,17 +682,17 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                         ui.ctx(),
                         ui.painter(),
                         inst.category.icon(),
-                        rect.shrink(10.0),
+                        rect.shrink(12.0),
                         p.text_weak,
                     );
                 }
             }
-            ui.add_space(4.0);
+            ui.add_space(8.0);
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.instance_display_name(&inst))
-                            .font(ui::font(18.0))
+                            .font(ui::font(20.0))
                             .color(p.text)
                             .strong(),
                     );
@@ -679,7 +709,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                         widgets::badge(ui, &p, "当前使用", p.accent);
                     }
                 });
-                ui.add_space(3.0);
+                ui.add_space(5.0);
                 // 路径不放这里，概览里也不摆，要看目录点「打开目录」
                 let mut meta = format!("{}", paths::format_size(inst.size()));
                 if inst.variant_count() > 1 {
@@ -690,16 +720,16 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                 }
                 ui.label(
                     egui::RichText::new(meta)
-                        .font(ui::font(11.5))
+                        .font(ui::font(12.5))
                         .color(p.text_faint),
                 );
                 // 用户自己写的备注
                 let meta_info = app.cfg.instance_meta(&inst.mc_version);
                 if !meta_info.description.trim().is_empty() {
-                    ui.add_space(2.0);
+                    ui.add_space(4.0);
                     ui.label(
                         egui::RichText::new(meta_info.description.trim())
-                            .font(ui::font(12.0))
+                            .font(ui::font(12.5))
                             .color(p.text_weak),
                     );
                 }
@@ -734,26 +764,26 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             reinstall_modpack(app, &id);
         }
     });
-    ui.add_space(12.0);
+    ui.add_space(16.0);
 
     // ---------- 左侧导航 + 右侧内容 ----------
     ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 12.0;
+        ui.spacing_mut().item_spacing.x = 16.0;
         ui.vertical(|ui| {
-            ui.set_width(150.0);
+            ui.set_width(172.0);
             // 导航项会随安装的模组变多，装不下时滚动，别把后面的项挤出去
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .max_height(ui.available_height())
                 .show(ui, |ui| {
-                    ui::card_padded(ui, &p, 8, |ui| {
-                        ui.set_width(134.0);
+                    ui::card_padded(ui, &p, 10, |ui| {
+                        ui.set_width(152.0);
                         for (id, label, icon) in sections.iter() {
                             let selected = app.versions_ui.section == *id;
                             if ui::nav_item(ui, &p, icon, label, selected).clicked() {
                                 app.versions_ui.section = id;
                             }
-                            ui.add_space(2.0);
+                            ui.add_space(3.0);
                         }
                     });
                 });
