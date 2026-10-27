@@ -255,6 +255,166 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
         }
     }
 
+    println!("[6.2/7] CurseForge 内容接口 ...");
+    {
+        use crate::core::content::curseforge;
+        use crate::core::content::ContentKind;
+        let key = crate::core::config::DownloadSettings::default().curseforge_key();
+        let dl2 = Downloader::new(DownloadSource::Official, 30)?
+            .with_curseforge_key(key);
+        match curseforge::search(
+            &dl2,
+            ContentKind::Mod,
+            "sodium",
+            Some("1.20.1"),
+            Some("fabric"),
+            0,
+            5,
+        ) {
+            Ok(result) => {
+                println!(
+                    "      搜索到 {} 条（总计 {}）",
+                    result.hits.len(),
+                    result.total_hits
+                );
+                for hit in result.hits.iter().take(5) {
+                    println!("      {} | {} | 下载 {}", hit.title, hit.author, hit.downloads);
+                }
+                // 详情、文件列表、下载地址、依赖、指纹反查
+                if let Some(first) = result.hits.first() {
+                    let project = curseforge::project(&dl2, &first.project_id, ContentKind::Mod)?;
+                    println!("      详情：{}（{}）", project.title, project.slug);
+                    let versions = curseforge::versions(
+                        &dl2,
+                        &first.project_id,
+                        Some("1.20.1"),
+                        Some("fabric"),
+                    )?;
+                    println!("      可安装版本 {} 个", versions.len());
+                    if let Some(version) = versions.first() {
+                        if let (Some(mod_id), Some(file_id)) =
+                            (version.cf_mod_id, version.cf_file_id)
+                        {
+                            let deps = curseforge::dependencies(&dl2, mod_id, file_id)?;
+                            println!("      依赖 {} 个", deps.len());
+                            let url = curseforge::download_url(&dl2, mod_id, file_id)?;
+                            println!("      下载地址：{}", &url[..url.len().min(72)]);
+                            // 真下一个文件下来，算指纹再反查回去
+                            if let Some(file) = version.primary_file() {
+                                let temp_dir = paths::cache_dir().join("selftest-curseforge");
+                                let _ = std::fs::remove_dir_all(&temp_dir);
+                                paths::ensure_dir(&temp_dir)?;
+                                let dest = temp_dir.join(&file.filename);
+                                if let Err(err) = dl2.download(
+                                    &crate::core::download::FileTask::new(url.clone(), dest.clone())
+                                        .with_size(file.size),
+                                    &DownloadProgress::new(),
+                                ) {
+                                    println!("      下载失败：{err}");
+                                } else if let Some(fingerprint) =
+                                    curseforge::file_fingerprint(&dest)
+                                {
+                                    // CurseForge 自己也会给出文件指纹，对一下算得对不对
+                                    let reported = curseforge::file_fingerprint_of(&dl2, mod_id, file_id);
+                                    match reported {
+                                        Some(reported) if reported == fingerprint => {
+                                            println!("      指纹 {fingerprint} 与 CurseForge 给的一致")
+                                        }
+                                        Some(reported) => println!(
+                                            "      指纹 {fingerprint} 与 CurseForge 给的 {reported} 不一致"
+                                        ),
+                                        None => println!("      指纹 {fingerprint}（接口没给参考值）"),
+                                    }
+                                    let hits = curseforge::fingerprints(&dl2, &[fingerprint])?;
+                                    let matched = hits
+                                        .iter()
+                                        .any(|(_, project_id)| *project_id == mod_id);
+                                    println!(
+                                        "      指纹反查：{}",
+                                        if matched {
+                                            "认出了同一个项目"
+                                        } else {
+                                            "没对上"
+                                        }
+                                    );
+                                }
+                                let _ = std::fs::remove_dir_all(&temp_dir);
+                            }
+                        } else {
+                            println!("      这个版本没带上 CurseForge 编号");
+                        }
+                    }
+                }
+            }
+            Err(err) => println!("      CurseForge 搜索失败：{err}"),
+        }
+    }
+
+    println!("[6.4/7] CurseForge 整合包（下载、解压、读清单） ...");
+    {
+        use crate::core::content::curseforge;
+        use crate::core::content::ContentKind;
+        let key = crate::core::config::DownloadSettings::default().curseforge_key();
+        let dl2 = Downloader::new(DownloadSource::Official, 120)?
+            .with_curseforge_key(key);
+        match curseforge::search(
+            &dl2,
+            ContentKind::Modpack,
+            "all the mods 9",
+            None,
+            None,
+            0,
+            5,
+        ) {
+            Ok(result) => {
+                println!("      整合包搜索到 {} 条", result.hits.len());
+                if let Some(hit) = result.hits.first() {
+                    println!("      选中：{}（{}）", hit.title, hit.project_id);
+                    match curseforge::versions(&dl2, &hit.project_id, None, None) {
+                        Ok(versions) => {
+                            println!("      可安装版本 {} 个", versions.len());
+                            // 取最小的那个，别下太大的包
+                            if let Some(version) = versions
+                                .iter()
+                                .min_by_key(|v| v.primary_file().map(|f| f.size).unwrap_or(0))
+                            {
+                                println!("      试装：{}", version.name);
+                                match curseforge::fetch_modpack(
+                                    &dl2,
+                                    version,
+                                    &DownloadProgress::new(),
+                                ) {
+                                    Ok((dir, deps)) => {
+                                        println!(
+                                            "      已解压到 {}",
+                                            dir.display()
+                                        );
+                                        println!(
+                                            "      清单：Minecraft {} · 加载器 {}",
+                                            deps.minecraft,
+                                            deps.loader.clone().unwrap_or_default()
+                                        );
+                                        match curseforge::read_manifest(&dir) {
+                                            Ok(manifest) => println!(
+                                                "      清单文件 {} 个，overrides {}",
+                                                manifest.files.len(),
+                                                manifest.overrides.clone().unwrap_or_default()
+                                            ),
+                                            Err(err) => println!("      读清单失败：{err}"),
+                                        }
+                                    }
+                                    Err(err) => println!("      整合包装载失败：{err}"),
+                                }
+                            }
+                        }
+                        Err(err) => println!("      取整合包版本失败：{err}"),
+                    }
+                }
+            }
+            Err(err) => println!("      整合包搜索失败：{err}"),
+        }
+    }
+
     println!("[6.5/7] 光影加载器安装（装到临时目录，不动用户数据） ...");
     {
         use crate::core::minecraft::shader_loader::{self, ShaderLoader};
