@@ -79,21 +79,21 @@ pub fn page_title(ui: &mut Ui, p: &Palette, title: &str, subtitle: &str) {
             .strong(),
     );
     if !subtitle.is_empty() {
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new(subtitle).font(font(13.0)).color(p.text_weak));
+        ui.add_space(7.0);
+        ui.label(egui::RichText::new(subtitle).font(font(13.5)).color(p.text_weak));
     }
-    ui.add_space(14.0);
+    ui.add_space(18.0);
 }
 
 pub fn section_title(ui: &mut Ui, p: &Palette, title: &str) {
     ui.add_space(2.0);
     ui.label(
         egui::RichText::new(title)
-            .font(font(14.5))
+            .font(font(15.0))
             .color(p.text)
             .strong(),
     );
-    ui.add_space(8.0);
+    ui.add_space(10.0);
 }
 
 pub fn divider(ui: &mut Ui, p: &Palette) {
@@ -152,7 +152,7 @@ pub fn icon_text(
 // ---------------------------------------------------------------- 容器
 
 pub fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
-    card_padded(ui, p, 16, add)
+    card_padded(ui, p, 18, add)
 }
 
 pub fn card_padded(ui: &mut Ui, p: &Palette, padding: i8, add: impl FnOnce(&mut Ui)) -> Response {
@@ -175,7 +175,7 @@ pub fn card_flat(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Respons
     let frame = egui::Frame::NONE
         .fill(p.surface)
         .corner_radius(p.corner(0))
-        .inner_margin(Margin::same(16));
+        .inner_margin(Margin::same(18));
     let response = frame.show(ui, add).response;
     paint_card_state(ui, p, &response, id, false);
     response
@@ -213,7 +213,7 @@ pub fn inset(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
     egui::Frame::NONE
         .fill(p.surface_alt)
         .corner_radius(p.corner_sm())
-        .inner_margin(Margin::same(12))
+        .inner_margin(Margin::same(14))
         .show(ui, add)
         .response
 }
@@ -512,7 +512,7 @@ pub fn icon_button(ui: &mut Ui, p: &Palette, name: &str, tip: &str) -> Response 
 
 /// 侧边栏导航项
 pub fn nav_item(ui: &mut Ui, p: &Palette, name: &str, label: &str, selected: bool) -> Response {
-    let height = 40.0;
+    let height = 44.0;
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -563,16 +563,16 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, name: &str, label: &str, selected: boo
             ui.painter(),
             name,
             Rect::from_center_size(
-                Pos2::new(rect.left() + 26.0, rect.center().y),
-                Vec2::splat(18.0),
+                Pos2::new(rect.left() + 27.0, rect.center().y),
+                Vec2::splat(19.0),
             ),
             color,
         );
         ui.painter().text(
-            Pos2::new(rect.left() + 46.0, rect.center().y),
+            Pos2::new(rect.left() + 48.0, rect.center().y),
             Align2::LEFT_CENTER,
             label,
-            font(14.0),
+            font(14.5),
             lerp_color(p.text_weak, p.text, sel_t),
         );
     }
@@ -1336,15 +1336,15 @@ pub fn setting_row(
             ui.set_width(width);
             ui.label(
                 egui::RichText::new(title)
-                    .font(font(13.0))
+                    .font(font(13.5))
                     .color(p.text),
             );
             if !desc.is_empty() {
-                ui.add_space(5.0);
+                ui.add_space(6.0);
                 ui.add(
                     egui::Label::new(
                         egui::RichText::new(desc)
-                            .font(font(11.0))
+                            .font(font(11.5))
                             .color(p.text_faint),
                     )
                     .wrap(),
@@ -1355,19 +1355,19 @@ pub fn setting_row(
             control(ui);
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(14.0);
 }
 
 /// 设置项分组标题：一条横线加文字
 pub fn setting_group(ui: &mut Ui, p: &Palette, title: &str) {
-    ui.add_space(6.0);
+    ui.add_space(8.0);
     ui.label(
         egui::RichText::new(title)
-            .font(font(14.5))
+            .font(font(15.0))
             .color(p.text)
             .strong(),
     );
-    ui.add_space(8.0);
+    ui.add_space(10.0);
 }
 
 pub fn key_value(ui: &mut Ui, p: &Palette, key: &str, value: &str) {
