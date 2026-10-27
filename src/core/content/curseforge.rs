@@ -255,6 +255,9 @@ pub struct CfFile {
     pub file_fingerprint: u32,
     #[serde(default)]
     pub is_server_pack: bool,
+    /// 这个文件的前置依赖，CurseForge v1 直接跟在文件里
+    #[serde(default)]
+    pub dependencies: Vec<CfDependency>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -798,16 +801,19 @@ pub fn download_url(dl: &Downloader, mod_id: u32, file_id: u32) -> Result<String
 }
 
 /// 文件的前置依赖
+///
+/// CurseForge v1 没有单独的依赖接口，依赖关系直接挂在文件对象上，
+/// 所以这里取一次文件详情，从里面读依赖列表。
 pub fn dependencies(dl: &Downloader, mod_id: u32, file_id: u32) -> Result<Vec<CfDependency>> {
-    let url = format!("{API}/v1/mods/{mod_id}/files/{file_id}/dependencies");
-    let response: CfData<CfDependency> = match dl.get_json_curseforge(&url) {
+    let url = format!("{API}/v1/mods/{mod_id}/files/{file_id}");
+    let response: CfValue<CfFile> = match dl.get_json_curseforge(&url) {
         Ok(response) => response,
         Err(err) => {
             log::warn!("获取 CurseForge 依赖失败: {err}");
             return Ok(Vec::new());
         }
     };
-    Ok(response.data)
+    Ok(response.data.dependencies)
 }
 
 /// 把内容文件下载到对应目录，返回落地路径
@@ -1301,11 +1307,17 @@ pub fn projects_by_ids(dl: &Downloader, ids: &[u32]) -> Result<Vec<(u32, RemoteP
         if chunk.is_empty() {
             continue;
         }
+        // 字段名接口只认驼峰，写成 mod_ids 会直接 400
         #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
         struct IdsRequest<'a> {
             mod_ids: &'a [u32],
+            game_id: u32,
         }
-        let body = IdsRequest { mod_ids: chunk };
+        let body = IdsRequest {
+            mod_ids: chunk,
+            game_id: GAME_ID,
+        };
         let response: CfList<CfProject> = match dl.post_json_curseforge(&format!("{API}/v1/mods"), &body)
         {
             Ok(response) => response,
