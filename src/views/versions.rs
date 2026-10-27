@@ -181,6 +181,7 @@ fn sections_for(
         list.push(("shader", "光影", "shader"));
     }
     list.push(("resourcepack", "资源包", "resourcepack"));
+    list.push(("datapack", "数据包", "datapack"));
     // 模组自带的内容放在最后，视觉上像是补充项
     for feature in features {
         list.push((feature.section, feature.label, feature.icon));
@@ -776,6 +777,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                 "resourcepack" => {
                     content_tab(app, ui, &inst, ContentKind::ResourcePack, "resourcepack")
                 }
+                "datapack" => content_tab(app, ui, &inst, ContentKind::DataPack, "datapack"),
                 section => match features.iter().find(|f| f.section == section) {
                     Some(feature) => mod_feature_tab(app, ui, &inst, feature),
                     None => crate::views::instance::overview_tab(app, ui, &inst, &active),
@@ -1362,6 +1364,8 @@ pub enum ContentKind {
     Mod,
     Shader,
     ResourcePack,
+    /// 数据包，1.13 之后用来改配方、战利品这些玩法内容
+    DataPack,
 }
 
 impl ContentKind {
@@ -1370,6 +1374,18 @@ impl ContentKind {
             Self::Mod => "模组",
             Self::Shader => "光影",
             Self::ResourcePack => "资源包",
+            Self::DataPack => "数据包",
+        }
+    }
+
+    /// 界面上的显示名
+    ///
+    /// 资源包在中文圈也常叫材质包，两个名字都写上，
+    /// 找东西的时候不用猜。
+    fn display_label(self) -> &'static str {
+        match self {
+            Self::ResourcePack => "资源包（材质包）",
+            _ => self.label(),
         }
     }
 
@@ -1378,6 +1394,7 @@ impl ContentKind {
             Self::Mod => "mod",
             Self::Shader => "shader",
             Self::ResourcePack => "resourcepack",
+            Self::DataPack => "datapack",
         }
     }
 
@@ -1387,6 +1404,8 @@ impl ContentKind {
             Self::Mod => "mod",
             Self::Shader => "shader",
             Self::ResourcePack => "resourcepack",
+            // Modrinth 不收录数据包
+            Self::DataPack => "project",
         }
     }
 
@@ -1397,6 +1416,7 @@ impl ContentKind {
             Self::Mod => Kind::Mod,
             Self::Shader => Kind::Shader,
             Self::ResourcePack => Kind::ResourcePack,
+            Self::DataPack => Kind::DataPack,
         }
     }
 
@@ -1406,11 +1426,17 @@ impl ContentKind {
             Self::Mod => "mods",
             Self::Shader => "shaderpacks",
             Self::ResourcePack => "resourcepacks",
+            Self::DataPack => "datapacks",
         }
     }
 
-    fn all() -> [ContentKind; 3] {
-        [Self::Mod, Self::Shader, Self::ResourcePack]
+    fn all() -> [ContentKind; 4] {
+        [
+            Self::Mod,
+            Self::Shader,
+            Self::ResourcePack,
+            Self::DataPack,
+        ]
     }
 
     /// 对应「下载」页里的标签页下标
@@ -1419,6 +1445,7 @@ impl ContentKind {
             Self::Mod => 2,
             Self::Shader => 3,
             Self::ResourcePack => 4,
+            Self::DataPack => 5,
         }
     }
 }
@@ -1851,8 +1878,9 @@ fn content_tab(
     let items = list_contents(app, kind, &game_dir);
 
     // 反查 Modrinth 项目：模组能从 MCMod 词库拿到 slug，
-    // 光影与资源包只能靠文件名猜项目名
-    if app.versions_ui.content_lookup_section != Some(section) {
+    // 光影与资源包只能靠文件名猜项目名。
+    // Modrinth 不收录数据包，跳过免得误认成别的项目
+    if kind != ContentKind::DataPack && app.versions_ui.content_lookup_section != Some(section) {
         app.versions_ui.content_lookup_section = Some(section);
         let list: Vec<(String, Option<String>)> = items
             .iter()
@@ -1875,7 +1903,7 @@ fn content_tab(
 
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!("{} 个{}", items.len(), kind.label()))
+            egui::RichText::new(format!("{} 个{}", items.len(), kind.display_label()))
                 .font(ui::font(12.5))
                 .color(p.text_weak),
         );
@@ -1911,7 +1939,8 @@ fn content_tab(
         let tip = match kind {
             ContentKind::Mod => "到「下载」页搜索模组，默认会装到当前实例",
             ContentKind::Shader => "把光影包放进这个目录即可生效",
-            ContentKind::ResourcePack => "把资源包放进这个目录即可生效",
+            ContentKind::ResourcePack => "把资源包（材质包）放进这个目录即可生效",
+            ContentKind::DataPack => "把数据包放进这个目录即可生效",
         };
         ui::empty_state(ui, &p, kind.icon(), &format!("还没有{}", kind.label()), tip);
         return;

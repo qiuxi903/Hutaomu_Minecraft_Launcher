@@ -13,7 +13,7 @@ use crate::theme::Palette;
 use crate::ui::{self, widgets, ButtonOpts};
 use crate::views;
 
-const TABS: [&str; 6] = ["游戏", "加载器", "Mod", "光影", "资源包", "整合包"];
+const TABS: [&str; 7] = ["游戏", "加载器", "Mod", "光影", "资源包", "数据包", "整合包"];
 
 pub struct DownloadState {
     pub tab: usize,
@@ -219,13 +219,14 @@ impl DownloadState {
 
     /// 内容标签页对应的内容类型
     ///
-    /// Mod / 光影 / 资源包 / 整合包 四个标签共用一个内容页，
+    /// Mod / 光影 / 资源包 / 数据包 / 整合包 五个标签共用一个内容页，
     /// 类型直接由标签页推导，避免切换标签后内容类型没跟着变。
     pub fn content_kind(&self) -> ContentKind {
         match self.tab {
             3 => ContentKind::Shader,
             4 => ContentKind::ResourcePack,
-            5 => ContentKind::Modpack,
+            5 => ContentKind::DataPack,
+            6 => ContentKind::Modpack,
             _ => ContentKind::Mod,
         }
     }
@@ -256,7 +257,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     // 切到内容标签时自动加载，不用再点搜索按钮
     let tab = app.download.tab;
     let source = app.download.content_source;
-    if (2..=5).contains(&tab)
+    if (2..=6).contains(&tab)
         && (app.download.content_loaded_tab != Some(tab)
             || app.download.content_loaded_source != Some(source))
     {
@@ -1567,6 +1568,7 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
                     ContentKind::Mod => "模组",
                     ContentKind::Shader => "光影",
                     ContentKind::ResourcePack => "资源包",
+                    ContentKind::DataPack => "数据包",
                     ContentKind::Modpack => "整合包",
                     ContentKind::World => "世界",
                 })
