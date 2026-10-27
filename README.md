@@ -42,6 +42,7 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - 当前源码版本为 **v0.1.0-beta.5**，正式版发布前请备份 `accounts.json` 与游戏目录；
 - 已在真实环境验证：版本下载与安装（含资源文件）、原版启动、Fabric 加载器安装与启动、
   游戏与加载器一次装好、Java 简要搜索、Modrinth 搜索与版本查询、
+  CurseForge 搜索、下载、整合包安装与本地文件指纹反查、
   MCMod 中文名与官网跳转、三个中文资讯源、皮肤站接口错误处理、全部界面页面；
 - **尚未实机验证**：Forge / NeoForge 安装器流程、微软账号登录、皮肤站登录（这三项需要更完整的网络环境或真实账号）；
 - 遇到问题请提交 [Issue](https://github.com/qiuxi903/Hutaomu_Minecraft_Launcher/issues)，并附上 `logs/` 下的日志。
@@ -81,7 +82,8 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 
 ### 内容
 
-接入 [Modrinth](https://modrinth.com) 开放 API：
+接入 [Modrinth](https://modrinth.com) 与 [CurseForge](https://www.curseforge.com) 两个内容平台，
+下载页顶部一键切换，两边用的是同一套界面：
 
 - 搜索 Mod、光影、资源包、整合包，可按当前游戏版本与加载器过滤；
 - **切到内容标签即自动加载**，不必手动点搜索；Modrinth 搜索本身支持中文关键词；
@@ -98,14 +100,32 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 - 详情页可显示中文简介（来自 MC 镜像站翻译接口，失败时自动回退原文，结果本地缓存）；
 - 安装到对应目录：`mods/`、`shaderpacks/`、`resourcepacks/`；
 - Mod 的必需前置依赖自动安装（一层，避免递归）；
-- `.mrpack` 整合包：解析 `modrinth.index.json`、按清单下载、写入 `overrides` 与 `client-overrides`。
+- `.mrpack` 整合包：解析 `modrinth.index.json`、按清单下载、写入 `overrides` 与 `client-overrides`；
+- **CurseForge 平台**：
+  - 官方接口必须带 `x-api-key`，key 可在「设置 - 内容平台」里填，
+    也可用环境变量 `CURSEFORGE_API_KEY`；官方发布的版本内置了一把，用户开箱即用；
+  - 搜索结果与 Modrinth 同形，分类、加载器筛选、依赖安装、整合包解压都走同一套逻辑；
+  - 官方搜索端点偶尔会临时拦截请求并返回 403，此时自动改用社区镜像
+    （`api.curse.tools`）兜底，界面上会标明结果来自镜像；
+  - **本地文件反查**：按 CurseForge 的 MurmurHash2 指纹算法给已装文件算指纹，
+    反查出它属于哪个项目，本地装着的模组、光影与资源包也能给出对应项目页链接。
 
 ### 版本管理
 
 - **一级页面是所有版本列表**，以等宽等高的卡片排列，显示图标、版本 ID、加载器、
   MC 版本、占用空间与修改时间，可按最近修改 / 名称 / 占用空间排序；
-- **点进去是二级页面**：顶部是版本信息卡（文件数、游戏目录、启动 / 设为当前 / 打开目录），
-  左侧是导航（概览 / 设置 / 存档 / 截图 / 模组），右侧是内容；
+- **点进去是二级页面**，左侧是导航（概览 / 设置 / 加载器 / 导出 / 存档 / 截图 / 模组 / 光影 / 资源包），
+  右侧是内容，版式参考 PCL2-CE：
+  - **概览**：加载器与光影状态、实例信息、个性化、快捷方式与高级管理；
+    路径这类内部信息不往页面上摆，要看自己点「打开目录」；
+  - **设置**：启动选项（版本隔离、窗口标题、Java、启动参数、独立目录）
+    与内存分配三档（跟随全局 / 自动 / 自定义），带内存占用条与 -Xmx、-Xms 滑块；
+  - **加载器**：列出已装的加载器，可切换当前、可移除（只让删加载器变体，原版是实例底座），
+    也能为已装的游戏补装新的加载器；
+  - **导出**：勾选游戏本体、模组、资源包、光影、存档、服务器列表与其它文件夹，
+    打包成 zip，解压到 `.minecraft` 就能用；
+- **个性化**：给实例起名字、写描述、打分类、加收藏，名字会用在卡片与标题上；
+  图标可自选，图片复制成 `icon.<扩展名>`，与 HMCL 的约定一致；
 - **设置只对该版本生效**：内存、Java、JVM 参数、独立游戏目录与版本隔离开关
   都只作用于当前版本，「恢复全局设置」可一键还原；
 - **版本隔离默认开启**：每个版本使用独立的 `mods`、`saves`、`config` 目录；
@@ -185,6 +205,7 @@ Hutaomu Minecraft Launcher —— 用 Rust 编写的 Windows Minecraft 启动器
 | SVG | resvg / tiny-skia | 图标按主题色光栅化并缓存 |
 | 压缩包 | zip | natives 解压与 `.mrpack` |
 | 哈希 | md-5 / sha1（RustCrypto） | 离线 UUID 与文件校验 |
+| 指纹 | murmur2 | CurseForge 本地文件反查项目 |
 | 平台 | windows-sys / winresource | DWM 圆角、注册表读取、exe 图标资源 |
 
 ### 模块结构
@@ -273,6 +294,26 @@ cargo build --release  # 发布构建
 
 产物：`target/release/htmcl.exe`（约 13 MB，已 strip 并启用 thin LTO）。
 
+### 内置 CurseForge API Key（可选）
+
+CurseForge 的官方接口必须带 `x-api-key`。启动器可以在「设置 - 内容平台」里填一把，
+也可以用环境变量 `CURSEFORGE_API_KEY`；两者都没有时，还可以**在编译期把 key 编进 exe**：
+
+```bash
+# 方式一：放在 secret/ 目录下（该目录已在 .gitignore 里，不会进仓库）
+mkdir -p secret
+echo -n '你的 key' > secret/curseforge_key.txt
+cargo build --release
+
+# 方式二：走环境变量（CI 里常用）
+set HTMCL_CURSEFORGE_KEY=你的key
+cargo build --release
+```
+
+key 由 `build.rs` 在编译时读出来写进生成文件，源码里不写。
+这样官方发布的版本是开箱即用的，而从仓库拉下来自己编译的人不会替作者白烧接口额度 ——
+这种情况下 CurseForge 功能需要自己填一把 key。
+
 ### 可执行文件图标
 
 仓库已包含 `assets/htmcl.ico`。修改 `assets/icon.svg` 后重新生成：
@@ -299,9 +340,9 @@ htmcl.exe --selftest 1.20.1 fabric --install-only   # 只安装不启动，用�
 
 | 变量 | 作用 |
 | --- | --- |
-| `HTMCL_SHOT=<目录>` | 依次切换 18 个界面场景截图后退出，用于界面回归自检 |
+| `HTMCL_SHOT=<目录>` | 依次切换 34 个界面场景截图后退出，用于界面回归自检 |
 
-自检会真实执行：获取版本清单 → 搜索 Java → 通过统一安装管线下载安装（可带加载器）→ 构建启动命令 → 启动并观察 90 秒 → Modrinth 搜索与版本查询。`--install-only` 会跳过启动游戏那一步。
+自检会真实执行：获取版本清单 → 搜索 Java → 通过统一安装管线下载安装（可带加载器）→ 构建启动命令 → 启动并观察 90 秒 → Modrinth 搜索与版本查询 → CurseForge 搜索、详情、依赖、下载与指纹反查 → CurseForge 整合包下载解压并读清单 → 光影加载器安装 → 资讯源与皮肤站接口。`--install-only` 会跳过启动游戏那一步。
 
 ## 配置文件
 
@@ -461,6 +502,7 @@ htmcl/
 | `meta.fabricmc.net` / `meta.quiltmc.org` | 加载器版本与 profile |
 | `maven.minecraftforge.net` / `maven.neoforged.net` | 加载器版本与安装器 |
 | `api.modrinth.com` | Mod / 光影 / 资源包 / 整合包 |
+| `api.curseforge.com`、`api.curse.tools` | CurseForge 内容、文件、依赖、指纹反查 |
 | `login.microsoftonline.com`、`xsts.auth.xboxlive.com`、`api.minecraftservices.com` | 微软登录 |
 | `authlib-injector.yushi.moe` | authlib-injector 最新版本 |
 | 皮肤站 Yggdrasil API | 皮肤站登录与皮肤 |
@@ -481,7 +523,7 @@ htmcl/
 
 - 仅面向 Windows x64；其他平台未经测试；
 - Forge / NeoForge 安装器流程、微软登录、皮肤站登录尚未实机验证；
-- 不支持 OptiFine 安装、CurseForge 内容、Mod 更新检查、存档 / 世界下载；
+- 不支持 OptiFine 安装、Mod 更新检查、存档 / 世界下载；
 - 下载中断后不会复用 `.part` 文件，只按 SHA1 跳过已完成文件；
 - 资源 CDN 不稳定时可能出现部分资源缺失，重新安装可补齐；
 - 版本重命名不会自动修正指向它的子版本（`inheritsFrom`），重命名基础版本后需重新安装相关加载器版本；
@@ -491,11 +533,9 @@ htmcl/
 **路线图**
 
 1. 实机验证 Forge / NeoForge 安装器，补齐失败场景的错误提示；
-2. 版本管理补齐导出整合包、安装 Mod / 资源到指定版本；
-3. OptiFine 安装；
-4. CurseForge 内容源；
-5. Mod 更新检查与批量管理；
-6. 下载断点续传与下载历史。
+2. OptiFine 安装；
+3. Mod 更新检查与批量管理；
+4. 下载断点续传与下载历史。
 
 ## 参与开发
 
@@ -504,7 +544,7 @@ htmcl/
 - 提交说明使用 `类型: 内容`，类型为 `feat` / `fix` / `ui` / `docs` / `build` / `refactor`；
 - 涉及下载、安装、启动的改动，请先跑 `htmcl.exe --selftest` 验证；
 - 涉及界面的改动，可用 `HTMCL_SHOT` 生成截图自查；
-- **不要提交** `logs/`、`AI协作规则.md`、`htmcl.json`、`accounts.json`、`themes/`、`.minecraft/`、`target/`；
+- **不要提交** `logs/`、`AI协作规则.md`、`secret/`、`htmcl.json`、`accounts.json`、`themes/`、`.minecraft/`、`target/`；
 - 新增第三方依赖需在 PR 中说明用途，并在「关于」页面补充许可信息。
 
 ## 参考项目
