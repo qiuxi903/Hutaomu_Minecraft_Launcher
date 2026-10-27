@@ -549,6 +549,13 @@ pub struct LocalVersion {
     /// 加载器版本号，如 0.20.1
     pub loader_version: Option<String>,
     pub mc_version: String,
+    /// 这个目录属于哪个实例
+    ///
+    /// 默认实例就是 Minecraft 版本本身，加载器变体归属同一个默认实例；
+    /// 独立实例（同一个版本装的第二份）用各自的目录名。
+    pub instance_id: String,
+    /// 独立实例的标记信息，普通版本为 None
+    pub instance: Option<crate::core::minecraft::instance::InstanceInfo>,
     pub size: u64,
     pub last_modified: Option<std::time::SystemTime>,
     pub has_jar: bool,
@@ -572,6 +579,8 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
         let dir = version_dir(game_dir, &id);
         // 整合包实例有自己的目录与名字，跟普通版本分开
         let marker = modpack::read_marker(&dir);
+        // 独立实例（同一个版本装的第二份）有自己的标记
+        let instance_info = crate::core::minecraft::instance::read_marker(&dir);
         let loader = marker
             .as_ref()
             .and_then(|m| m.loader.clone())
@@ -579,8 +588,17 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
         let mc_version = if marker.is_some() {
             // 整合包实例自己成一条，不跟原版版本合并
             id.clone()
+        } else if let Some(info) = instance_info.as_ref() {
+            // 独立实例按标记里记的 Minecraft 版本
+            info.mc_version.clone()
         } else {
             detect_mc_version(game_dir, &id, &json)
+        };
+        // 实例归属：带标记的目录自己一个实例，其余按 Minecraft 版本归到默认实例
+        let instance_id = if instance_info.is_some() || marker.is_some() {
+            id.clone()
+        } else {
+            mc_version.clone()
         };
         let loader_version = marker
             .as_ref()
@@ -607,6 +625,8 @@ pub fn scan_local(game_dir: &Path) -> Vec<LocalVersion> {
             loader,
             loader_version,
             mc_version,
+            instance_id,
+            instance: instance_info,
             size,
             last_modified,
             has_jar,
@@ -678,6 +698,11 @@ pub struct GameInstance {
     /// 整合包实例这里放的是整合包自己的实例 id，
     /// 它跟 Minecraft 版本号无关，纯粹用来区分实例。
     pub mc_version: String,
+    /// 实例 id
+    ///
+    /// 同一个 Minecraft 版本可以装多个实例，每个实例一个 id。
+    /// 默认实例的 id 就是 Minecraft 版本号，行为跟以前一样。
+    pub instance_id: String,
     /// 该实例下的变体，对应真实的版本目录
     pub variants: Vec<LocalVersion>,
     /// 当前使用的变体 id
@@ -748,23 +773,27 @@ impl GameInstance {
 ///
 /// 同一个 Minecraft 版本下的原版与各加载器版本合成一条，
 /// 模组、光影、存档因此只有一份，不会因为换了加载器就各分一份。
+/// 同一个版本另装的独立实例（有自己的标记）单独成一条，互不干扰。
 pub fn group_instances(versions: &[LocalVersion], selected: Option<&str>) -> Vec<GameInstance> {
     let mut order: Vec<String> = Vec::new();
     let mut groups: HashMap<String, Vec<LocalVersion>> = HashMap::new();
     for v in versions {
-        if !groups.contains_key(&v.mc_version) {
-            order.push(v.mc_version.clone());
+        // 实例 id 没填就退回 Minecraft 版本号，老数据不受影响
+        let key = if v.instance_id.is_empty() {
+            v.mc_version.clone()
+        } else {
+            v.instance_id.clone()
+        };
+        if !groups.contains_key(&key) {
+            order.push(key.clone());
         }
-        groups
-            .entry(v.mc_version.clone())
-            .or_default()
-            .push(v.clone());
+        groups.entry(key).or_default().push(v.clone());
     }
 
     let mut instances: Vec<GameInstance> = order
         .into_iter()
-        .filter_map(|mc| {
-            let variants = groups.remove(&mc)?;
+        .filter_map(|instance_id| {
+            let variants = groups.remove(&instance_id)?;
             // 当前变体：优先用全局选中的那个，否则取最近修改过的
             let active = variants
                 .iter()
@@ -778,19 +807,37 @@ pub fn group_instances(versions: &[LocalVersion], selected: Option<&str>) -> Vec
                         .unwrap_or_default()
                 });
             let active_version = variants.iter().find(|v| v.id == active);
+            // 实例基于哪个 Minecraft 版本
+            let mc_version = variants
+                .iter()
+                .find_map(|v| v.instance.as_ref().map(|i| i.mc_version.clone()))
+                .unwrap_or_else(|| {
+                    variants
+                        .first()
+                        .map(|v| v.mc_version.clone())
+                        .unwrap_or_else(|| instance_id.clone())
+                });
             Some(GameInstance {
+                // 显示名：独立实例用自己起的名字，整合包用整合包名字，其余用版本号
                 display_name: variants
                     .iter()
-                    .find_map(|v| v.modpack.as_ref().map(|m| m.name.clone()))
+                    .find_map(|v| v.instance.as_ref().map(|i| i.name.clone()))
                     .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| mc.clone()),
+                    .or_else(|| {
+                        variants
+                            .iter()
+                            .find_map(|v| v.modpack.as_ref().map(|m| m.name.clone()))
+                    })
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| mc_version.clone()),
                 is_modpack: variants.iter().any(|v| v.modpack.is_some()),
                 // 分类取当前变体的，图标则整个实例里谁有就用谁的
                 category: active_version
                     .map(|v| v.category)
                     .unwrap_or_default(),
                 custom_icon: variants.iter().find_map(|v| v.custom_icon.clone()),
-                mc_version: mc,
+                mc_version,
+                instance_id,
                 variants,
                 active,
             })
@@ -963,6 +1010,8 @@ mod tests {
             loader: loader.map(|l| l.to_string()),
             loader_version: None,
             mc_version: mc.to_string(),
+            // 默认实例的 id 就是 Minecraft 版本号，跟扫描出来的一致
+            instance_id: mc.to_string(),
             size: 1,
             last_modified: None,
             has_jar: true,
@@ -987,6 +1036,72 @@ mod tests {
         // 另一个实例没有加载器
         let other = instances.iter().find(|i| i.mc_version == "1.20.1").unwrap();
         assert_eq!(other.loader_label(), "原版");
+    }
+
+    /// 同一个版本可以装多个实例，扫描时各算各的
+    #[test]
+    fn separate_instance_becomes_its_own_entry() {
+        let game_dir = std::env::temp_dir().join("htmcl-multi-instance-test");
+        let _ = std::fs::remove_dir_all(&game_dir);
+        let base_dir = crate::core::paths::versions_dir(&game_dir).join("1.20.1");
+        crate::core::paths::ensure_dir(&base_dir).unwrap();
+        std::fs::write(base_dir.join("1.20.1.jar"), b"jar").unwrap();
+        crate::core::paths::ensure_dir(&base_dir.join("natives")).unwrap();
+        std::fs::write(base_dir.join("natives").join("lwjgl.dll"), b"dll").unwrap();
+        let json = VersionJson {
+            id: "1.20.1".into(),
+            ..Default::default()
+        };
+        std::fs::write(
+            base_dir.join("1.20.1.json"),
+            serde_json::to_string_pretty(&json).unwrap(),
+        )
+        .unwrap();
+
+        // 先只有一个版本
+        let versions = scan_local(&game_dir);
+        let instances = group_instances(&versions, None);
+        assert_eq!(instances.len(), 1);
+        assert_eq!(instances[0].instance_id, "1.20.1");
+        assert_eq!(instances[0].mc_version, "1.20.1");
+
+        // 复制出第二个实例
+        let source = crate::core::minecraft::instance::InstanceSource {
+            base_dir: base_dir.clone(),
+            base_id: "1.20.1".into(),
+            variant_dir: base_dir.clone(),
+            json: json.clone(),
+        };
+        crate::core::minecraft::instance::create_instance(
+            &game_dir,
+            &source,
+            "1.20.1-2",
+            "1.20.1",
+            "第二个实例",
+        )
+        .unwrap();
+
+        // 再扫一次：两个实例，各有各的 id，版本号还是同一个
+        let versions = scan_local(&game_dir);
+        let instances = group_instances(&versions, None);
+        assert_eq!(instances.len(), 2);
+        let first = instances
+            .iter()
+            .find(|i| i.instance_id == "1.20.1")
+            .expect("应当有默认实例");
+        assert_eq!(first.mc_version, "1.20.1");
+        assert_eq!(first.display_name, "1.20.1");
+        let second = instances
+            .iter()
+            .find(|i| i.instance_id == "1.20.1-2")
+            .expect("应当有第二个实例");
+        assert_eq!(second.mc_version, "1.20.1");
+        assert_eq!(second.display_name, "第二个实例");
+        // 两个实例的目录各归各的
+        assert!(second.variants.iter().any(|v| v.instance.is_some()));
+        assert!(first.variants.iter().all(|v| v.instance.is_none()));
+
+        let _ = std::fs::remove_dir_all(&game_dir);
     }
 
     /// 没选中时用最近修改的变体

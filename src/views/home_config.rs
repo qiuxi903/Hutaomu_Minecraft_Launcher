@@ -61,16 +61,18 @@ fn version_row(app: &mut App, ui: &mut Ui) {
                 .color(p.text_weak),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            // 按实例列出：一个 Minecraft 版本一条
+            // 按实例列出：一个实例一条
             let ids: Vec<String> = app
                 .instances
                 .iter()
                 .map(|inst| {
                     let loader = inst.loader_label();
+                    // 独立实例用自己起的名字，默认实例还是版本号
+                    let name = app.instance_display_name(inst);
                     if loader == "原版" {
-                        inst.mc_version.clone()
+                        name
                     } else {
-                        format!("{} · {}", inst.mc_version, loader)
+                        format!("{} · {}", name, loader)
                     }
                 })
                 .collect();
@@ -84,13 +86,14 @@ fn version_row(app: &mut App, ui: &mut Ui) {
                     .and_then(|v| {
                         app.instances
                             .iter()
-                            .find(|i| i.mc_version == v.mc_version)
+                            .find(|i| i.instance_id == v.instance_id)
                             .map(|i| {
                                 let loader = i.loader_label();
+                                let name = app.instance_display_name(i);
                                 if loader == "原版" {
-                                    i.mc_version.clone()
+                                    name
                                 } else {
-                                    format!("{} · {}", i.mc_version, loader)
+                                    format!("{} · {}", name, loader)
                                 }
                             })
                     })
@@ -111,11 +114,12 @@ fn version_row(app: &mut App, ui: &mut Ui) {
 
 fn memory_row(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let mc_version = app
+    // 实例级设置按实例 id 取
+    let instance_id = app
         .selected_version()
-        .map(|v| v.mc_version.clone())
+        .map(|v| v.instance_id.clone())
         .unwrap_or_default();
-    let mut memory = app.cfg.effective_memory(&mc_version) as f32;
+    let mut memory = app.cfg.effective_memory(&instance_id) as f32;
     if ui::slider(ui, &p, "最大内存", "分配给游戏进程的堆内存上限", &mut memory, 512.0, 32768.0, 256.0, " MB").changed() {
         app.cfg.java.memory_mb = memory as u32;
         app.save_config();

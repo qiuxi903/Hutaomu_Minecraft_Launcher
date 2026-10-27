@@ -115,8 +115,12 @@ pub fn launch_game(app: &mut App) {
         &resolved.json,
     );
 
-    // 实例目录用的 id：整合包用自己的名字，普通版本就是 Minecraft 版本
-    let dir_id = if crate::core::minecraft::modpack::is_instance_dir(&game_dir, &version_id) {
+    // 实例目录用的 id：整合包用自己的名字，独立实例用自己的目录名，
+    // 普通版本就是 Minecraft 版本
+    let version_dir = crate::core::minecraft::version::version_dir(&game_dir, &version_id);
+    let dir_id = if crate::core::minecraft::modpack::is_instance_dir(&game_dir, &version_id)
+        || crate::core::minecraft::instance::is_instance_dir(&version_dir)
+    {
         version_id.clone()
     } else {
         mc_version.clone()
@@ -289,9 +293,9 @@ fn start_authlib_relogin(app: &mut App, account: crate::core::auth::AuthlibAccou
     });
 }
 
-/// 打开版本对应的游戏目录
-pub fn open_version_dir(app: &mut App, mc_version: &str) {
-    let dir = app.cfg.effective_game_dir(mc_version);
+/// 打开实例对应的游戏目录
+pub fn open_version_dir(app: &mut App, instance_id: &str) {
+    let dir = app.cfg.effective_game_dir(instance_id);
     let _ = paths::ensure_dir(&dir);
     paths::reveal(&dir);
 }

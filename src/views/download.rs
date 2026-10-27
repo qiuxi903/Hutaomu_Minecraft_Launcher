@@ -1479,7 +1479,7 @@ pub(crate) fn open_project(app: &mut App, project_id: &str, author: &str) {
     app.download.content_translation_loading = true;
     app.download.content_author = author.to_string();
     // 安装目标默认当前实例（按 Minecraft 版本，原版与加载器版本是同一个实例）
-    app.download.content_install_instance = app.selected_version().map(|v| v.mc_version.clone());
+    app.download.content_install_instance = app.selected_version().map(|v| v.instance_id.clone());
     app.download.content_loader_filter.clear();
     app.download.content_game_filter.clear();
     app.download.content_version_index = 0;
@@ -1793,7 +1793,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
                 .active_version()
                 .and_then(|v| v.loader.clone())
                 .unwrap_or_else(|| "原版".to_string());
-            (inst.mc_version.clone(), inst.display_name.clone(), loader)
+            (inst.instance_id.clone(), inst.display_name.clone(), loader)
         })
         .collect();
 
@@ -1804,7 +1804,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
         .clone()
         .or_else(|| {
             app.selected_version()
-                .map(|v| v.mc_version.clone())
+                .map(|v| v.instance_id.clone())
         });
     if let Some(id) = &instance_id {
         if !instances.iter().any(|(vid, _, _)| vid == id) {
@@ -1814,10 +1814,10 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
     let instance = instance_id.as_ref().and_then(|id| {
         app.instances
             .iter()
-            .find(|i| &i.mc_version == id)
+            .find(|i| &i.instance_id == id)
             .map(|i| {
                 let loader = i.active_version().and_then(|v| v.loader.clone());
-                (i.mc_version.clone(), i.real_mc_version(), loader)
+                (i.instance_id.clone(), i.real_mc_version(), loader)
             })
     });
 
@@ -2486,7 +2486,7 @@ fn install_content(
     let (mc, loader) = app
         .instances
         .iter()
-        .find(|i| i.mc_version == instance_id)
+        .find(|i| i.instance_id == instance_id)
         .map(|i| (i.real_mc_version(), i.loader_label_opt().map(|l| l.to_lowercase())))
         .unwrap_or_default();
 

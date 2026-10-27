@@ -43,8 +43,8 @@ pub fn overview_tab(
         .map(|m| m.mc_version.clone())
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| inst.real_mc_version());
-    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
-    let instance_id = inst.mc_version.clone();
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
+    let instance_id = inst.instance_id.clone();
 
     // ---------------- 加载器 ----------------
     ui::card(ui, &p, |ui| {
@@ -247,7 +247,7 @@ pub fn overview_tab(
 /// 个性化：图标、名字、描述、分类与收藏
 fn personalization_card(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
     let p = app.palette;
-    let instance_id = inst.mc_version.clone();
+    let instance_id = inst.instance_id.clone();
     let mut meta = app.cfg.instance_meta(&instance_id);
     let mut changed = false;
 
@@ -410,7 +410,7 @@ fn shortcuts_card(app: &mut App, ui: &mut Ui, inst: &GameInstance, game_dir: &st
 /// 高级管理：不常用但要有的操作
 fn advanced_card(app: &mut App, ui: &mut Ui, inst: &GameInstance, active: &LocalVersion) {
     let p = app.palette;
-    let instance_id = inst.mc_version.clone();
+    let instance_id = inst.instance_id.clone();
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "高级管理");
@@ -481,7 +481,7 @@ fn repair_instance(app: &mut App, version_id: &str) {
 /// 这里的设置只对当前实例生效，会覆盖全局设置。
 pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
     let p = app.palette;
-    let instance_id = inst.mc_version.clone();
+    let instance_id = inst.instance_id.clone();
 
     // 内存三档：跟随全局 / 自动 / 自定义
     // 下面这些都放在状态里，改动写回去，页面切走再回来不会丢
@@ -833,7 +833,7 @@ pub fn loaders_tab(
     active: &LocalVersion,
 ) {
     let p = app.palette;
-    let instance_id = inst.mc_version.clone();
+    let instance_id = inst.instance_id.clone();
     let mc = inst.real_mc_version();
 
     // ---------------- 已安装 ----------------
@@ -1012,7 +1012,7 @@ fn remove_variant(app: &mut App, variant_id: &str) {
 /// 导出整合包
 pub fn export_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance, active: &LocalVersion) {
     let p = app.palette;
-    let instance_id = inst.mc_version.clone();
+    let instance_id = inst.instance_id.clone();
     let game_dir = app.cfg.effective_game_dir(&instance_id);
     let display_name = inst.display_name.clone();
     // 游戏本体要导当前用的那个变体，原版和加载器的版本描述不一样

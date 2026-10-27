@@ -440,15 +440,19 @@ impl Config {
         Ok(())
     }
 
-    pub fn version_override(&self, mc_version: &str) -> VersionOverride {
+    /// 取某个实例的单独设置
+    ///
+    /// 键是实例 id：默认实例就是 Minecraft 版本号，
+    /// 同一个版本另装的实例用自己的目录名当 id。
+    pub fn version_override(&self, instance_id: &str) -> VersionOverride {
         self.version_overrides
-            .get(mc_version)
+            .get(instance_id)
             .cloned()
             .unwrap_or_default()
     }
 
-    pub fn effective_memory(&self, mc_version: &str) -> u32 {
-        let ov = self.version_override(mc_version);
+    pub fn effective_memory(&self, instance_id: &str) -> u32 {
+        let ov = self.version_override(instance_id);
         match ov.memory_mode.as_deref() {
             // 自动：按物理内存推算
             Some("auto") => self.recommended_memory(),
@@ -464,15 +468,15 @@ impl Config {
     }
 
     /// 该实例的初始内存 -Xms
-    pub fn effective_initial_memory(&self, mc_version: &str) -> u32 {
-        let ov = self.version_override(mc_version);
+    pub fn effective_initial_memory(&self, instance_id: &str) -> u32 {
+        let ov = self.version_override(instance_id);
         ov.initial_memory_mb
             .unwrap_or(self.launch.initial_memory_mb)
     }
 
     /// 该实例额外的游戏启动参数
-    pub fn effective_extra_args(&self, mc_version: &str) -> String {
-        let ov = self.version_override(mc_version);
+    pub fn effective_extra_args(&self, instance_id: &str) -> String {
+        let ov = self.version_override(instance_id);
         match ov.extra_args {
             Some(args) if !args.trim().is_empty() => args,
             _ => self.launch.extra_args.clone(),
@@ -480,8 +484,8 @@ impl Config {
     }
 
     /// 该实例的游戏窗口标题
-    pub fn effective_custom_title(&self, mc_version: &str) -> String {
-        let ov = self.version_override(mc_version);
+    pub fn effective_custom_title(&self, instance_id: &str) -> String {
+        let ov = self.version_override(instance_id);
         match &ov.custom_title {
             Some(title) if !title.trim().is_empty() => title.clone(),
             _ => self.launch.custom_title.clone(),
@@ -499,13 +503,13 @@ impl Config {
         ((total as f64 * 2.0 / 3.0) as u32).clamp(1024, 16384)
     }
 
-    pub fn effective_java(&self, mc_version: &str) -> Option<PathBuf> {
-        let ov = self.version_override(mc_version);
+    pub fn effective_java(&self, instance_id: &str) -> Option<PathBuf> {
+        let ov = self.version_override(instance_id);
         ov.java_path.or_else(|| self.java.path.clone())
     }
 
-    pub fn effective_jvm_args(&self, mc_version: &str) -> String {
-        let ov = self.version_override(mc_version);
+    pub fn effective_jvm_args(&self, instance_id: &str) -> String {
+        let ov = self.version_override(instance_id);
         match ov.jvm_args {
             Some(args) if !args.trim().is_empty() => args,
             _ => self.java.jvm_args.clone(),
@@ -515,23 +519,24 @@ impl Config {
     /// 该实例实际使用的游戏目录
     ///
     /// 优先顺序：该实例单独指定的目录 → 该实例的隔离开关 → 全局隔离开关。
-    /// 版本隔离开着时用 `versions/<MC 版本>`，同一个 Minecraft 版本下的
-    /// 原版与各加载器版本共用这一个目录，模组、存档、配置只有一份。
-    pub fn effective_game_dir(&self, mc_version: &str) -> PathBuf {
-        let ov = self.version_override(mc_version);
+    /// 版本隔离开着时用 `versions/<实例 id>`，同一个 Minecraft 版本下的
+    /// 原版与各加载器版本共用这一个目录，模组、存档、配置只有一份；
+    /// 同一个版本另装的实例有自己的目录，互不干扰。
+    pub fn effective_game_dir(&self, instance_id: &str) -> PathBuf {
+        let ov = self.version_override(instance_id);
         if let Some(dir) = ov.game_dir {
             return dir;
         }
-        if self.isolation_for(mc_version) {
-            paths::versions_dir(&self.game_dir).join(mc_version)
+        if self.isolation_for(instance_id) {
+            paths::versions_dir(&self.game_dir).join(instance_id)
         } else {
             self.game_dir.clone()
         }
     }
 
     /// 该实例是否启用版本隔离
-    pub fn isolation_for(&self, mc_version: &str) -> bool {
-        let ov = self.version_override(mc_version);
+    pub fn isolation_for(&self, instance_id: &str) -> bool {
+        let ov = self.version_override(instance_id);
         ov.isolation.unwrap_or(self.launch.isolation)
     }
 

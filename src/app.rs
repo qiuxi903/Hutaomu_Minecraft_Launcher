@@ -385,7 +385,7 @@ impl App {
                     let mc = self
                         .instances
                         .iter()
-                        .find(|i| i.mc_version == id)
+                        .find(|i| i.instance_id == id)
                         .map(|i| i.real_mc_version())
                         .unwrap_or_else(|| id.clone());
                     views::versions::open_loaders_page(self, &mc);
@@ -1234,7 +1234,7 @@ impl App {
             .iter()
             .find(|i| Some(i.active.as_str()) == selected)
             .or_else(|| self.instances.first())
-            .map(|i| i.mc_version.clone())
+            .map(|i| i.instance_id.clone())
     }
 
     /// 界面自检要打开的原版实例（没有加载器的）
@@ -1242,7 +1242,7 @@ impl App {
         self.instances
             .iter()
             .find(|i| i.variants.iter().all(|v| v.loader.is_none()))
-            .map(|i| i.mc_version.clone())
+            .map(|i| i.instance_id.clone())
             .or_else(|| self.shot_instance_id())
     }
 
@@ -1256,14 +1256,14 @@ impl App {
             if !inst.variants.iter().any(|v| v.loader.is_some()) {
                 continue;
             }
-            let dir = self.cfg.effective_game_dir(&inst.mc_version);
+            let dir = self.cfg.effective_game_dir(&inst.instance_id);
             let mut count = 0usize;
             for sub in ["mods", "shaderpacks", "resourcepacks"] {
                 if let Ok(entries) = std::fs::read_dir(dir.join(sub)) {
                     count += entries.flatten().count();
                 }
             }
-            let id = inst.mc_version.clone();
+            let id = inst.instance_id.clone();
             match &best {
                 Some((max, _)) if *max >= count => {}
                 _ => best = Some((count, id)),
@@ -1278,7 +1278,7 @@ impl App {
         self.instances
             .iter()
             .find(|i| i.is_modpack)
-            .map(|i| i.mc_version.clone())
+            .map(|i| i.instance_id.clone())
     }
 
     // ------------------------------------------------------------ 数据刷新
@@ -1311,8 +1311,8 @@ impl App {
             .iter()
             .map(|inst| {
                 (
-                    inst.mc_version.clone(),
-                    self.cfg.effective_game_dir(&inst.mc_version),
+                    inst.instance_id.clone(),
+                    self.cfg.effective_game_dir(&inst.instance_id),
                 )
             })
             .collect();
@@ -1350,11 +1350,15 @@ impl App {
         ];
         let versions_dir = crate::core::paths::versions_dir(&self.cfg.game_dir);
         for v in self.local_versions.clone() {
-            if v.mc_version == v.id {
+            // 自己一个目录的实例，内容本来就该留在自己这儿，别往默认实例那边搬
+            if v.instance.is_some() {
+                continue;
+            }
+            if v.instance_id == v.id {
                 continue;
             }
             let old_dir = versions_dir.join(&v.id);
-            let new_dir = versions_dir.join(&v.mc_version);
+            let new_dir = versions_dir.join(&v.instance_id);
             for name in INSTANCE_DIRS {
                 let from = old_dir.join(name);
                 let to = new_dir.join(name);
@@ -1375,7 +1379,7 @@ impl App {
             if let Some(ov) = self.cfg.version_overrides.remove(&v.id) {
                 self.cfg
                     .version_overrides
-                    .entry(v.mc_version.clone())
+                    .entry(v.instance_id.clone())
                     .or_insert(ov);
                 migrated = true;
             }
@@ -1496,7 +1500,7 @@ impl App {
     /// 用户在「概览 → 个性化」里改过名字就用他改的，
     /// 没改过就还是 Minecraft 版本号或整合包名字。
     pub fn instance_display_name(&self, inst: &crate::core::minecraft::GameInstance) -> String {
-        let meta = self.cfg.instance_meta(&inst.mc_version);
+        let meta = self.cfg.instance_meta(&inst.instance_id);
         if !meta.name.trim().is_empty() {
             meta.name.clone()
         } else {
@@ -1550,7 +1554,7 @@ impl App {
     pub fn java_for_current(&self) -> Option<JavaInfo> {
         let inst = self.selected_instance()?;
         let required = crate::core::java::required_major(&inst.real_mc_version());
-        let manual = self.cfg.effective_java(&inst.mc_version);
+        let manual = self.cfg.effective_java(&inst.instance_id);
         crate::core::java::pick_for_version(required, manual.as_deref(), &self.javas)
     }
 

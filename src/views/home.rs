@@ -117,16 +117,18 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
             ui.vertical(|ui| {
                 let width = (ui.available_width() - 210.0).clamp(220.0, 340.0);
                 ui.set_width(width);
-                // 按实例列出：一个 Minecraft 版本一条，后面标出用的加载器
+                // 按实例列出：一个实例一条，后面标出用的加载器
                 let ids: Vec<String> = app
                     .instances
                     .iter()
                     .map(|inst| {
                         let loader = inst.loader_label();
+                        // 独立实例用自己起的名字，默认实例还是版本号
+                        let name = app.instance_display_name(inst);
                         if loader == "原版" {
-                            inst.mc_version.clone()
+                            name
                         } else {
-                            format!("{} · {}", inst.mc_version, loader)
+                            format!("{} · {}", name, loader)
                         }
                     })
                     .collect();
@@ -149,18 +151,19 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                             app.local_versions
                                 .iter()
                                 .find(|v| v.id == id)
-                                .map(|v| v.mc_version.clone())
+                                .map(|v| v.instance_id.clone())
                         })
-                        .and_then(|mc| {
+                        .and_then(|id| {
                             app.instances
                                 .iter()
-                                .find(|i| i.mc_version == mc)
+                                .find(|i| i.instance_id == id)
                                 .map(|i| {
                                     let loader = i.loader_label();
+                                    let name = app.instance_display_name(i);
                                     if loader == "原版" {
-                                        i.mc_version.clone()
+                                        name
                                     } else {
-                                        format!("{} · {}", i.mc_version, loader)
+                                        format!("{} · {}", name, loader)
                                     }
                                 })
                         })
@@ -177,9 +180,10 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                 }
                 ui.add_space(6.0);
 
-                let mc_version = version
+                // 实例级设置按实例 id 取
+                let instance_id = version
                     .as_ref()
-                    .map(|v| v.mc_version.clone())
+                    .map(|v| v.instance_id.clone())
                     .unwrap_or_default();
                 let java = app.java_for_current();
                 let mut parts: Vec<String> = Vec::new();
@@ -196,7 +200,7 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                 });
                 parts.push(format!(
                     "内存 {} MB",
-                    app.cfg.effective_memory(&mc_version)
+                    app.cfg.effective_memory(&instance_id)
                 ));
                 ui.label(
                     egui::RichText::new(parts.join("  ·  "))
