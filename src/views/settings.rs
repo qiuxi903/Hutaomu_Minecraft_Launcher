@@ -891,13 +891,30 @@ fn game_section(app: &mut App, ui: &mut Ui) {
         let mut show_log = app.cfg.launch.show_game_log;
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("游戏正常退出后显示日志")
+                egui::RichText::new("游戏结束后自动展开日志面板")
                     .font(ui::font(13.0))
                     .color(p.text_weak),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui::toggle(ui, &p, &mut show_log).changed() {
                     app.cfg.launch.show_game_log = show_log;
+                    app.save_config();
+                }
+            });
+        });
+        ui.add_space(10.0);
+
+        let mut log_dock = app.cfg.ui.log_dock;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("游戏运行时日志面板停靠在右边")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::toggle(ui, &p, &mut log_dock).changed() {
+                    app.cfg.ui.log_dock = log_dock;
+                    app.game_log_docked = log_dock;
                     app.save_config();
                 }
             });

@@ -71,14 +71,18 @@ impl App {
 
         // 面板从右下角滑入，不要啪地一下出现
         let shift = (1.0 - anim) * 18.0;
-        // 游戏在跑时右下角挂着悬浮球，下载中心往上让一让，别叠在一起
-        let lift = if self.game.is_some() { 78.0 } else { 0.0 };
+        // 右边停着日志面板的时候，下载中心往左让一让，别叠在一起
+        let dodge = if self.game_log_docked && self.has_game_log() && !self.show_game_log_page {
+            crate::app::DOCK_WIDTH
+        } else {
+            0.0
+        };
 
         egui::Area::new(egui::Id::new("htmcl_download_panel"))
             .order(egui::Order::Foreground)
             .anchor(
                 egui::Align2::RIGHT_BOTTOM,
-                Vec2::new(-20.0 + shift, -20.0 - lift + shift),
+                Vec2::new(-20.0 - dodge + shift, -20.0 + shift),
             )
             .show(ctx, |ui| {
                 ui.set_opacity(anim);

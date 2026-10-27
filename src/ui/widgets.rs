@@ -1462,10 +1462,10 @@ pub fn toast_layer(
     }
     egui::Area::new(Id::new("htmcl_toasts"))
         .order(egui::Order::Tooltip)
-        .anchor(Align2::RIGHT_BOTTOM, Vec2::new(-20.0, -(20.0 + bottom_offset)))
+        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -(20.0 + bottom_offset)))
         .interactable(false)
         .show(ctx, |ui| {
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::RIGHT), |ui| {
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 for toast in toasts.iter().rev() {
                     let elapsed = now - toast.created;
                     let fade = if elapsed > TOAST_LIFETIME - 0.45 {

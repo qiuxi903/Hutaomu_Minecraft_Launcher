@@ -11,7 +11,7 @@ use crate::core::content::modrinth::{SearchResponse, Version as ModVersion};
 use crate::core::content::ContentSource;
 use crate::core::download::{DownloadProgress, DownloadSource, Downloader};
 use crate::core::java::JavaInfo;
-use crate::core::minecraft::launch::GameProcess;
+use crate::core::minecraft::launch::{GameLog, GameLogLine, GameProcess, LogSource};
 use crate::core::minecraft::loaders::{LoaderKind, LoaderVersion};
 use crate::core::minecraft::manifest::VersionManifest;
 use crate::core::minecraft::LocalVersion;
@@ -23,6 +23,9 @@ use crate::theme::{self, Palette, ThemeDef};
 use crate::ui::{self, widgets, Toast};
 use crate::views;
 
+/// 右侧日志面板的宽度
+pub const DOCK_WIDTH: f32 = 392.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Home,
@@ -31,6 +34,58 @@ pub enum Page {
     Accounts,
     Settings,
     About,
+}
+
+/// 游戏进程的状态
+///
+/// 「正在启动」「运行中」「已退出」这几个说法现在有了唯一的出处，
+/// 状态栏、日志面板、提示条都读它，不会各说各话。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GamePhase {
+    /// 正在拉起，游戏窗口还没出来
+    Starting,
+    /// 已经跑起来了
+    Running,
+    /// 正常退出
+    Exited,
+    /// 异常退出
+    Failed,
+}
+
+impl GamePhase {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Starting => "正在启动",
+            Self::Running => "运行中",
+            Self::Exited => "已退出",
+            Self::Failed => "异常退出",
+        }
+    }
+
+    pub fn color(self, p: &Palette) -> Color32 {
+        match self {
+            Self::Starting => p.text_weak,
+            Self::Running => p.success,
+            Self::Exited => p.text_weak,
+            Self::Failed => p.danger,
+        }
+    }
+}
+
+/// 游戏退出后留下的收尾信息
+///
+/// 进程没了，但日志还在：崩溃原因往往就写在那几行里，
+/// 留着面板用户随时能翻，不用重新启动一次游戏去找。
+pub struct LastGame {
+    pub version: String,
+    pub log: Arc<GameLog>,
+    pub exit_code: Option<i32>,
+    /// 一共跑了多少秒
+    pub ran_secs: u64,
+    /// 崩溃报告文件，有就带上
+    pub crash: Option<PathBuf>,
+    /// 游戏目录，日志和崩溃报告都在这底下
+    pub game_dir: PathBuf,
 }
 
 impl Page {
@@ -90,7 +145,25 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 34;
+pub const SHOT_SCENES: usize = 36;
+
+/// 截图自检用的假日志
+///
+/// 真启动一次游戏太慢，界面好不好看用这几行就够了。
+const SHOT_MOCK_LOG: [&str; 12] = [
+    "[12:31:04] [main/INFO]: Environment: Environment[sessionHost=https://sessionserver.mojang.com, name=PCL]",
+    "[12:31:04] [main/INFO]: Setting user: Steve",
+    "[12:31:05] [main/INFO]: Loading 12 recipes",
+    "[12:31:06] [Render thread/INFO]: Created: 1024x512 textures-atlas",
+    "[12:31:06] [Render thread/INFO]: Created: 128x128 minecraft:item_texture",
+    "[12:31:07] [Sound Library/INFO]: Sound engine started",
+    "[12:31:07] [Render thread/INFO]: Narrator library for x64 successfully loaded",
+    "[12:31:08] [Server thread/INFO]: Starting minecraft server version 1.20.1",
+    "[12:31:08] [Server thread/INFO]: Preparing level \"world\"",
+    "[12:31:09] [Server thread/INFO]: Loaded 1871 advancements",
+    "[12:31:11] [Render thread/INFO]: Time elapsed: 7123 ms",
+    "[12:31:12] [Server thread/WARN]: Can't keep up! Did the system get too busy?",
+];
 
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
@@ -359,12 +432,50 @@ impl App {
                 self.download.content_hits.clear();
                 self.download.content_loaded_tab = None;
             }
+            34 => {
+                // 右侧停靠的游戏日志面板
+                self.page = Page::Home;
+                self.shot_mock_game_log(true);
+            }
+            35 => {
+                // 启动过场：居中的卡片，底下还看得见启动器
+                self.page = Page::Home;
+                self.shot_mock_game_log(true);
+                self.game_starting = true;
+            }
             _ => {
                 // 提示条位置与动效检查
                 self.page = Page::Home;
                 self.info("这是一条信息提示，用于检查提示条位置");
             }
         }
+    }
+
+    /// 造一份假的游戏日志，用来检查日志面板的样子
+    fn shot_mock_game_log(&mut self, running: bool) {
+        let log = Arc::new(GameLog::default());
+        for (i, text) in SHOT_MOCK_LOG.iter().enumerate() {
+            let source = if i % 6 == 5 {
+                LogSource::Stderr
+            } else {
+                LogSource::Game
+            };
+            log.push((*text).to_string(), source);
+        }
+        self.last_game = Some(LastGame {
+            version: "1.20.1-Fabric".into(),
+            log,
+            exit_code: None,
+            ran_secs: 372,
+            crash: None,
+            game_dir: self.cfg.game_dir.clone(),
+        });
+        self.game_phase = if running {
+            GamePhase::Running
+        } else {
+            GamePhase::Exited
+        };
+        self.game_log_docked = true;
     }
 }
 
@@ -656,10 +767,17 @@ pub struct App {
     /// 正在启动游戏，这段时间播放启动动画
     pub game_starting: bool,
     /// 启动器窗口的原生句柄，用来把小窗挪到屏幕右下角
-    pub window_handle: Option<isize>,    /// 启动动画开始的时间
-    pub game_start_at: f64,
-    /// 悬浮球模式：游戏在跑，主界面收成一个圆球
-    pub overlay_mode: bool,
+    pub window_handle: Option<isize>,
+    /// 游戏当前的状态
+    pub game_phase: GamePhase,
+    /// 游戏退出后留下的日志，方便回看崩溃原因
+    pub last_game: Option<LastGame>,
+    /// 游戏日志面板是否停靠在右侧
+    pub game_log_docked: bool,
+    /// 日志面板的过滤词
+    pub game_log_filter: String,
+    /// 「启动完成」这句话报过没有
+    pub game_ready_announced: bool,
     /// 在启动器主界面里显示游戏日志
     pub show_game_log_page: bool,
     /// authlib-injector 是否正在下载
@@ -705,6 +823,7 @@ impl App {
         let (tx, rx) = channel();
         let (image_tx, image_rx) = std::sync::mpsc::channel::<String>();
         let image_rx = Arc::new(std::sync::Mutex::new(image_rx));
+        let log_dock = cfg.ui.log_dock;
 
         let mut app = Self {
             cfg,
@@ -764,9 +883,12 @@ impl App {
             launcher_reopen: false,
             launcher_close_on_exit: false,
             game_starting: false,
-            game_start_at: 0.0,
             window_handle: None,
-            overlay_mode: false,
+            game_phase: GamePhase::Starting,
+            last_game: None,
+            game_log_docked: log_dock,
+            game_log_filter: String::new(),
+            game_ready_announced: false,
             show_game_log_page: false,
             authlib_jar_loading: false,
             authlib_jar_error: None,
@@ -2048,38 +2170,81 @@ impl App {
         let Some(game) = self.game.as_mut() else {
             return;
         };
+        // 客户端窗口起来没有：它自己的日志里会先冒出来那些标记，
+        // 看到就说明已经进游戏了，这时候说「启动完成」才是准的。
+        let ready = !self.game_ready_announced
+            && (game.log.client_ready() || game.started.elapsed().as_secs() >= 25);
+        let version = game.version_id.clone();
+        let mut exit: Option<(i32, u64, PathBuf, Arc<GameLog>)> = None;
+        let mut broken = false;
         match game.child.try_wait() {
             Ok(Some(status)) => {
                 let code = status.code().unwrap_or(-1);
-                let version = game.version_id.clone();
-                game.log.set_exit(code);
-                self.game = None;
-                self.handle_events();
-                self.toast(if code == 0 {
-                    Toast::info(format!("{version} 已退出"))
-                } else {
-                    Toast::error(format!("{version} 异常退出（代码 {code}），已展开日志"))
-                });
-                // 异常退出：把日志摊开给用户看
-                if code != 0 {
-                    self.show_game_log_page = true;
-                } else if self.cfg.launch.show_game_log {
-                    self.show_game_log_page = true;
-                }
-                self.game_starting = false;
-                self.show_game_log_page = false;
-                self.leave_overlay_mode();
-                self.refresh_local_versions();
-                // 游戏结束了，按设置把启动器恢复回来
-                self.restore_launcher_after_game();
+                let ran_secs = game.started.elapsed().as_secs();
+                let game_dir = game.game_dir.clone();
+                let log = game.log.clone();
+                log.set_exit(code);
+                exit = Some((code, ran_secs, game_dir, log));
             }
-            Ok(None) => {
-                self.egui_ctx
-                    .request_repaint_after(std::time::Duration::from_millis(500));
+            Ok(None) => {}
+            Err(_) => broken = true,
+        }
+        // 到这里对 game 的借用结束了，下面可以放心改 App 的状态
+        if ready {
+            self.game_ready_announced = true;
+            self.game_phase = GamePhase::Running;
+            self.game_starting = false;
+            self.success(format!("{version} 启动完成"));
+        }
+        if let Some((code, ran_secs, game_dir, log)) = exit {
+            self.game = None;
+            self.game_starting = false;
+            self.game_ready_announced = false;
+            self.game_phase = if code == 0 {
+                GamePhase::Exited
+            } else {
+                GamePhase::Failed
+            };
+            // 崩了的话把崩溃报告的名字给出来，用户不用自己去翻目录
+            let crash = if code != 0 {
+                crate::core::minecraft::launch::latest_crash_report(&game_dir)
+            } else {
+                None
+            };
+            self.last_game = Some(LastGame {
+                version: version.clone(),
+                log,
+                exit_code: Some(code),
+                ran_secs,
+                crash: crash.clone(),
+                game_dir,
+            });
+            self.handle_events();
+            if code == 0 {
+                self.info(format!("{version} 已退出"));
+            } else if let Some(path) = &crash {
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                self.error(format!("{version} 异常退出（代码 {code}），崩溃报告 {name}"));
+            } else {
+                self.error(format!("{version} 异常退出（代码 {code}）"));
             }
-            Err(_) => {
-                self.game = None;
+            // 异常退出一定把日志摊开，正常退出按设置来
+            if code != 0 || self.cfg.launch.show_game_log {
+                self.game_log_docked = true;
             }
+            self.refresh_local_versions();
+            // 游戏结束了，按设置把启动器恢复回来
+            self.restore_launcher_after_game();
+        } else if broken {
+            self.game = None;
+            self.game_starting = false;
+            self.game_phase = GamePhase::Failed;
+        } else {
+            self.egui_ctx
+                .request_repaint_after(std::time::Duration::from_millis(500));
         }
     }
 
@@ -2633,13 +2798,31 @@ impl App {
     }
 
     /// 启动器内的游戏日志页
+    ///
+    /// 右边放不下的时候可以整页打开：日志占满内容区，方便从头翻。
     fn game_log_page(&mut self, ui: &mut Ui) {
         let palette = self.palette;
-        let lines = self
-            .game
-            .as_ref()
-            .map(|g| g.log.snapshot(self.cfg.ui.max_log_lines.clamp(500, 20000)))
-            .unwrap_or_default();
+        let Some((version, phase, _, log, game_dir)) = self.game_log_info() else {
+            self.show_game_log_page = false;
+            return;
+        };
+        let max_lines = self.cfg.ui.max_log_lines.clamp(500, 20000);
+        let filter = self.game_log_filter.trim().to_lowercase();
+        let all = log.snapshot(max_lines);
+        let shown: Vec<GameLogLine> = if filter.is_empty() {
+            all.clone()
+        } else {
+            all.iter()
+                .filter(|l| l.text.to_lowercase().contains(&filter))
+                .cloned()
+                .collect()
+        };
+
+        let mut clear = false;
+        let mut copy = false;
+        let mut open_game_logs = false;
+        let mut open_launcher_logs = false;
+
         ui.horizontal(|ui| {
             if ui::ghost(ui, &palette, "返回").clicked() {
                 self.show_game_log_page = false;
@@ -2651,22 +2834,50 @@ impl App {
                     .strong(),
             );
             ui.label(
-                egui::RichText::new(format!("共 {} 行", lines.len()))
+                egui::RichText::new(format!("{} · {}", version, phase.label()))
+                    .font(ui::font(12.0))
+                    .color(palette.text_weak),
+            );
+            ui.label(
+                egui::RichText::new(format!("共 {} 行", all.len()))
                     .font(ui::font(12.0))
                     .color(palette.text_weak),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui::ghost(ui, &palette, "打开日志文件夹").clicked() {
-                    paths::reveal(&paths::logs_dir());
+                if ui::ghost(ui, &palette, "打开启动器日志").clicked() {
+                    open_launcher_logs = true;
+                }
+                if ui::ghost(ui, &palette, "打开游戏日志").clicked() {
+                    open_game_logs = true;
                 }
                 if ui::ghost(ui, &palette, "清空显示").clicked() {
-                    if let Some(game) = self.game.as_ref() {
-                        game.log.clear();
-                    }
+                    clear = true;
+                }
+                if ui::ghost(ui, &palette, "复制全部").clicked() {
+                    copy = true;
                 }
             });
         });
-        ui.add_space(10.0);
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("过滤")
+                    .font(ui::font(12.0))
+                    .color(palette.text_weak),
+            );
+            ui::text_field(ui, &palette, &mut self.game_log_filter, "按关键字过滤", 240.0, false);
+            if !self.game_log_filter.is_empty() {
+                if ui::ghost(ui, &palette, "清除").clicked() {
+                    self.game_log_filter.clear();
+                }
+            }
+            ui.label(
+                egui::RichText::new(format!("显示 {} 行", shown.len()))
+                    .font(ui::font(12.0))
+                    .color(palette.text_faint),
+            );
+        });
+        ui.add_space(8.0);
         egui::Frame::NONE
             .fill(palette.surface_alt)
             .corner_radius(palette.corner_sm())
@@ -2678,70 +2889,286 @@ impl App {
                     .stick_to_bottom(true)
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        for line in &lines {
-                            // 日志要能选中复制，所以这里单独打开可选
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(line.text.clone())
-                                        .font(ui::mono(11.5))
-                                        .color(palette.text),
-                                )
-                                .selectable(true),
-                            );
-                        }
+                        draw_log_lines(ui, &palette, &shown);
                     });
             });
+
+        if clear {
+            log.clear();
+        }
+        if copy {
+            let text = shown
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            ui.ctx().copy_text(text);
+        }
+        if open_game_logs {
+            paths::reveal(&game_dir.join("logs"));
+        }
+        if open_launcher_logs {
+            paths::reveal(&paths::logs_dir());
+        }
     }
 
-    /// 悬浮球：游戏在跑的时候，启动器右下角显示一个小圆点
-    ///
-    /// 点一下就在启动器里展开游戏日志。
-    fn draw_overlay_ball(&mut self, root: &mut Ui) {
-        let ctx = root.ctx().clone();
-        let now = ctx.input(|i| i.time);
-        let full = root.max_rect();
-        let palette = self.palette;
+    /// 现在还有没有日志可以看
+    pub fn has_game_log(&self) -> bool {
+        self.game.is_some() || self.last_game.is_some()
+    }
 
-        let size = 46.0;
-        // 贴在内容区右下角，避开下载中心面板
-        let center = Pos2::new(
-            full.right() - size / 2.0 - 26.0,
-            full.bottom() - size / 2.0 - 26.0,
-        );
-        // 呼吸动画：提示游戏正在跑
-        let breathe = 1.0 + 0.04 * (now * 2.0).sin();
-        let rect = Rect::from_center_size(center, Vec2::splat(size * breathe as f32));
-
-        let response = root.interact(rect, egui::Id::new("htmcl_overlay_ball"), Sense::click());
-        let hovered = response.hovered();
-        let fill = if hovered {
-            palette.accent
-        } else {
-            palette.accent_weak
-        };
-        root.painter().circle_filled(rect.center(), size / 2.0, fill);
-        if hovered {
-            root.painter().circle_stroke(
-                rect.center(),
-                size / 2.0,
-                Stroke::new(1.5, palette.accent),
-            );
+    /// 当前这份日志的出处：版本、状态、跑了多久、日志本体、游戏目录
+    fn game_log_info(&self) -> Option<(String, GamePhase, u64, Arc<GameLog>, PathBuf)> {
+        if let Some(game) = &self.game {
+            return Some((
+                game.version_id.clone(),
+                self.game_phase,
+                game.started.elapsed().as_secs(),
+                game.log.clone(),
+                game.game_dir.clone(),
+            ));
         }
+        self.last_game.as_ref().map(|last| {
+            (
+                last.version.clone(),
+                self.game_phase,
+                last.ran_secs,
+                last.log.clone(),
+                last.game_dir.clone(),
+            )
+        })
+    }
+
+    /// 右侧停靠的游戏日志面板
+    ///
+    /// 游戏跑起来以后日志就摆在右手边：状态、耗时、实时日志、常用按钮
+    /// 都在这一块里，不用再去角落里找那个圆球。
+    fn game_log_dock(&mut self, ui: &mut Ui) {
+        let palette = self.palette;
+        let Some((version, phase, elapsed, log, game_dir)) = self.game_log_info() else {
+            return;
+        };
+        let max_lines = self.cfg.ui.max_log_lines.clamp(500, 20000);
+        let filter = self.game_log_filter.trim().to_lowercase();
+        let all = log.snapshot(max_lines);
+        let shown: Vec<GameLogLine> = if filter.is_empty() {
+            all.clone()
+        } else {
+            all.iter()
+                .filter(|l| l.text.to_lowercase().contains(&filter))
+                .cloned()
+                .collect()
+        };
+
+        let mut collapse = false;
+        let mut full_page = false;
+        let mut clear = false;
+        let mut copy = false;
+        let mut open_logs = false;
+        let mut stop = false;
+
+        egui::Frame::NONE
+            .fill(palette.surface)
+            .stroke(Stroke::new(1.0, palette.border))
+            .corner_radius(palette.corner_sm())
+            .inner_margin(Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    icons::paint(
+                        ui.ctx(),
+                        ui.painter(),
+                        "terminal",
+                        Rect::from_center_size(
+                            Pos2::new(ui.cursor().left() + 9.0, ui.cursor().center().y),
+                            Vec2::splat(17.0),
+                        ),
+                        palette.accent,
+                    );
+                    ui.add_space(18.0);
+                    ui.label(
+                        egui::RichText::new(&version)
+                            .font(ui::font(14.5))
+                            .color(palette.text)
+                            .strong(),
+                    );
+                    status_badge(ui, &palette, phase.label(), phase.color(&palette));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui::ghost(ui, &palette, "收起").clicked() {
+                            collapse = true;
+                        }
+                        if ui::ghost(ui, &palette, "整页").clicked() {
+                            full_page = true;
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("已运行 {:02}:{:02}", elapsed / 60, elapsed % 60))
+                            .font(ui::font(12.0))
+                            .color(palette.text_weak),
+                    );
+                    if phase == GamePhase::Failed {
+                        if let Some(last) = &self.last_game {
+                            if let Some(crash) = &last.crash {
+                                let name = crash
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                ui.label(
+                                    egui::RichText::new(format!("崩溃报告 {name}"))
+                                        .font(ui::font(12.0))
+                                        .color(palette.danger),
+                                );
+                            }
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui::text_field(ui, &palette, &mut self.game_log_filter, "过滤日志", 120.0, false);
+                    if ui::ghost(ui, &palette, "复制").clicked() {
+                        copy = true;
+                    }
+                    if ui::ghost(ui, &palette, "清空").clicked() {
+                        clear = true;
+                    }
+                    if ui::ghost(ui, &palette, "目录").clicked() {
+                        open_logs = true;
+                    }
+                });
+                ui.add_space(8.0);
+                // 状态与操作放在日志上面，日志区就正好占满剩下的地方，
+                // 底部那一行不会被日志顶出去。
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("共 {} 行", all.len()))
+                            .font(ui::font(11.5))
+                            .color(palette.text_faint),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if self.game.is_some() {
+                            if ui::button(ui, &palette, ui::ButtonOpts::danger("结束游戏")).clicked() {
+                                stop = true;
+                            }
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                let log_height = ui.available_height().max(80.0);
+                egui::Frame::NONE
+                    .fill(palette.surface_alt)
+                    .corner_radius(palette.corner_sm())
+                    .inner_margin(Margin::same(8))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .max_height(log_height)
+                            .auto_shrink([false, false])
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                draw_log_lines(ui, &palette, &shown);
+                            });
+                    });
+            });
+
+        if collapse {
+            self.game_log_docked = false;
+            self.cfg.ui.log_dock = false;
+            self.save_config();
+        }
+        if full_page {
+            self.show_game_log_page = true;
+        }
+        if clear {
+            log.clear();
+        }
+        if copy {
+            let text = shown
+                .iter()
+                .map(|l| l.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            ui.ctx().copy_text(text);
+        }
+        if open_logs {
+            paths::reveal(&game_dir.join("logs"));
+        }
+        if stop {
+            if let Some(game) = self.game.as_mut() {
+                game.kill();
+            }
+            self.game = None;
+            self.game_starting = false;
+            self.game_phase = GamePhase::Failed;
+            self.info("已结束游戏进程");
+        }
+    }
+
+    /// 收起状态下的日志入口：贴在右边边缘的一小块
+    ///
+    /// 不再是右下角那个圆球：那个位置跟下载中心和提示条挤在一起，
+    /// 挪到右边缘中间，就不挡别的东西了。
+    fn draw_log_tab(&mut self, root: &mut Ui) {
+        let ctx = root.ctx().clone();
+        let palette = self.palette;
+        let full = root.max_rect();
+        let size = Vec2::new(30.0, 76.0);
+        let rect = Rect::from_center_size(
+            Pos2::new(full.right() - size.x / 2.0 - 6.0, full.center().y),
+            size,
+        );
+        let response = root.interact(rect, egui::Id::new("htmcl_log_tab"), Sense::click());
+        let hovered = response.hovered();
+        root.painter().rect_filled(
+            rect,
+            palette.corner_sm(),
+            if hovered {
+                palette.accent_weak
+            } else {
+                palette.surface
+            },
+        );
+        root.painter().rect_stroke(
+            rect,
+            palette.corner_sm(),
+            Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
         icons::paint(
             &ctx,
             root.painter(),
             "terminal",
-            Rect::from_center_size(rect.center(), Vec2::splat(20.0)),
-            palette.on_accent,
+            Rect::from_center_size(
+                Pos2::new(rect.center().x, rect.center().y - 12.0),
+                Vec2::splat(18.0),
+            ),
+            if hovered {
+                palette.accent
+            } else {
+                palette.text_weak
+            },
+        );
+        let count = self
+            .game_log_info()
+            .map(|(_, _, _, log, _)| log.len())
+            .unwrap_or(0);
+        root.painter().text(
+            Pos2::new(rect.center().x, rect.center().y + 18.0),
+            egui::Align2::CENTER_CENTER,
+            format!("{count}"),
+            ui::font(10.5),
+            palette.text_faint,
         );
         if response.clicked() {
-            // 在启动器内直接展开日志页
-            self.show_game_log_page = true;
+            self.game_log_docked = true;
+            self.cfg.ui.log_dock = true;
+            self.save_config();
         }
         if response.hovered() {
             response.on_hover_ui(|ui| {
                 ui.label(
-                    egui::RichText::new("点击查看游戏日志")
+                    egui::RichText::new("展开游戏日志")
                         .font(ui::font(11.5))
                         .color(palette.text_weak),
                 );
@@ -2749,80 +3176,151 @@ impl App {
         }
     }
 
-    /// 切到悬浮球：窗口缩成屏幕右下角的小圆窗并置顶
-    fn enter_overlay_mode(&mut self) {
-        if self.overlay_mode {
-            return;
-        }
-        self.overlay_mode = true;
-        let ctx = self.egui_ctx.clone();
-    }
-    /// 退出悬浮球：窗口恢复原来的大小
-    fn leave_overlay_mode(&mut self) {
-        if !self.overlay_mode {
-            return;
-        }
-        self.overlay_mode = false;
-        let size = self.last_window_size;
-        let ctx = self.egui_ctx.clone();
-    }
-
-    /// 启动动画：游戏正在拉起时的过场
-    fn draw_starting_animation(&mut self, root: &mut Ui, version: &str) {
+    /// 启动过场：居中的一张小卡片
+    ///
+    /// 不再把整个窗口涂成一片空白：底下照样看得见启动器，
+    /// 卡片里写着版本、耗时和刚冒出来的几行日志。
+    ///
+    /// 这张卡片是自己画出来的，没有用 egui 的弹窗容器：
+    /// 那种容器第一次出现时位置会飘一下，卡片会歪到一边去。
+    fn draw_starting_overlay(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
         let now = ctx.input(|i| i.time);
         let full = root.max_rect();
         let palette = self.palette;
 
+        let (version, elapsed, recent) = match self.game_log_info() {
+            Some((version, _, elapsed, log, _)) => (version, elapsed, log.snapshot(4)),
+            None => (String::new(), 0, Vec::new()),
+        };
+
+        // 半透明遮罩：底下的界面还认得出来
         root.painter()
-            .rect_filled(full, CornerRadius::ZERO, palette.bg);
-        let center = full.center();
+            .rect_filled(full, CornerRadius::ZERO, Color32::from_black_alpha(110));
 
-        // 一圈转动的进度点
-        let radius = 26.0;
-        for i in 0..12 {
-            let phase = (now * 2.2) as f32 + i as f32 * std::f32::consts::TAU / 12.0;
-            let alpha = (0.25 + 0.65 * ((phase.sin() + 1.0) / 2.0)) as u8;
-            let pos = Pos2::new(
-                center.x + phase.cos() * radius,
-                center.y + phase.sin() * radius,
-            );
-            root.painter().circle_filled(pos, 3.2, egui::Color32::from_rgba_unmultiplied(palette.accent.r(), palette.accent.g(), palette.accent.b(), alpha));
-        }
+        const CARD_W: f32 = 440.0;
+        const PAD: f32 = 20.0;
+        let log_rows = recent.len().max(1) as f32;
+        let log_h = log_rows * 18.0 + 12.0;
+        // 顶行 26 + 版本 32 + 转圈 26 + 日志框 + 提示 24 + 上下留白
+        let card_h = PAD * 2.0 + 26.0 + 32.0 + 26.0 + log_h + 24.0;
+        let card = Rect::from_center_size(full.center(), Vec2::new(CARD_W, card_h));
+        let radius = palette.corner(2);
+        root.painter().rect_filled(card, radius, palette.surface);
+        root.painter().rect_stroke(
+            card,
+            radius,
+            Stroke::new(1.0, palette.border),
+            egui::StrokeKind::Inside,
+        );
 
+        let left = card.left() + PAD;
+        let mut y = card.top() + PAD;
+
+        // 顶行：正在启动 + 不用等了
         root.painter().text(
-            Pos2::new(center.x, center.y + 58.0),
+            Pos2::new(left, y + 10.0),
+            egui::Align2::LEFT_CENTER,
+            "正在启动",
+            ui::font(12.5),
+            palette.text_weak,
+        );
+        let dismiss_rect = Rect::from_min_size(
+            Pos2::new(card.right() - PAD - 72.0, y),
+            Vec2::new(72.0, 22.0),
+        );
+        let dismiss = root.interact(
+            dismiss_rect,
+            egui::Id::new("htmcl_starting_dismiss"),
+            Sense::click(),
+        );
+        if dismiss.hovered() {
+            root.painter().rect_filled(dismiss_rect, palette.corner_sm(), palette.surface_alt);
+        }
+        root.painter().text(
+            dismiss_rect.center(),
             egui::Align2::CENTER_CENTER,
-            format!("正在启动 {version} ..."),
-            ui::font(14.0),
+            "不用等了",
+            ui::font(12.0),
+            if dismiss.hovered() {
+                palette.text
+            } else {
+                palette.text_weak
+            },
+        );
+        if dismiss.clicked() {
+            self.game_starting = false;
+        }
+        y += 26.0;
+
+        // 版本号
+        root.painter().text(
+            Pos2::new(left, y + 10.0),
+            egui::Align2::LEFT_CENTER,
+            version,
+            ui::font(19.0),
             palette.text,
         );
-        root.painter().text(
-            Pos2::new(center.x, center.y + 82.0),
-            egui::Align2::CENTER_CENTER,
-            "游戏在后台运行，日志会一直记着",
-            ui::font(11.5),
-            palette.text_faint,
+        y += 32.0;
+
+        // 转圈 + 已用时
+        draw_spinner(
+            root.painter(),
+            Pos2::new(left + 9.0, y + 8.0),
+            9.0,
+            now,
+            palette.accent,
         );
-        // 已经拿到的日志先摆出来，让人知道确实在动
-        let recent = self
-            .game
-            .as_ref()
-            .map(|g| g.log.snapshot(3))
-            .unwrap_or_default();
-        for (i, line) in recent.iter().enumerate() {
+        root.painter().text(
+            Pos2::new(left + 26.0, y + 8.0),
+            egui::Align2::LEFT_CENTER,
+            format!("已用时 {elapsed} 秒"),
+            ui::font(13.0),
+            palette.text_weak,
+        );
+        y += 26.0;
+
+        // 最近几行日志
+        let log_rect = Rect::from_min_max(
+            Pos2::new(left, y),
+            Pos2::new(card.right() - PAD, y + log_rows * 18.0 + 12.0),
+        );
+        root.painter()
+            .rect_filled(log_rect, palette.corner_sm(), palette.surface_alt);
+        if recent.is_empty() {
             root.painter().text(
-                Pos2::new(center.x, center.y + 112.0 + i as f32 * 18.0),
-                egui::Align2::CENTER_CENTER,
-                line.text.clone(),
+                Pos2::new(log_rect.left() + 9.0, log_rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "正在等游戏的第一行日志 ...",
                 ui::mono(11.0),
                 palette.text_faint,
             );
+        } else {
+            for (i, line) in recent.iter().enumerate() {
+                let text = widgets::ellipsize(&line.text, log_rect.width() - 18.0, 11.0);
+                root.painter().text(
+                    Pos2::new(log_rect.left() + 9.0, log_rect.top() + 15.0 + i as f32 * 18.0),
+                    egui::Align2::LEFT_CENTER,
+                    text,
+                    ui::mono(11.0),
+                    palette.text_weak,
+                );
+            }
         }
+        y = log_rect.bottom() + 10.0;
+
+        root.painter().text(
+            Pos2::new(left, y + 6.0),
+            egui::Align2::LEFT_CENTER,
+            "游戏在后台运行，日志一直记着，右侧面板里能看",
+            ui::font(11.5),
+            palette.text_faint,
+        );
         ctx.request_repaint_after(std::time::Duration::from_millis(33));
     }
 
-    fn game_log_modal(&mut self, ctx: &egui::Context) {        if !self.game_log_open {
+    fn game_log_modal(&mut self, ctx: &egui::Context) {
+        if !self.game_log_open {
             return;
         }
         let palette = self.palette;
@@ -2865,13 +3363,7 @@ impl App {
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
                             ui.set_width(ui.available_width());
-                            for line in &lines {
-                                ui.label(
-                                    egui::RichText::new(line.text.clone())
-                                        .font(ui::mono(11.5))
-                                        .color(palette.text),
-                                );
-                            }
+                            draw_log_lines(ui, &palette, &lines);
                         });
                 });
         });
@@ -2884,10 +3376,67 @@ impl App {
             open = false;
         }
         self.game_log_open = open && self.game.is_some();
-        // 日志关掉了，游戏还在跑的话缩回小圆球
-        if !self.game_log_open && self.game.is_some() {
-            self.enter_overlay_mode();
+        // 弹窗收起来了，右边的日志面板接着显示
+        if !self.game_log_open {
+            self.game_log_docked = true;
         }
+    }
+}
+
+/// 画一段日志
+///
+/// 标准错误用红色标出来，其余按正文颜色显示。
+fn draw_log_lines(ui: &mut Ui, p: &Palette, lines: &[GameLogLine]) {
+    for line in lines {
+        let color = match line.source {
+            LogSource::Stderr => p.danger,
+            LogSource::Stdout | LogSource::Game => p.text,
+        };
+        // 日志要能选中复制，所以这里单独打开可选
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(&line.text)
+                    .font(ui::mono(11.0))
+                    .color(color),
+            )
+            .selectable(true),
+        );
+    }
+}
+
+/// 状态小标签
+fn status_badge(ui: &mut Ui, p: &Palette, text: &str, color: Color32) {
+    egui::Frame::NONE
+        .fill(color.gamma_multiply(0.18))
+        .corner_radius(p.corner_sm())
+        .inner_margin(Margin::symmetric(7, 2))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(text)
+                    .font(ui::font(11.0))
+                    .color(color)
+                    .strong(),
+            );
+        });
+}
+
+/// 转圈的进度点
+///
+/// 一串小方块绕着圈跑，尾巴越跑越淡。
+/// 用方块不用圆点：方块跟 Minecraft 的像素调子也搭。
+fn draw_spinner(painter: &egui::Painter, center: Pos2, radius: f32, now: f64, color: Color32) {
+    let count = 10;
+    let spin = (now * 1.9) as f32;
+    for i in 0..count {
+        let a = spin + i as f32 * std::f32::consts::TAU / count as f32;
+        let tail = i as f32 / count as f32;
+        let pos = center + Vec2::new(a.cos(), a.sin()) * radius;
+        let size = 2.5 + 3.5 * tail;
+        painter.rect_filled(
+            Rect::from_center_size(pos, Vec2::splat(size)),
+            CornerRadius::ZERO,
+            color.gamma_multiply(0.22 + 0.78 * tail),
+        );
     }
 }
 
@@ -2972,21 +3521,8 @@ impl eframe::App for App {
             .rect_filled(full, CornerRadius::ZERO, self.palette.bg);
         self.draw_background(root, full);
 
-        // 正在启动：放一段过场动画
-        if self.game_starting {
-            let elapsed = now - self.game_start_at;
-            if elapsed > 2.6 {
-                self.game_starting = false;
-            } else {
-                let version = self
-                    .game
-                    .as_ref()
-                    .map(|g| g.version_id.clone())
-                    .unwrap_or_default();
-                self.draw_starting_animation(root, &version);
-                return;
-            }
-        }
+        // 正在启动：盖一层过场卡片，底下的界面还看得见
+        // （这层画在最后，别挡着日志面板）
 
         let title_height = 40.0;
         let title_rect = Rect::from_min_size(full.min, Vec2::new(full.width(), title_height));
@@ -3021,9 +3557,25 @@ impl eframe::App for App {
         }
         let page_offset = page_enter.offset;
 
+        // 右侧停靠的游戏日志面板
+        //
+        // 游戏跑起来以后日志就摆在右手边，内容区相应让出一块，
+        // 面板是滑进来的，不是啪地一下出现。
+        let dock_target = if self.game_log_docked && self.has_game_log() && !self.show_game_log_page {
+            1.0
+        } else {
+            0.0
+        };
+        let dock_anim = if ui::animations_enabled() {
+            ctx.animate_value_with_time(egui::Id::new("game_log_dock"), dock_target, 0.18)
+        } else {
+            dock_target
+        };
+        let dock_width = DOCK_WIDTH * dock_anim;
+
         let content_rect = Rect::from_min_max(
             Pos2::new(sidebar_rect.right() + 8.0, body.top() + page_offset),
-            Pos2::new(body.right() - 18.0, body.bottom()),
+            Pos2::new(body.right() - 18.0 - dock_width, body.bottom()),
         );
 
         root.scope_builder(
@@ -3044,14 +3596,17 @@ impl eframe::App for App {
                 ui.set_width(content_rect.width());
                 ui.set_opacity(page_enter.opacity);
                 ui.add_space(12.0);
-                self.game_bar(ui);
+                // 状态栏只在日志面板收起时出现，两处都摆一遍就重复了
+                if !(self.game_log_docked && self.has_game_log() && !self.show_game_log_page) {
+                    self.game_bar(ui);
+                }
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.add_space(6.0);
                         ui.set_max_width(content_rect.width() - 14.0);
                         ui.set_width(content_rect.width() - 14.0);
-                        if self.show_game_log_page && self.game.is_some() {
+                        if self.show_game_log_page && self.has_game_log() {
                             self.game_log_page(ui);
                         } else {
                             match self.page {
@@ -3068,30 +3623,37 @@ impl eframe::App for App {
             },
         );
 
+        // 右侧停靠的游戏日志面板
+        if dock_anim > 0.001 {
+            let dock_rect = Rect::from_min_max(
+                Pos2::new(body.right() - 18.0 - dock_width, body.top() + page_offset),
+                Pos2::new(body.right() - 18.0, body.bottom()),
+            );
+            root.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(dock_rect)
+                    .layout(Layout::top_down(Align::Min)),
+                |ui| {
+                    ui.set_width(dock_rect.width());
+                    ui.set_opacity(dock_anim);
+                    self.game_log_dock(ui);
+                },
+            );
+        } else if self.has_game_log() && !self.show_game_log_page {
+            // 收起来了，右边缘留一个小标签
+            self.draw_log_tab(root);
+        }
+
         views::home_config::game_config_modal(self, &ctx);
         self.game_log_modal(&ctx);
         self.download_panel(&ctx);
-        // 游戏在跑：右下角挂一个圆球，点开看日志
-        if self.game.is_some() && !self.show_game_log_page {
-            self.draw_overlay_ball(root);
+        // 提示条摆在窗口下方中间：右下角让给下载中心，右边让给日志面板
+        widgets::toast_layer(&ctx, &self.palette, &mut self.toasts, now, 0.0);
+
+        // 启动过场盖在最上面，底下的界面还看得见
+        if self.game_starting {
+            self.draw_starting_overlay(root);
         }
-        // 提示条固定在右下角，下载中心展开或游戏在跑时自动上移避让
-        let active_tasks = self.tasks.iter().filter(|t| !t.done).count();
-        let panel_offset = if self.download_panel_open && active_tasks > 0 {
-            (80.0 + active_tasks as f32 * 126.0).min(500.0)
-        } else if self.game.is_some() {
-            // 悬浮球占着右下角，提示条让到它上面
-            70.0
-        } else {
-            0.0
-        };
-        widgets::toast_layer(
-            &ctx,
-            &self.palette,
-            &mut self.toasts,
-            now,
-            panel_offset,
-        );
 
         self.run_screenshots(&ctx);
 
@@ -3179,6 +3741,8 @@ fn shot_scene_label(scene: usize) -> &'static str {
         31 => "版本管理-导出",
         32 => "版本管理-概览",
         33 => "下载-CurseForge",
+        34 => "游戏日志面板",
+        35 => "启动过场",
         _ => "账号-皮肤站",
     }
 }
