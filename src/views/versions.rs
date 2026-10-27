@@ -1919,8 +1919,12 @@ fn content_tab(
         lookup_content_slugs(app, list);
     }
 
-    // CurseForge 认文件指纹，模组、光影、资源包都能反查出来
-    if app.cfg.download.content_source == crate::core::content::ContentSource::CurseForge
+    // CurseForge 认文件指纹，改过名的光影、资源包也能反查出来，
+    // 所以不管当前下载平台是哪个，都拿指纹问一次，能配上就配图标。
+    // 模组不算：jar 自带图标，词库也能给出项目页，
+    // 而一个整合包几十上百个模组，全算一遍指纹太慢。
+    if kind != ContentKind::Mod
+        && app.cfg.download.curseforge_key().is_some()
         && app.versions_ui.content_cf_lookup_section != Some(section)
     {
         app.versions_ui.content_cf_lookup_section = Some(section);
@@ -2014,12 +2018,12 @@ fn content_tab(
                     .clone()
                     .or_else(|| modrinth_project.as_ref().map(|p| p.slug.clone()));
                 let cf_slug = cf_project.as_ref().map(|p| p.slug.clone());
-                // 图标：jar 自带的优先，没有就去线上项目取
-                let remote_icon = if use_curseforge {
-                    cf_project.as_ref().and_then(|p| p.icon_url.clone())
-                } else {
-                    modrinth_project.as_ref().and_then(|p| p.icon_url.clone())
-                };
+                // 图标：文件自带的优先，其次线上项目的，最后退回分类图标。
+                // CurseForge 的图标认得准（有文件指纹），排前面
+                let remote_icon = cf_project
+                    .as_ref()
+                    .and_then(|p| p.icon_url.clone())
+                    .or_else(|| modrinth_project.as_ref().and_then(|p| p.icon_url.clone()));
                 ui.allocate_ui_with_layout(
                     Vec2::new(card_width, 0.0),
                     Layout::top_down(Align::Min),
@@ -2121,43 +2125,36 @@ fn content_tab(
                         });
                         // 右上角的角标：打开所在目录、用外部浏览器看项目主页
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
-                        // 外链角标指向当前平台的项目页，没有项目页就退回 MC 百科
-                        let (primary_url, primary_tip): (Option<String>, String) =
-                            if use_curseforge {
-                                match &cf_slug {
-                                    Some(slug) => (
-                                        Some(crate::core::content::curseforge::project_url(
-                                            kind.curseforge_type(),
-                                            slug,
-                                        )),
-                                        format!("在浏览器里打开 CurseForge：{slug}"),
-                                    ),
-                                    None => match &mcmod_url {
-                                        Some(url) => (
-                                            Some(url.clone()),
-                                            "在浏览器里打开 MC 百科".to_string(),
-                                        ),
-                                        None => (None, String::new()),
-                                    },
-                                }
-                            } else {
-                                match &modrinth_slug {
-                                    Some(slug) => (
-                                        Some(crate::core::content::modrinth::project_url(
-                                            kind.modrinth_type(),
-                                            slug,
-                                        )),
-                                        format!("在浏览器里打开 Modrinth：{slug}"),
-                                    ),
-                                    None => match &mcmod_url {
-                                        Some(url) => (
-                                            Some(url.clone()),
-                                            "在浏览器里打开 MC 百科".to_string(),
-                                        ),
-                                        None => (None, String::new()),
-                                    },
-                                }
-                            };
+                        // 外链角标优先指当前平台的项目页，那个没认出来就看另一个平台
+                        let cf_url = cf_slug.as_ref().map(|slug| {
+                            (
+                                crate::core::content::curseforge::project_url(
+                                    kind.curseforge_type(),
+                                    slug,
+                                ),
+                                format!("在浏览器里打开 CurseForge：{slug}"),
+                            )
+                        });
+                        let mr_url = modrinth_slug.as_ref().map(|slug| {
+                            (
+                                crate::core::content::modrinth::project_url(
+                                    kind.modrinth_type(),
+                                    slug,
+                                ),
+                                format!("在浏览器里打开 Modrinth：{slug}"),
+                            )
+                        });
+                        let (primary_url, primary_tip): (String, String) = if use_curseforge {
+                            cf_url.or(mr_url)
+                        } else {
+                            mr_url.or(cf_url)
+                        }
+                        .or_else(|| {
+                            mcmod_url
+                                .clone()
+                                .map(|url| (url, "在浏览器里打开 MC 百科".to_string()))
+                        })
+                        .unwrap_or_default();
                         ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
                             // 打开所在目录
                             let folder = ui::round_icon_button(ui, &p, "folder-open", 22.0);
@@ -2173,7 +2170,7 @@ fn content_tab(
                             if folder.clicked() {
                                 paths::reveal(&item.path);
                             }
-                            if let Some(url) = &primary_url {
+                            if !primary_url.is_empty() {
                                 let badge = ui::round_icon_button(ui, &p, "external-link", 22.0);
                                 if badge.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -2183,7 +2180,7 @@ fn content_tab(
                                     });
                                 }
                                 if badge.clicked() {
-                                    let _ = open::that(url);
+                                    let _ = open::that(&primary_url);
                                 }
                             }
                         });
@@ -2224,21 +2221,20 @@ fn content_tab(
                             if let Some(url) = &mcmod_url {
                                 links.push(("MC 百科", url.clone()));
                             }
-                            if use_curseforge {
-                                if let Some(slug) = &cf_slug {
-                                    links.push((
-                                        "CurseForge",
-                                        crate::core::content::curseforge::project_url(
-                                            kind.curseforge_type(),
-                                            slug,
-                                        ),
-                                    ));
-                                }
-                            } else if let Some(slug) = &modrinth_slug {
+                            if let Some(slug) = &modrinth_slug {
                                 links.push((
                                     "Modrinth",
                                     crate::core::content::modrinth::project_url(
                                         kind.modrinth_type(),
+                                        slug,
+                                    ),
+                                ));
+                            }
+                            if let Some(slug) = &cf_slug {
+                                links.push((
+                                    "CurseForge",
+                                    crate::core::content::curseforge::project_url(
+                                        kind.curseforge_type(),
                                         slug,
                                     ),
                                 ));
