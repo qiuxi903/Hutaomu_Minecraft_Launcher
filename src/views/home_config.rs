@@ -136,11 +136,7 @@ fn java_row(app: &mut App, ui: &mut Ui, open: &mut bool) {
                 app.settings_ui.tab = 3;
                 *open = false;
             }
-            let mc_version = app
-                .selected_version()
-                .map(|v| v.mc_version.clone())
-                .unwrap_or_default();
-            match app.java_for(&mc_version) {
+            match app.java_for_current() {
                 Some(java) => {
                     ui.label(
                         egui::RichText::new(format!("Java {} · {}", java.version, java.vendor))

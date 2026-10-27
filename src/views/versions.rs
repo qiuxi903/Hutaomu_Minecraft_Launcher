@@ -1141,10 +1141,12 @@ pub(crate) fn load_detail(app: &mut App, mc_version: &str) {
         .as_ref()
         .map(|d| d.display().to_string())
         .unwrap_or_default();
+    // 第 0 项是「自动选择」，其余按搜到的 Java 顺序往后排
     app.versions_ui.detail_java = ov
         .java_path
         .as_ref()
         .and_then(|path| app.javas.iter().position(|j| &j.path == path))
+        .map(|i| i + 1)
         .unwrap_or(0);
     // 隔离开关默认跟随全局（全局默认开启）
     app.versions_ui.detail_isolation = app.cfg.isolation_for(mc_version);

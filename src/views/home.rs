@@ -167,7 +167,7 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                     .as_ref()
                     .map(|v| v.mc_version.clone())
                     .unwrap_or_default();
-                let java = app.java_for(&mc_version);
+                let java = app.java_for_current();
                 let mut parts: Vec<String> = Vec::new();
                 if let Some(v) = &version {
                     parts.push(format!("Minecraft {}", v.mc_version));

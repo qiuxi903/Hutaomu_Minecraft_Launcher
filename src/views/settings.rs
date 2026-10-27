@@ -1031,6 +1031,21 @@ fn game_section(app: &mut App, ui: &mut Ui) {
                 app.save_config();
             }
         });
+
+        // 不检查 Java 与游戏版本的兼容性
+        let mut no_jvm_check = app.cfg.launch.no_jvm_check;
+        widgets::setting_row(
+            ui,
+            &p,
+            "不检查 Java 版本兼容性",
+            "Java 版本太旧时本来会拦一下，关掉后照样启动",
+            |ui| {
+                if ui::toggle(ui, &p, &mut no_jvm_check).changed() {
+                    app.cfg.launch.no_jvm_check = no_jvm_check;
+                    app.save_config();
+                }
+            },
+        );
     });
     ui.add_space(14.0);
 
@@ -1147,6 +1162,23 @@ fn java_section(app: &mut App, ui: &mut Ui) {
     ui::card(ui, &p, |ui| {
         widgets::section_title(ui, &p, "Java");
 
+        // 推荐要有个依据，不然「推荐」两个字没头没尾
+        let current_mc = app
+            .selected_instance()
+            .map(|i| i.real_mc_version())
+            .unwrap_or_default();
+        if !current_mc.is_empty() {
+            ui.label(
+                egui::RichText::new(format!(
+                    "按当前选中的 Minecraft {current_mc} 给出推荐，这个版本需要 Java {} 以上。",
+                    crate::core::java::required_major(&current_mc)
+                ))
+                .font(ui::font(11.5))
+                .color(p.text_faint),
+            );
+            ui.add_space(8.0);
+        }
+
         ui.horizontal(|ui| {
             if ui::button(
                 ui,
@@ -1230,22 +1262,49 @@ fn java_section(app: &mut App, ui: &mut Ui) {
             return;
         }
 
+        // 推荐按当前选中的游戏版本算，跟启动时用的是同一套要求
+        let current_mc = app
+            .selected_instance()
+            .map(|i| i.real_mc_version())
+            .unwrap_or_default();
+        let required = if current_mc.is_empty() {
+            8
+        } else {
+            crate::core::java::required_major(&current_mc)
+        };
+        let recommended = crate::core::java::pick_for_major(required, &app.javas);
+
         let auto = app.cfg.java.path.is_none();
         let mut select: Option<Option<std::path::PathBuf>> = None;
         ui.horizontal(|ui| {
             let selected = auto;
-            if ui::radio_row(ui, &p, selected, "自动选择", "根据游戏版本自动挑选合适的 Java") {
+            let subtitle = match &recommended {
+                Some(j) => format!(
+                    "按游戏版本自动挑选合适的 Java，现在会选 Java {}（{}）",
+                    j.version, j.vendor
+                ),
+                None => "根据游戏版本自动挑选合适的 Java".to_string(),
+            };
+            if ui::radio_row(ui, &p, selected, "自动选择", &subtitle) {
                 select = Some(None);
             }
         });
-        for java in app.javas.clone() {
+        // 够用的排在前面，推荐的那个标出来，版本偏旧的也标一下
+        let mut ordered = app.javas.clone();
+        crate::core::java::sort_by_fit(&mut ordered, required);
+        for java in ordered {
             let selected = app.cfg.java.path.as_deref() == Some(java.path.as_path());
-            let subtitle = format!(
+            let mut subtitle = format!(
                 "{} · {} · {}",
                 java.path.display(),
                 java.bits,
                 java.vendor
             );
+            if recommended.as_ref().is_some_and(|r| r.path == java.path) {
+                subtitle.push_str(" · 推荐");
+            } else if !crate::core::java::compatible(&java, required) {
+                subtitle.push_str(" · 版本偏旧");
+            }
             ui.horizontal(|ui| {
                 if ui::radio_row(ui, &p, selected, &java.display_name(), &subtitle) {
                     select = Some(Some(java.path.clone()));

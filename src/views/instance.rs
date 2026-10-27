@@ -547,29 +547,59 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
         );
 
         // ---- Java ----
-        let java_labels: Vec<String> = app
-            .javas
-            .iter()
-            .map(|j| format!("Java {} · {} · {}", j.version, j.bits, j.vendor))
-            .collect();
-        widgets::setting_row(ui, &p, "游戏 Java", "这个实例用哪个 Java 启动", |ui| {
-            if java_labels.is_empty() {
-                ui.label(
-                    egui::RichText::new("尚未搜索到 Java")
-                        .font(ui::font(12.5))
-                        .color(p.text_faint),
-                );
-            } else {
-                let index = java_index.min(java_labels.len() - 1);
-                let current = java_labels[index].clone();
-                if let Some(selected) =
-                    ui::dropdown(ui, &p, "detail_java", &current, &java_labels, 300.0)
-                {
-                    java_index = selected;
-                    app.versions_ui.detail_java = selected;
+        // 第 0 项是「自动选择」，后面才是搜到的各个 Java
+        let required = crate::core::java::required_major(&inst.real_mc_version());
+        let auto_pick = crate::core::java::pick_for_major(required, &app.javas);
+        let auto_label = match &auto_pick {
+            Some(j) => format!("自动选择 · Java {}（{}）", j.version, j.vendor),
+            None => "自动选择 · 没有够用的 Java".to_string(),
+        };
+        let mut java_labels: Vec<String> = vec![auto_label];
+        java_labels.extend(
+            app.javas
+                .iter()
+                .map(|j| format!("Java {} · {} · {}", j.version, j.bits, j.vendor)),
+        );
+        widgets::setting_row(
+            ui,
+            &p,
+            "游戏 Java",
+            "默认按游戏版本自动挑够用的 Java，也可以手动指定",
+            |ui| {
+                if app.javas.is_empty() {
+                    ui.label(
+                        egui::RichText::new("尚未搜索到 Java")
+                            .font(ui::font(12.5))
+                            .color(p.text_faint),
+                    );
+                } else {
+                    let index = java_index.min(java_labels.len() - 1);
+                    let current = java_labels[index].clone();
+                    if let Some(selected) =
+                        ui::dropdown(ui, &p, "detail_java", &current, &java_labels, 300.0)
+                    {
+                        java_index = selected;
+                        app.versions_ui.detail_java = selected;
+                    }
                 }
-            }
-        });
+            },
+        );
+        // 手选了一个带不动的 Java，提前说一声，别等启动报错
+        if let Some(picked) = java_index
+            .checked_sub(1)
+            .and_then(|i| app.javas.get(i))
+            .filter(|j| !crate::core::java::compatible(j, required))
+        {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Java {} 带不动这个版本（需要 Java {} 以上），启动前会被拦下",
+                    picked.version, required
+                ))
+                .font(ui::font(11.5))
+                .color(p.warning),
+            );
+            ui.add_space(6.0);
+        }
 
         // ---- 额外启动参数 ----
         widgets::setting_row(
@@ -753,7 +783,11 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
     // ---------------- 保存 ----------------
     ui.horizontal(|ui| {
         if ui::button(ui, &p, ButtonOpts::primary("保存该实例设置")).clicked() {
-            let java_path = app.javas.get(java_index).map(|j| j.path.clone());
+            // 第 0 项是「自动选择」，此时不写路径，启动时按游戏版本自己挑
+            let java_path = java_index
+                .checked_sub(1)
+                .and_then(|i| app.javas.get(i))
+                .map(|j| j.path.clone());
             let dir_value = game_dir_text.trim().to_string();
             let override_new = crate::core::config::VersionOverride {
                 memory_mb: if memory_mode == "custom" {
