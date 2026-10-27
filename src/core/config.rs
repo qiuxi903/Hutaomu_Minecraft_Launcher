@@ -122,7 +122,7 @@ pub struct DownloadSettings {
     pub content_source: ContentSource,
     /// CurseForge 的 API Key
     ///
-    /// 留空时依次找环境变量 `CURSEFORGE_API_KEY` 与内置的默认 key。
+    /// 留空时依次找环境变量 `CURSEFORGE_API_KEY` 与编译期注入的内置 key。
     pub curseforge_key: String,
 }
 
@@ -301,7 +301,7 @@ impl DownloadSettings {
 
     /// 实际使用的 CurseForge API Key
     ///
-    /// 优先级：设置里填的 → 环境变量 `CURSEFORGE_API_KEY` → 内置的默认 key。
+    /// 优先级：设置里填的 → 环境变量 `CURSEFORGE_API_KEY` → 编译期注入的内置 key。
     pub fn curseforge_key(&self) -> Option<String> {
         let from_config = self.curseforge_key.trim();
         if !from_config.is_empty() {

@@ -6,7 +6,10 @@
 //! key 的来源有三个，优先级从高到低：
 //! 1. 设置里用户自己填的
 //! 2. 环境变量 `CURSEFORGE_API_KEY`
-//! 3. 作者内置进发布版的 [`BUILTIN_API_KEY`]
+//! 3. 编译期注入的内置 key [`BUILTIN_API_KEY`]
+//!
+//! 内置 key 不写在源码里（仓库公开，写进去等于公开），
+//! 由 `build.rs` 从本地文件或环境变量注入，细节见 `build.rs`。
 //!
 //! CurseForge 返回的数据会被转成和 Modrinth 一样的结构
 //! （[`Project`] / [`Version`] / [`SearchHit`]），
@@ -29,14 +32,20 @@ use crate::core::paths;
 /// CurseForge 官方 API 根地址
 pub const API: &str = "https://api.curseforge.com";
 
+// 编译期注入的 key，由 build.rs 生成
+include!(concat!(env!("OUT_DIR"), "/curseforge_key.rs"));
+
 /// Minecraft 在 CurseForge 上的游戏 id
 pub const GAME_ID: u32 = 432;
 
 /// 作者内置的 API Key
 ///
-/// 正式发布版会把这个填上，用户开箱即用；
-/// 用户也可以在「设置 → 内容平台」里换成自己的 key。
-pub const BUILTIN_API_KEY: &str = "";
+/// 编译期注入，源码里不写：仓库是公开的，源码里出现就等于公开。
+/// `build.rs` 从本地文件 `secret/curseforge_key.txt`（不入库）
+/// 或环境变量 `HTMCL_CURSEFORGE_KEY` 取，取到就编进 exe，
+/// 官方发布的版本因此开箱即用；自己从仓库编译则是空串，
+/// 用户可以在「设置 → 内容平台」里填自己的 key。
+pub const BUILTIN_API_KEY: &str = BUILD_CURSEFORGE_KEY;
 
 /// 项目页地址
 pub fn project_url(class: ContentKind, slug: &str) -> String {
