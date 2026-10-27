@@ -1135,11 +1135,30 @@ impl App {
     }
 
     /// 界面自检要打开的带加载器实例
+    ///
+    /// 优先挑本地内容最多的那个：模组、光影、资源包这些页才有东西可截，
+    /// 全是空目录的话截图看不出界面到底正不正常。
     fn shot_loader_instance_id(&self) -> Option<String> {
-        self.instances
-            .iter()
-            .find(|i| i.variants.iter().any(|v| v.loader.is_some()))
-            .map(|i| i.mc_version.clone())
+        let mut best: Option<(usize, String)> = None;
+        for inst in &self.instances {
+            if !inst.variants.iter().any(|v| v.loader.is_some()) {
+                continue;
+            }
+            let dir = self.cfg.effective_game_dir(&inst.mc_version);
+            let mut count = 0usize;
+            for sub in ["mods", "shaderpacks", "resourcepacks"] {
+                if let Ok(entries) = std::fs::read_dir(dir.join(sub)) {
+                    count += entries.flatten().count();
+                }
+            }
+            let id = inst.mc_version.clone();
+            match &best {
+                Some((max, _)) if *max >= count => {}
+                _ => best = Some((count, id)),
+            }
+        }
+        best.map(|(_, id)| id)
+            .or_else(|| self.shot_instance_id())
     }
 
     /// 界面自检要打开的整合包实例
@@ -3115,9 +3134,9 @@ fn shot_scene_wait(scene: usize) -> f64 {
         17 => 4.0,
         18 => 2.0,
         19 => 2.0,
-        20 => 2.5,
-        21 => 2.5,
-        22 => 2.5,
+        20 => 5.0,
+        21 => 7.0,
+        22 => 7.0,
         23 => 2.0,
         27 => 5.0,
         28 => 2.0,
