@@ -75,6 +75,12 @@ pub struct VersionsState {
     pub confirm_delete: Option<String>,
     pub rename_target: Option<String>,
     pub rename_value: String,
+    /// 「新建实例」弹窗：以哪个实例为基础
+    pub new_instance_from: Option<String>,
+    /// 新实例的名字
+    pub new_instance_name: String,
+    /// 新实例的目录名
+    pub new_instance_id: String,
     pub screenshots: HashMap<PathBuf, egui::TextureHandle>,
     pub loaded_for: Option<String>,
     /// 本地内容列表的缓存
@@ -120,6 +126,9 @@ impl Default for VersionsState {
             confirm_delete: None,
             rename_target: None,
             rename_value: String::new(),
+            new_instance_from: None,
+            new_instance_name: String::new(),
+            new_instance_id: String::new(),
             screenshots: HashMap::new(),
             loaded_for: None,
             content_cache: HashMap::new(),
@@ -199,6 +208,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     delete_modal(app, ui);
     rename_modal(app, ui);
     shader_modal(app, ui);
+    new_instance_modal(app, ui);
 }
 
 // ------------------------------------------------------------------ 一级：版本列表
@@ -308,11 +318,12 @@ fn filtered_instances(app: &App) -> Vec<crate::core::minecraft::GameInstance> {
         .filter(|inst| {
             keyword.is_empty()
                 || inst.mc_version.to_lowercase().contains(&keyword)
+                    || inst.instance_id.to_lowercase().contains(&keyword)
                 || inst.display_name.to_lowercase().contains(&keyword)
                 // 用户改过的名字也能搜到
                 || app
                     .cfg
-                    .instance_meta(&inst.mc_version)
+                    .instance_meta(&inst.instance_id)
                     .name
                     .to_lowercase()
                     .contains(&keyword)
@@ -368,7 +379,7 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
                 let is_current = app
                     .instances
                     .iter()
-                    .find(|i| i.mc_version == inst.mc_version)
+                    .find(|i| i.instance_id == inst.instance_id)
                     .and_then(|i| i.active_version())
                     .map(|v| app.cfg.selected_version.as_deref() == Some(v.id.as_str()))
                     .unwrap_or(false);
@@ -386,7 +397,7 @@ fn version_grid(app: &mut App, ui: &mut Ui) {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
                 if clickable.clicked() {
-                    open = Some(inst.mc_version.clone());
+                    open = Some(inst.instance_id.clone());
                 }
                 ui.set_opacity(1.0);
             }
@@ -609,24 +620,24 @@ fn reinstall_modpack(app: &mut App, instance_id: &str) {
 // ------------------------------------------------------------------ 二级：版本详情
 
 /// 打开某个实例的详情页
-pub(crate) fn open_detail(app: &mut App, mc_version: &str) {
-    app.versions_ui.detail = Some(mc_version.to_string());
+pub(crate) fn open_detail(app: &mut App, instance_id: &str) {
+    app.versions_ui.detail = Some(instance_id.to_string());
     app.versions_ui.section = "info";
-    load_detail(app, mc_version);
+    load_detail(app, instance_id);
 }
 
 fn detail_page(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let Some(mc) = app.versions_ui.detail.clone() else {
+    let Some(instance_id) = app.versions_ui.detail.clone() else {
         return;
     };
-    let Some(inst) = app.instances.iter().find(|i| i.mc_version == mc).cloned() else {
+    let Some(inst) = app.instances.iter().find(|i| i.instance_id == instance_id).cloned() else {
         // 版本已被删除，回到列表
         app.versions_ui.detail = None;
         return;
     };
-    if app.versions_ui.loaded_for.as_deref() != Some(mc.as_str()) {
-        load_detail(app, &mc);
+    if app.versions_ui.loaded_for.as_deref() != Some(instance_id.as_str()) {
+        load_detail(app, &instance_id);
     }
     let Some(active) = inst.active_version().cloned() else {
         app.versions_ui.detail = None;
@@ -638,7 +649,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
     // 装了机械动力、投影这类模组的实例会多出模组自己的内容入口
     let features = app
         .mod_features
-        .get(&inst.mc_version)
+        .get(&inst.instance_id)
         .cloned()
         .unwrap_or_default();
     let sections = sections_for(&inst, &features);
@@ -724,7 +735,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                         .color(p.text_faint),
                 );
                 // 用户自己写的备注
-                let meta_info = app.cfg.instance_meta(&inst.mc_version);
+                let meta_info = app.cfg.instance_meta(&inst.instance_id);
                 if !meta_info.description.trim().is_empty() {
                     ui.add_space(4.0);
                     ui.label(
@@ -753,10 +764,16 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                     && ui::button(ui, &p, ButtonOpts::secondary("重新安装").icon("refresh"))
                         .clicked()
                 {
-                    reinstall = Some(inst.mc_version.clone());
+                    reinstall = Some(inst.instance_id.clone());
                 }
                 if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
-                    views::open_version_dir(app, &inst.mc_version);
+                    views::open_version_dir(app, &inst.instance_id);
+                }
+                // 同一个版本可以装多个实例，各自一份模组与存档
+                if ui::button(ui, &p, ButtonOpts::secondary("新建实例").icon("plus")).clicked() {
+                    app.versions_ui.new_instance_from = Some(inst.instance_id.clone());
+                    app.versions_ui.new_instance_name = format!("{} 副本", inst.display_name);
+                    app.versions_ui.new_instance_id = default_new_instance_id(app, &inst);
                 }
             });
         });
@@ -966,7 +983,7 @@ pub(crate) fn install_loader(
     kind: LoaderKind,
     version: Option<String>,
 ) {
-    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+    let Some(inst) = app.instances.iter().find(|i| i.instance_id == instance_id).cloned() else {
         app.error("找不到这个实例");
         return;
     };
@@ -1015,7 +1032,7 @@ fn shader_modal(app: &mut App, ui: &mut Ui) {
     let Some(instance_id) = app.versions_ui.shader_modal.clone() else {
         return;
     };
-    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+    let Some(inst) = app.instances.iter().find(|i| i.instance_id == instance_id).cloned() else {
         app.versions_ui.shader_modal = None;
         return;
     };
@@ -1113,7 +1130,7 @@ fn shader_modal(app: &mut App, ui: &mut Ui) {
 
 /// 装一个光影加载器
 fn install_shader_loader(app: &mut App, instance_id: &str, kind: ShaderLoader) {
-    let Some(inst) = app.instances.iter().find(|i| i.mc_version == instance_id).cloned() else {
+    let Some(inst) = app.instances.iter().find(|i| i.instance_id == instance_id).cloned() else {
         app.error("找不到这个实例");
         return;
     };
@@ -1152,8 +1169,8 @@ pub(crate) fn uninstall_shader(app: &mut App, file: &Path) {
     }
 }
 
-pub(crate) fn load_detail(app: &mut App, mc_version: &str) {
-    let ov = app.cfg.version_override(mc_version);
+pub(crate) fn load_detail(app: &mut App, instance_id: &str) {
+    let ov = app.cfg.version_override(instance_id);
     app.versions_ui.detail_memory = ov.memory_mb.unwrap_or(app.cfg.java.memory_mb) as f32;
     app.versions_ui.detail_memory_mode = ov
         .memory_mode
@@ -1181,13 +1198,13 @@ pub(crate) fn load_detail(app: &mut App, mc_version: &str) {
         .map(|i| i + 1)
         .unwrap_or(0);
     // 隔离开关默认跟随全局（全局默认开启）
-    app.versions_ui.detail_isolation = app.cfg.isolation_for(mc_version);
-    app.versions_ui.loaded_for = Some(mc_version.to_string());
+    app.versions_ui.detail_isolation = app.cfg.isolation_for(instance_id);
+    app.versions_ui.loaded_for = Some(instance_id.to_string());
 }
 
 fn saves_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInstance) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
     let saves_dir = game_dir.join("saves");
     let mut worlds: Vec<(String, u64, Option<std::time::SystemTime>)> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&saves_dir) {
@@ -1275,7 +1292,7 @@ fn saves_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInst
 
 fn screenshots_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInstance) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
     let shots_dir = game_dir.join("screenshots");
     let mut files: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&shots_dir) {
@@ -1902,7 +1919,7 @@ fn content_tab(
     section: &'static str,
 ) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
 
     let dir = game_dir.join(kind.sub_dir());
     let items = list_contents(app, kind, &game_dir);
@@ -1961,7 +1978,7 @@ fn content_tab(
                 // 跳到下载页并定位到对应标签
                 app.download.tab = kind.download_tab();
                 // 下载页装到当前实例，别让用户再选一遍
-                app.download.content_install_instance = Some(inst.mc_version.clone());
+                app.download.content_install_instance = Some(inst.instance_id.clone());
                 app.download.content_loaded_tab = None;
                 app.page = Page::Download;
             }
@@ -2277,7 +2294,7 @@ fn mod_feature_tab(
     feature: &crate::core::content::modfeature::ModFeature,
 ) {
     let p = app.palette;
-    let game_dir = app.cfg.effective_game_dir(&inst.mc_version);
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
 
     let mut files: Vec<FeatureFile> = Vec::new();
     let mut dirs: Vec<PathBuf> = Vec::new();
@@ -2571,13 +2588,13 @@ fn rename_modal(app: &mut App, ui: &mut Ui) {
         let new_id = app.versions_ui.rename_value.trim().to_string();
         match rename_version(app, &old_id, &new_id) {
             Ok(()) => {
-                let new_mc_version = app
+                let new_instance_id = app
                     .local_versions
                     .iter()
                     .find(|v| v.id == new_id)
-                    .map(|v| v.mc_version.clone())
+                    .map(|v| v.instance_id.clone())
                     .unwrap_or_else(|| new_id.clone());
-                app.versions_ui.detail = Some(new_mc_version);
+                app.versions_ui.detail = Some(new_instance_id);
                 app.success(format!("已重命名为 {new_id}"));
             }
             Err(err) => app.error(format!("重命名失败：{err}")),
@@ -2666,13 +2683,13 @@ pub(crate) fn copy_version(app: &mut App, id: &str) {
     match result {
         Ok(()) => {
             app.refresh_local_versions();
-            let new_mc_version = app
+            let new_instance_id = app
                 .local_versions
                 .iter()
                 .find(|v| v.id == new_id)
-                .map(|v| v.mc_version.clone())
+                .map(|v| v.instance_id.clone())
                 .unwrap_or_else(|| new_id.clone());
-            app.versions_ui.detail = Some(new_mc_version.clone());
+            app.versions_ui.detail = Some(new_instance_id.clone());
             app.success(format!("已复制为 {new_id}"));
         }
         Err(err) => app.error(format!("复制失败：{err}")),
@@ -2746,4 +2763,139 @@ fn delete_modal(app: &mut App, ui: &mut Ui) {
     if !open {
         app.versions_ui.confirm_delete = None;
     }
+}
+
+// ------------------------------------------------------------------ 新建实例
+
+/// 新实例默认的目录名
+///
+/// 拿版本号当底，撞上已有的目录就往后加序号：
+/// 1.20.1 装了第二个实例，那第三个就叫 1.20.1-2。
+fn default_new_instance_id(app: &App, inst: &crate::core::minecraft::GameInstance) -> String {
+    let taken: Vec<String> = app.local_versions.iter().map(|v| v.id.clone()).collect();
+    crate::core::minecraft::instance::unique_id(&inst.mc_version, &taken)
+}
+
+/// 「新建实例」弹窗
+///
+/// 以当前实例为基础复制一份：客户端 jar、natives 与版本描述都复制过去，
+/// 模组、存档与配置不复制，新实例是干净的。
+fn new_instance_modal(app: &mut App, ui: &mut Ui) {
+    let Some(from_id) = app.versions_ui.new_instance_from.clone() else {
+        return;
+    };
+    let p = app.palette;
+    let mut open = true;
+    let mut create = false;
+    let ctx = ui.ctx().clone();
+
+    // 源实例：找不到就关掉弹窗
+    let Some(inst) = app.instances.iter().find(|i| i.instance_id == from_id).cloned() else {
+        app.versions_ui.new_instance_from = None;
+        return;
+    };
+    let Some(active) = inst.active_version().cloned() else {
+        app.versions_ui.new_instance_from = None;
+        return;
+    };
+
+    let title = format!("新建实例 · {}", inst.display_name);
+    widgets::modal(&ctx, &p, &mut open, &title, 460.0, |ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "以 {} 为基础新建一个独立实例。游戏本体与加载器会复制过去，\
+                 模组、存档与配置不复制，新实例是干净的。",
+                active.variant_label()
+            ))
+            .font(ui::font(12.5))
+            .color(p.text_weak),
+        );
+        ui.add_space(16.0);
+        let mut name = app.versions_ui.new_instance_name.clone();
+        if ui::text_field(ui, &p, &mut name, "实例名称", 360.0, false).changed() {
+            app.versions_ui.new_instance_name = name;
+        }
+        ui.add_space(8.0);
+        let mut id = app.versions_ui.new_instance_id.clone();
+        if ui::text_field(ui, &p, &mut id, "目录名", 360.0, false).changed() {
+            app.versions_ui.new_instance_id = id;
+        }
+        ui.add_space(16.0);
+        ui.horizontal(|ui| {
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::button(ui, &p, ButtonOpts::primary("创建")).clicked() {
+                    create = true;
+                }
+                if ui::button(ui, &p, ButtonOpts::secondary("取消")).clicked() {
+                    app.versions_ui.new_instance_from = None;
+                }
+            });
+        });
+    });
+
+    if create {
+        let new_id = app.versions_ui.new_instance_id.trim().to_string();
+        let new_name = app.versions_ui.new_instance_name.trim().to_string();
+        match create_new_instance(app, &inst, &active, &new_id, &new_name) {
+            Ok(()) => {
+                app.success(format!("已创建实例 {new_name}"));
+                app.versions_ui.detail = Some(new_id);
+                app.versions_ui.new_instance_from = None;
+                app.refresh_local_versions();
+            }
+            Err(err) => app.error(format!("创建实例失败：{err}")),
+        }
+    }
+    if !open {
+        app.versions_ui.new_instance_from = None;
+    }
+}
+
+/// 按源实例复制出一个新的独立实例
+fn create_new_instance(
+    app: &mut App,
+    inst: &crate::core::minecraft::GameInstance,
+    active: &crate::core::minecraft::LocalVersion,
+    new_id: &str,
+    new_name: &str,
+) -> anyhow::Result<()> {
+    if new_id.is_empty() {
+        anyhow::bail!("目录名不能为空");
+    }
+    if new_id.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|']) {
+        anyhow::bail!("目录名不能包含路径分隔符或特殊字符");
+    }
+    if new_name.is_empty() {
+        anyhow::bail!("实例名称不能为空");
+    }
+    let game_dir = app.cfg.game_dir.clone();
+    // 变体目录：版本描述与 natives 都在这儿
+    let variant_dir = version::version_dir(&game_dir, &active.id);
+    let json = version::read_local_json(&game_dir, &active.id)?;
+    // 客户端 jar 跟着原版走：解析继承链才知道 jar 实际在哪个目录
+    let (base_dir, base_id) = match version::resolve(&game_dir, &active.id) {
+        Ok(resolved) => (
+            version::version_dir(&game_dir, &resolved.jar_id),
+            resolved.jar_id,
+        ),
+        // 解析不了就按版本号猜，复制不到 jar 时游戏会报错，但目录还是建好了
+        Err(_) => (
+            version::version_dir(&game_dir, &inst.mc_version),
+            inst.mc_version.clone(),
+        ),
+    };
+    let source = crate::core::minecraft::instance::InstanceSource {
+        base_dir,
+        base_id,
+        variant_dir,
+        json,
+    };
+    crate::core::minecraft::instance::create_instance(
+        &game_dir,
+        &source,
+        new_id,
+        &inst.mc_version,
+        new_name,
+    )?;
+    Ok(())
 }
