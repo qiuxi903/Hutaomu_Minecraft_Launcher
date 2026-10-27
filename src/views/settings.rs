@@ -919,6 +919,26 @@ fn game_section(app: &mut App, ui: &mut Ui) {
                 }
             });
         });
+        ui.add_space(10.0);
+
+        let mut sound = app.cfg.launch.sound;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("启动与游戏启动完成时播放提示音")
+                    .font(ui::font(13.0))
+                    .color(p.text_weak),
+            );
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui::toggle(ui, &p, &mut sound).changed() {
+                    app.cfg.launch.sound = sound;
+                    app.save_config();
+                    // 打开的瞬间放一声，让人当场听见开没开
+                    if sound {
+                        crate::core::sound::play_start();
+                    }
+                }
+            });
+        });
     });
     ui.add_space(14.0);
 

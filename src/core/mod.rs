@@ -3,6 +3,7 @@ pub mod download;
 pub mod java;
 pub mod log;
 pub mod paths;
+pub mod sound;
 
 pub mod auth;
 pub mod content;

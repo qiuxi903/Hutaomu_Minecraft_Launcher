@@ -245,6 +245,9 @@ pub fn launch_game(app: &mut App) {
             app.save_config();
             // 「正在启动」不再用一闪而过的提示条：过场卡片和右侧面板里都写着
             log::info!("{version_id} 正在启动");
+            if app.cfg.launch.sound {
+                crate::core::sound::play_start();
+            }
             // 启动器可见性：游戏开起来后按设置隐藏或退出
             app.apply_launcher_visibility(&visibility);
         }

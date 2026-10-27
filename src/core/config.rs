@@ -92,6 +92,8 @@ pub struct LaunchSettings {
     pub no_jvm_check: bool,
     /// 不注入默认的 JVM 参数
     pub no_default_jvm_args: bool,
+    /// 启动与游戏启动完成时播放提示音
+    pub sound: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -246,6 +248,7 @@ impl Default for LaunchSettings {
             no_javaw: false,
             no_jvm_check: false,
             no_default_jvm_args: false,
+            sound: true,
         }
     }
 }

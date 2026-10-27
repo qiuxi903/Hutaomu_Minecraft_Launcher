@@ -2195,6 +2195,9 @@ impl App {
             self.game_phase = GamePhase::Running;
             self.game_starting = false;
             self.success(format!("{version} 启动完成"));
+            if self.cfg.launch.sound {
+                crate::core::sound::play_done();
+            }
         }
         if let Some((code, ran_secs, game_dir, log)) = exit {
             self.game = None;
