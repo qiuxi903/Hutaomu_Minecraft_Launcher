@@ -381,6 +381,65 @@ pub fn run(version_id: &str, loader: Option<&str>, install_only: bool) -> anyhow
         }
     }
 
+    println!("[6.3/7] 本地光影与资源包反查线上项目（图标能不能配上）...");
+    {
+        use crate::core::content::curseforge;
+        let key = crate::core::config::DownloadSettings::default().curseforge_key();
+        if key.is_none() {
+            println!("      没配 CurseForge API Key，跳过");
+        } else {
+            let dl2 = Downloader::new(DownloadSource::Official, 120)?.with_curseforge_key(key);
+            // 光影、资源包、数据包都放在实例目录下，一个一个实例扫过去
+            let game_dir = paths::default_game_dir();
+            let mut roots: Vec<std::path::PathBuf> = vec![game_dir.clone()];
+            if let Ok(entries) = std::fs::read_dir(paths::versions_dir(&game_dir)) {
+                for entry in entries.flatten() {
+                    if entry.path().is_dir() {
+                        roots.push(entry.path());
+                    }
+                }
+            }
+            let mut files: Vec<(String, std::path::PathBuf)> = Vec::new();
+            for root in &roots {
+                for sub in ["shaderpacks", "resourcepacks", "datapacks"] {
+                    let Ok(entries) = std::fs::read_dir(root.join(sub)) else {
+                        continue;
+                    };
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_file() {
+                            continue;
+                        }
+                        let name = path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        files.push((name, path));
+                    }
+                }
+            }
+            if files.is_empty() {
+                println!("      本地没有光影与资源包文件，跳过");
+            } else {
+                match crate::core::content::curseforge_projects(&dl2, &files) {
+                    Ok(map) => {
+                        let with_icon = map.values().filter(|p| p.icon_url.is_some()).count();
+                        println!(
+                            "      本地 {} 个文件，认出 {} 个线上项目，其中有图标 {} 个",
+                            files.len(),
+                            map.len(),
+                            with_icon
+                        );
+                        for (name, project) in map.iter().take(5) {
+                            println!("      {} → {}", name, project.slug);
+                        }
+                    }
+                    Err(err) => println!("      反查失败：{err}"),
+                }
+            }
+        }
+    }
+
     println!("[6.4/7] CurseForge 整合包（下载、解压、读清单） ...");
     {
         use crate::core::content::curseforge;
