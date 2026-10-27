@@ -27,8 +27,22 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let total = ui.available_width();
-        let right_width = 286.0;
-        let left_width = (total - right_width - 14.0).max(320.0);
+        // 右边停靠了游戏日志面板，内容区会窄一截。
+        // 窄到两栏都站不下就改成上下排，否则右栏跟着一起收窄。
+        if total < 500.0 {
+            ui.vertical(|ui| {
+                news_section(app, ui);
+                ui.add_space(14.0);
+                skin_card(app, ui);
+                ui.add_space(14.0);
+                stats_card(app, ui);
+                ui.add_space(14.0);
+                shortcuts_card(app, ui);
+            });
+            return;
+        }
+        let right_width = (total - 320.0 - 14.0).clamp(220.0, 286.0);
+        let left_width = total - right_width - 14.0;
 
         ui.vertical(|ui| {
             ui.set_width(left_width);
