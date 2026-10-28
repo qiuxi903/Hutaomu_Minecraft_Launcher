@@ -649,6 +649,34 @@ pub enum CoreEvent {
     },
     /// 反查没成功，下次打开还要再试
     ContentLookupFailed(crate::core::content::ContentKind),
+    /// 某个内容查完或更新完
+    ContentUpdated {
+        key: String,
+        kind: crate::core::content::ContentKind,
+        /// 换下来的旧文件名
+        old_file: String,
+        /// 新文件名，没换就是 None
+        new_file: Option<String>,
+        version: String,
+        /// 有没有真的换文件
+        updated: bool,
+    },
+    /// 某个内容查失败
+    ContentUpdateFailed {
+        key: String,
+        error: String,
+    },
+    /// 内容装好了，记进本地缓存
+    ContentInstalled {
+        kind: crate::core::content::ContentKind,
+        source: crate::core::content::ContentSource,
+        file_name: String,
+        /// 平台项目标识：Modrinth 是 slug，CurseForge 是数字编号
+        project_id: String,
+        version_id: String,
+        slug: String,
+        icon_url: Option<String>,
+    },
     /// 各实例里装了哪些模组自带的内容
     ModFeatures(
         std::collections::HashMap<String, Vec<crate::core::content::modfeature::ModFeature>>,
@@ -2146,6 +2174,96 @@ impl App {
                     self.versions_ui
                         .content_cf_looked_up
                         .retain(|key| !key.starts_with(&prefix));
+                }
+                CoreEvent::ContentUpdated {
+                    key,
+                    kind,
+                    old_file,
+                    new_file,
+                    version,
+                    updated,
+                } => {
+                    let state = if updated {
+                        views::versions::ContentUpdateState::Done(version.clone())
+                    } else {
+                        views::versions::ContentUpdateState::UpToDate
+                    };
+                    self.versions_ui.content_updates.insert(key, state);
+                    if updated {
+                        if let Some(new_file) = new_file {
+                            if new_file != old_file {
+                                // 文件名变了，缓存里的记录跟着挪
+                                self.content_cache.rename_entry(kind, &old_file, &new_file);
+                                // 内存里的项目表也跟着挪
+                                if let Some(project) =
+                                    self.versions_ui.content_slugs.remove(&old_file)
+                                {
+                                    self.versions_ui.content_slugs.insert(new_file.clone(), project);
+                                }
+                                if let Some(project) = self.versions_ui.content_cf.remove(&old_file)
+                                {
+                                    self.versions_ui.content_cf.insert(new_file.clone(), project);
+                                }
+                                // 更新状态也跟着挪到新名字上
+                                let old_key = format!("{}|{}", kind.facet(), old_file);
+                                let new_key = format!("{}|{}", kind.facet(), new_file);
+                                if let Some(state) = self.versions_ui.content_updates.remove(&old_key)
+                                {
+                                    self.versions_ui.content_updates.insert(new_key, state);
+                                }
+                            }
+                            // 目录内容变了，列表缓存要作废
+                            self.versions_ui.content_cache.clear();
+                        }
+                        self.content_cache.save();
+                    }
+                }
+                CoreEvent::ContentUpdateFailed { key, error } => {
+                    self.versions_ui
+                        .content_updates
+                        .insert(key, views::versions::ContentUpdateState::Failed(error));
+                }
+                CoreEvent::ContentInstalled {
+                    kind,
+                    source,
+                    file_name,
+                    project_id,
+                    version_id,
+                    slug,
+                    icon_url,
+                } => {
+                    // 装好的内容记进缓存，下次打开这一页直接认得它
+                    let mut entry = crate::core::content::cache::Entry::from_remote(
+                        kind,
+                        source,
+                        &file_name,
+                        &crate::core::content::RemoteProject {
+                            slug: slug.clone(),
+                            icon_url: icon_url.clone(),
+                            project_id: Some(project_id.clone()),
+                        },
+                    );
+                    entry.installed_version = Some(version_id);
+                    self.content_cache.set(entry);
+                    self.content_cache.save();
+                    // 内存里的项目表也补上，图标与链接立刻就有
+                    let project = crate::core::content::RemoteProject {
+                        slug,
+                        icon_url,
+                        project_id: Some(project_id),
+                    };
+                    match source {
+                        crate::core::content::ContentSource::CurseForge => {
+                            self.versions_ui
+                                .content_cf
+                                .insert(file_name.clone(), project);
+                        }
+                        crate::core::content::ContentSource::Modrinth => {
+                            self.versions_ui
+                                .content_slugs
+                                .insert(file_name.clone(), project);
+                        }
+                    }
                 }
                 CoreEvent::ModFeatures(map) => {
                     self.mod_features_scanning = false;

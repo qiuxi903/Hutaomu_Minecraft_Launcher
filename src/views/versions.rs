@@ -88,6 +88,8 @@ pub struct VersionsState {
     /// 目录没变就用上次的列表，不用每帧重扫一遍，
     /// 整合包上百个模组时差别很大。
     pub content_cache: HashMap<String, (Option<std::time::SystemTime>, Arc<Vec<LocalContent>>)>,
+    /// 每个本地内容的更新状态，键是「分类|文件名」
+    pub content_updates: HashMap<String, ContentUpdateState>,
 }
 
 impl Default for VersionsState {
@@ -132,6 +134,7 @@ impl Default for VersionsState {
             screenshots: HashMap::new(),
             loaded_for: None,
             content_cache: HashMap::new(),
+            content_updates: HashMap::new(),
         }
     }
 }
@@ -1501,6 +1504,29 @@ impl ContentKind {
     }
 }
 
+/// 一个本地内容的更新状态
+#[derive(Debug, Clone, Default)]
+pub enum ContentUpdateState {
+    /// 还没查过
+    #[default]
+    Idle,
+    /// 正在查线上版本
+    Checking,
+    /// 已经是最新
+    UpToDate,
+    /// 有新版本，附版本号
+    Available(String),
+    /// 查失败
+    Failed(String),
+    /// 刚更新完，附版本号
+    Done(String),
+}
+
+/// 更新状态的键：分类 + 本地文件名
+fn update_key(kind: ContentKind, file_name: &str) -> String {
+    format!("{}|{}", kind.core_kind().facet(), file_name)
+}
+
 /// 本地内容的一个条目
 pub struct LocalContent {
     file_name: String,
@@ -2028,6 +2054,10 @@ fn content_tab(
                 app.download.content_loaded_tab = None;
                 app.page = Page::Download;
             }
+            // 一键更新：锁住的不动，没认出线上项目的跳过
+            if ui::button(ui, &p, ButtonOpts::secondary("全部更新").icon("refresh")).clicked() {
+                update_all(app, inst, kind, &items);
+            }
         });
     });
     ui.add_space(10.0);
@@ -2089,6 +2119,13 @@ fn content_tab(
                     .or_else(|| modrinth_project.as_ref().and_then(|p| p.icon_url.clone()));
                 // 银锁：锁住的内容不会被自动更新
                 let locked = app.content_cache.is_locked(kind.core_kind(), &item.file_name);
+                // 更新状态：没查过时是个暗色小图标，查出新版就变成按钮
+                let update_state = app
+                    .versions_ui
+                    .content_updates
+                    .get(&update_key(kind, &item.file_name))
+                    .cloned()
+                    .unwrap_or_default();
                 ui.allocate_ui_with_layout(
                     Vec2::new(card_width, 0.0),
                     Layout::top_down(Align::Min),
@@ -2152,23 +2189,19 @@ fn content_tab(
                         }
                         ui.vertical(|ui| {
                             // 标题、版本信息、文件名分三层排开，不再挤在一起
-                            // 文字过长时截断，免得把卡片撑出格子
-                            ui.set_width((card_width - 96.0).max(120.0));
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&item.display)
-                                            .font(ui::font(13.5))
-                                            .color(p.text)
-                                            .strong(),
-                                    )
-                                    .truncate(),
-                                );
-                                // 锁住的内容标出来，免得以为漏更新了
-                                if locked {
-                                    widgets::badge(ui, &p, "已锁定", p.accent);
-                                }
-                            });
+                            // 文字过长时截断，免得把卡片撑出格子。
+                            // 右上角最多三个圆形按钮，得给它们留够位置，
+                            // 不然长标题会被按钮压住。
+                            ui.set_width((card_width - 156.0).max(100.0));
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&item.display)
+                                        .font(ui::font(13.5))
+                                        .color(p.text)
+                                        .strong(),
+                                )
+                                .truncate(),
+                            );
                             ui.add_space(3.0);
                             if !item.subtitle.is_empty() {
                                 ui.add(
@@ -2188,11 +2221,16 @@ fn content_tab(
                                         item.file_name,
                                         paths::format_size(item.size)
                                     ))
-                                    .font(ui::font(10.5))
+                                    .font(ui::font(10.0))
                                     .color(p.text_faint),
                                 )
                                 .truncate(),
-                            );
+                            )
+                            .on_hover_text(format!(
+                                "{}\n{}",
+                                item.file_name,
+                                paths::format_size(item.size)
+                            ));
                         });
                         // 右上角的角标：打开所在目录、用外部浏览器看项目主页
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
@@ -2229,7 +2267,7 @@ fn content_tab(
                         let lock_clicked = ui
                             .with_layout(Layout::right_to_left(Align::Min), |ui| {
                             // 打开所在目录
-                            let folder = ui::round_icon_button(ui, &p, "folder-open", 22.0);
+                            let folder = ui::round_icon_button(ui, &p, "folder-open", 20.0);
                             if folder.hovered() {
                                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                 folder.clone().on_hover_ui(|ui| {
@@ -2243,7 +2281,7 @@ fn content_tab(
                                 paths::reveal(&item.path);
                             }
                             if !primary_url.is_empty() {
-                                let badge = ui::round_icon_button(ui, &p, "external-link", 22.0);
+                                let badge = ui::round_icon_button(ui, &p, "external-link", 20.0);
                                 if badge.hovered() {
                                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                                     let tip = primary_tip.clone();
@@ -2260,7 +2298,7 @@ fn content_tab(
                                 ui,
                                 &p,
                                 if locked { "lock" } else { "lock-open" },
-                                22.0,
+                                20.0,
                                 locked,
                             );
                             if lock.hovered() {
@@ -2284,9 +2322,9 @@ fn content_tab(
                         }
                     });
                     ui.add_space(5.0);
-                    // 底行：左边是文件位置，右边是相关网站与外链角标
+                    // 底行：左边是文件位置，右边是更新按钮与相关网站
                     ui.horizontal(|ui| {
-                        let path_width = (card_width - 170.0).max(60.0);
+                        let path_width = (card_width - 250.0).max(60.0);
                         let path_label = ui.add_sized(
                             [path_width, 16.0],
                             egui::Label::new(
@@ -2313,7 +2351,10 @@ fn content_tab(
                         }
                         // 相关网站：各自可点，点谁开谁
                         let mcmod_url = item.mcmod.as_ref().map(|e| e.url());
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let update_clicked = ui
+                            .with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            // 更新按钮放在最右边，每张卡片的位置都一样
+                            let clicked = update_control(ui, &p, &update_state, locked);
                             // 当前平台的项目页，认出来才显示
                             let mut links: Vec<(&str, String)> = Vec::new();
                             if let Some(url) = &mcmod_url {
@@ -2350,7 +2391,12 @@ fn content_tab(
                                     let _ = open::that(url);
                                 }
                             }
-                        });
+                            clicked
+                        })
+                        .inner;
+                        if update_clicked {
+                            update_one(app, inst, kind, item);
+                        }
                     });
                 });
                 // 堆叠：卡片下面露出几层纸边
@@ -2534,6 +2580,292 @@ fn collect_feature_files(
 /// 反查记录的键：分类 + 本地文件名
 fn looked_up_key(kind: ContentKind, file_name: &str) -> String {
     format!("{}|{}", kind.core_kind().facet(), file_name)
+}
+
+/// 找出这个本地内容对应的线上项目
+///
+/// 优先用当前下载平台那边的项目，另一个平台认出来了也能用。
+fn remote_of(
+    app: &App,
+    file_name: &str,
+) -> Option<(
+    crate::core::content::ContentSource,
+    crate::core::content::RemoteProject,
+)> {
+    let prefer_cf = app.cfg.download.content_source
+        == crate::core::content::ContentSource::CurseForge;
+    let mr = app.versions_ui.content_slugs.get(file_name);
+    let cf = app.versions_ui.content_cf.get(file_name);
+    let pick = |first: Option<&crate::core::content::RemoteProject>,
+                first_source: crate::core::content::ContentSource,
+                second: Option<&crate::core::content::RemoteProject>,
+                second_source: crate::core::content::ContentSource| {
+        first
+            .cloned()
+            .map(|p| (first_source, p))
+            .or_else(|| second.cloned().map(|p| (second_source, p)))
+    };
+    if prefer_cf {
+        pick(
+            cf,
+            crate::core::content::ContentSource::CurseForge,
+            mr,
+            crate::core::content::ContentSource::Modrinth,
+        )
+    } else {
+        pick(
+            mr,
+            crate::core::content::ContentSource::Modrinth,
+            cf,
+            crate::core::content::ContentSource::CurseForge,
+        )
+    }
+}
+
+/// 取实例的 MC 版本与加载器，更新时按它筛线上版本
+fn instance_filter(app: &App, instance_id: &str) -> (Option<String>, Option<String>) {
+    app.instances
+        .iter()
+        .find(|i| i.instance_id == instance_id)
+        .map(|i| {
+            let mc = i.real_mc_version();
+            let loader = i.loader_label_opt().map(|l| l.to_lowercase());
+            (
+                if mc.trim().is_empty() { None } else { Some(mc) },
+                loader.filter(|l| !l.trim().is_empty()),
+            )
+        })
+        .unwrap_or((None, None))
+}
+
+/// 更新一个内容到线上最新版
+fn update_one(
+    app: &mut App,
+    inst: &crate::core::minecraft::GameInstance,
+    kind: ContentKind,
+    item: &LocalContent,
+) {
+    let Some((source, project)) = remote_of(app, &item.file_name) else {
+        app.error("这个内容还没找到对应的线上项目，更新不了");
+        return;
+    };
+    let Some(project_id) = project.project_id.clone().filter(|id| !id.is_empty()) else {
+        app.error("这个内容还没找到对应的线上项目，更新不了");
+        return;
+    };
+    if app.content_cache.is_locked(kind.core_kind(), &item.file_name) {
+        app.info("这个内容已锁定，先解锁再更新");
+        return;
+    }
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
+    let (mc, loader) = instance_filter(app, &inst.instance_id);
+    let target = crate::core::content::update::Target {
+        kind: kind.core_kind(),
+        source,
+        project_id,
+        file_name: item.file_name.clone(),
+        path: item.path.clone(),
+    };
+    let key = update_key(kind, &item.file_name);
+    let title = item.display.clone();
+    app.versions_ui
+        .content_updates
+        .insert(key.clone(), ContentUpdateState::Checking);
+    app.spawn_download(format!("更新 {title}"), move |dl, progress, job| {
+        let outcome = crate::core::content::update::update(
+            &dl,
+            &target,
+            &game_dir,
+            mc.as_deref(),
+            loader.as_deref(),
+            &progress,
+        )?;
+        job.send(CoreEvent::ContentUpdated {
+            key,
+            kind: target.kind,
+            old_file: target.file_name.clone(),
+            new_file: outcome
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string()),
+            version: outcome.version.clone(),
+            updated: outcome.updated,
+        });
+        Ok(if outcome.updated {
+            format!("{title} 已更新到 {}", outcome.version)
+        } else {
+            format!("{title} 已经是最新")
+        })
+    });
+}
+
+/// 把这一页能更新的内容全更新一遍
+///
+/// 锁住的不动，没认出线上项目的也跳过。
+fn update_all(
+    app: &mut App,
+    inst: &crate::core::minecraft::GameInstance,
+    kind: ContentKind,
+    items: &[LocalContent],
+) {
+    let mut targets: Vec<(
+        String,
+        crate::core::content::update::Target,
+    )> = Vec::new();
+    for item in items {
+        if app.content_cache.is_locked(kind.core_kind(), &item.file_name) {
+            continue;
+        }
+        let Some((source, project)) = remote_of(app, &item.file_name) else {
+            continue;
+        };
+        let Some(project_id) = project.project_id.clone().filter(|id| !id.is_empty()) else {
+            continue;
+        };
+        targets.push((
+            item.file_name.clone(),
+            crate::core::content::update::Target {
+                kind: kind.core_kind(),
+                source,
+                project_id,
+                file_name: item.file_name.clone(),
+                path: item.path.clone(),
+            },
+        ));
+    }
+    if targets.is_empty() {
+        app.info("这一页没有可以更新的内容");
+        return;
+    }
+    let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
+    let (mc, loader) = instance_filter(app, &inst.instance_id);
+    let total = targets.len();
+    // 先把状态标成「检查中」，不然点了没反应
+    for (file_name, _) in &targets {
+        app.versions_ui
+            .content_updates
+            .insert(update_key(kind, file_name), ContentUpdateState::Checking);
+    }
+    app.spawn_download("全部更新", move |dl, progress, job| {
+        let mut updated = 0usize;
+        let mut newest = 0usize;
+        let mut failed = 0usize;
+        for (index, (file_name, target)) in targets.iter().enumerate() {
+            progress.set_message(format!(
+                "正在检查 {}/{} · {}",
+                index + 1,
+                total,
+                file_name
+            ));
+            let key = update_key(kind, file_name);
+            match crate::core::content::update::update(
+                &dl,
+                target,
+                &game_dir,
+                mc.as_deref(),
+                loader.as_deref(),
+                &progress,
+            ) {
+                Ok(outcome) => {
+                    if outcome.updated {
+                        updated += 1;
+                    } else {
+                        newest += 1;
+                    }
+                    job.send(CoreEvent::ContentUpdated {
+                        key,
+                        kind: target.kind,
+                        old_file: target.file_name.clone(),
+                        new_file: outcome
+                            .path
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string()),
+                        version: outcome.version.clone(),
+                        updated: outcome.updated,
+                    });
+                }
+                Err(err) => {
+                    failed += 1;
+                    job.send(CoreEvent::ContentUpdateFailed {
+                        key,
+                        error: err.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(format!(
+            "更新完成：{updated} 个已更新，{newest} 个已是最新，{failed} 个失败"
+        ))
+    });
+}
+
+/// 卡片上的更新控件
+///
+/// 没查过时是个暗色小图标，查出新版就变成显眼的按钮。
+/// 锁住的内容换成锁的图标，一眼就知道它不会被更新。
+fn update_control(
+    ui: &mut Ui,
+    p: &Palette,
+    state: &ContentUpdateState,
+    locked: bool,
+) -> bool {
+    match state {
+        ContentUpdateState::Checking => {
+            ui::spinner(ui, p, 14.0);
+            false
+        }
+        ContentUpdateState::UpToDate => {
+            ui.label(
+                egui::RichText::new("已是最新")
+                    .font(ui::font(11.0))
+                    .color(p.text_faint),
+            );
+            false
+        }
+        ContentUpdateState::Done(version) => {
+            ui.label(
+                egui::RichText::new(format!("已更新 {version}"))
+                    .font(ui::font(11.0))
+                    .color(p.success),
+            );
+            false
+        }
+        ContentUpdateState::Failed(error) => {
+            let (rect, response) = ui.allocate_exact_size(Vec2::splat(15.0), Sense::hover());
+            icons::paint(ui.ctx(), ui.painter(), "alert", rect, p.warning);
+            response.on_hover_text(format!("检查失败：{error}"));
+            false
+        }
+        ContentUpdateState::Idle => {
+            let name = if locked { "lock" } else { "download-arrow" };
+            let button = ui::round_icon_button(ui, p, name, 22.0);
+            if button.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                let tip = if locked {
+                    "已锁定，不会被自动更新，点击卡片右上角的锁解除"
+                } else {
+                    "检查并更新到线上最新版"
+                }
+                .to_string();
+                button.clone().on_hover_ui(|ui| {
+                    ui.label(egui::RichText::new(tip).font(ui::font(11.0)));
+                });
+            }
+            button.clicked()
+        }
+        ContentUpdateState::Available(version) => {
+            let tip = format!("线上有新版本 {version}，点击更新");
+            ui::button(
+                ui,
+                p,
+                ButtonOpts::primary("更新")
+                    .font_size(12.0)
+                    .height(26.0)
+                    .tooltip(&tip),
+            )
+            .clicked()
+        }
+    }
 }
 
 /// 后台反查 Modrinth 项目，结果回来后再显示官网链接与图标

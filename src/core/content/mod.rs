@@ -13,6 +13,7 @@ pub mod modmeta;
 pub mod modpack;
 pub mod modrinth;
 pub mod translate;
+pub mod update;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

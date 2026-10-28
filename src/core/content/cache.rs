@@ -74,6 +74,9 @@ pub struct Entry {
     /// 查到的项目名
     #[serde(default)]
     pub title: String,
+    /// 本地装的是哪个版本（平台自己的版本编号）
+    #[serde(default)]
+    pub installed_version: Option<String>,
     /// 上次联网反查到的时刻（Unix 秒）
     #[serde(default)]
     pub checked_at: u64,
@@ -95,6 +98,7 @@ impl Entry {
             icon_url: project.icon_url.clone(),
             file_name: file_name.to_string(),
             title: String::new(),
+            installed_version: None,
             checked_at: now_secs(),
         }
     }
@@ -113,6 +117,7 @@ impl Entry {
             icon_url: None,
             file_name: file_name.to_string(),
             title: String::new(),
+            installed_version: None,
             checked_at: now_secs(),
         }
     }
@@ -149,8 +154,12 @@ impl ContentCache {
     ///
     /// 文件不存在、坏了或者格式对不上，都当没有缓存，重新去线上查一遍。
     pub fn load() -> Self {
-        let path = Self::path();
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        Self::load_from(&Self::path())
+    }
+
+    /// 从指定文件读缓存
+    pub fn load_from(path: &std::path::Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else {
             return Self::default();
         };
         match serde_json::from_str::<Self>(&text) {
@@ -168,8 +177,12 @@ impl ContentCache {
 
     /// 写缓存
     pub fn save(&self) {
-        let path = Self::path();
-        if let Err(err) = paths::ensure_parent(&path) {
+        self.save_to(&Self::path());
+    }
+
+    /// 写到指定文件
+    pub fn save_to(&self, path: &std::path::Path) {
+        if let Err(err) = paths::ensure_parent(path) {
             log::warn!("内容缓存目录准备失败: {err}");
             return;
         }
@@ -183,7 +196,7 @@ impl ContentCache {
                 return;
             }
         };
-        if let Err(err) = std::fs::write(&path, text) {
+        if let Err(err) = std::fs::write(path, text) {
             log::warn!("内容缓存写入失败: {err}");
         }
     }
@@ -291,6 +304,7 @@ mod tests {
             icon_url: None,
             file_name: file.into(),
             title: String::new(),
+            installed_version: None,
             checked_at: now_secs(),
         }
     }
@@ -321,10 +335,9 @@ mod tests {
         let mut cache = ContentCache::default();
         cache.set(entry("b.jar"));
         cache.set_locked(ContentKind::Mod, "b.jar", true);
-        let path = ContentCache::path();
-        let _ = std::fs::remove_file(&path);
-        cache.save();
-        let loaded = ContentCache::load();
+        let path = temp_path("roundtrip");
+        cache.save_to(&path);
+        let loaded = ContentCache::load_from(&path);
         assert_eq!(loaded.len(), 1);
         assert!(loaded.is_locked(ContentKind::Mod, "b.jar"));
         let _ = std::fs::remove_file(&path);
@@ -332,15 +345,19 @@ mod tests {
 
     #[test]
     fn 缓存文件坏了就当没有缓存() {
-        let path = ContentCache::path();
-        let _ = std::fs::remove_file(&path);
+        let path = temp_path("broken");
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         std::fs::write(&path, "{ 这不是 json").unwrap();
-        let loaded = ContentCache::load();
+        let loaded = ContentCache::load_from(&path);
         assert!(loaded.is_empty());
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 每个测试用自己的临时文件，别互相踩
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("htmcl-cache-test-{tag}.json"))
     }
 
     #[test]

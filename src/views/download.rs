@@ -2157,7 +2157,15 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
             .clicked()
             {
                 if let Some(id) = instance_id.clone() {
-                    install_content(app, kind, version.clone(), project.title.clone(), id);
+                    install_content(
+                        app,
+                        kind,
+                        version.clone(),
+                        project.title.clone(),
+                        project.slug.clone(),
+                        project.icon_url.clone(),
+                        id,
+                    );
                 }
             }
             if !enabled {
@@ -2491,6 +2499,8 @@ fn install_content(
     kind: ContentKind,
     version: Version,
     title: String,
+    slug: String,
+    icon_url: Option<String>,
     instance_id: String,
 ) {
     let game_dir = app.cfg.effective_game_dir(&instance_id);
@@ -2504,7 +2514,7 @@ fn install_content(
         .map(|i| (i.real_mc_version(), i.loader_label_opt().map(|l| l.to_lowercase())))
         .unwrap_or_default();
 
-    app.spawn_download(format!("安装 {title}"), move |dl, progress, _job| {
+    app.spawn_download(format!("安装 {title}"), move |dl, progress, job| {
         crate::core::paths::ensure_dir(&game_dir)?;
         let path = content::install(&dl, source, kind, &version, &game_dir, &progress)?;
         if auto_deps && kind == ContentKind::Mod {
@@ -2519,6 +2529,18 @@ fn install_content(
                 progress.set_message(format!("正在安装前置依赖 {} ...", dep.version_number));
                 let _ = content::install(&dl, source, kind, &dep, &game_dir, &progress);
             }
+        }
+        // 记进本地缓存，装完就能直接更新它
+        if let Some(file) = version.primary_file() {
+            job.send(crate::app::CoreEvent::ContentInstalled {
+                kind,
+                source,
+                file_name: file.filename.clone(),
+                project_id: version.project_id.clone(),
+                version_id: version.id.clone(),
+                slug,
+                icon_url,
+            });
         }
         Ok(format!("已安装到 {}", path.display()))
     });
