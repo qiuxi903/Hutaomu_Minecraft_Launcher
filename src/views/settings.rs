@@ -541,6 +541,11 @@ fn content_source_section(app: &mut App, ui: &mut Ui) {
                 .font(ui::font(12.0))
                 .color(p.text_faint),
         );
+        ui.label(
+            egui::RichText::new("数据包只有 CurseForge 收，默认平台对它不生效")
+                .font(ui::font(12.0))
+                .color(p.text_faint),
+        );
         ui.add_space(12.0);
 
         // ---- 平台 ----

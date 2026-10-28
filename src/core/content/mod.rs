@@ -72,6 +72,28 @@ impl ContentSource {
             Self::CurseForge => "老牌平台，整合包与光影很多，需要 API Key",
         }
     }
+
+    /// 这个平台收不收这类内容
+    ///
+    /// Modrinth 不收数据包，也不收世界。数据包那个筛选它会直接忽略，
+    /// 返回一堆不相干的模组；世界则是老老实实返回 0 条。
+    /// 所以这两类内容只给 CurseForge。
+    pub fn supports(self, kind: ContentKind) -> bool {
+        match (self, kind) {
+            (ContentSource::Modrinth, ContentKind::DataPack | ContentKind::World) => false,
+            _ => true,
+        }
+    }
+}
+
+/// 某个分类能在哪些平台上搜
+///
+/// 顺序固定，界面上照这个顺序摆平台选项。
+pub fn sources_for(kind: ContentKind) -> Vec<ContentSource> {
+    ContentSource::all()
+        .into_iter()
+        .filter(|source| source.supports(kind))
+        .collect()
 }
 
 /// 按平台搜索内容
@@ -321,4 +343,43 @@ fn compute_fingerprints(files: &[(String, PathBuf)]) -> Vec<Option<u32>> {
         }
     });
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 数据包只有_curseforge_收() {
+        assert!(!ContentSource::Modrinth.supports(ContentKind::DataPack));
+        assert!(ContentSource::CurseForge.supports(ContentKind::DataPack));
+    }
+
+    #[test]
+    fn 常见分类两个平台都能搜() {
+        for kind in [
+            ContentKind::Mod,
+            ContentKind::Shader,
+            ContentKind::ResourcePack,
+            ContentKind::Modpack,
+        ] {
+            assert_eq!(
+                sources_for(kind).len(),
+                2,
+                "{} 应该两个平台都能搜",
+                kind.label()
+            );
+        }
+    }
+
+    #[test]
+    fn 每个分类至少留一个平台() {
+        for kind in ContentKind::all() {
+            assert!(
+                !sources_for(kind).is_empty(),
+                "{} 没有能搜的平台",
+                kind.label()
+            );
+        }
+    }
 }

@@ -248,13 +248,20 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 // 换标签时收起详情与安装弹窗，避免内容与新标签对不上
                 app.download.content_detail = None;
                 app.download.install_target = None;
+                app.download.tab = tab;
+                // 换到只有单一平台有的分类（数据包只有 CurseForge 收），
+                // 平台得跟着换，不然搜出来的是一堆不相干的东西
+                fit_platform_to_kind(app);
+            } else {
+                app.download.tab = tab;
             }
-            app.download.tab = tab;
         }
     });
     ui.add_space(14.0);
 
     // 切到内容标签时自动加载，不用再点搜索按钮
+    // 搜之前先把平台摆正：当前分类没有这个平台时，换回有的那个
+    fit_platform_to_kind(app);
     let tab = app.download.tab;
     let source = app.download.content_source;
     if (2..=6).contains(&tab)
@@ -1017,39 +1024,56 @@ fn install_loader(app: &mut App, kind: LoaderKind, mc: String, loader_version: O
 
 // ------------------------------------------------------------------ 内容（Mod / 光影 / 资源包 / 整合包）
 
+/// 当前分类没有当前平台时，换回有的那个
+///
+/// 数据包只有 CurseForge 收，Modrinth 那边这个筛选会被直接忽略，
+/// 搜出来的是一堆不相干的模组。世界则是老老实实返回 0 条。
+fn fit_platform_to_kind(app: &mut App) {
+    let kind = app.download.content_kind();
+    if app.download.content_source.supports(kind) {
+        return;
+    }
+    if let Some(source) = crate::core::content::sources_for(kind).first() {
+        app.download.content_source = *source;
+        app.cfg.download.content_source = *source;
+        app.save_config();
+    }
+}
+
 /// 内容平台切换
 ///
 /// Modrinth 不用 key，CurseForge 要 key。
 /// 换平台会清掉当前结果重新搜一遍。
+/// 只摆当前分类真有的平台：数据包只有 CurseForge 收，
+/// 给 Modrinth 摆一个选项点了只会报错。
 fn platform_switcher(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
+    let kind = app.download.content_kind();
+    let sources = crate::core::content::sources_for(kind);
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("内容平台")
                 .font(ui::font(12.5))
                 .color(p.text_weak),
         );
-        let labels = ["Modrinth", "CurseForge"];
-        let mut index = match app.download.content_source {
-            ContentSource::Modrinth => 0,
-            ContentSource::CurseForge => 1,
-        };
+        let labels: Vec<&str> = sources.iter().map(|s| s.label()).collect();
+        let mut index = sources
+            .iter()
+            .position(|s| *s == app.download.content_source)
+            .unwrap_or(0);
         if ui::segmented(ui, &p, "content_source", &mut index, &labels).clicked() {
-            let picked = if index == 0 {
-                ContentSource::Modrinth
-            } else {
-                ContentSource::CurseForge
-            };
-            if picked != app.download.content_source {
-                app.download.content_source = picked;
-                app.cfg.download.content_source = picked;
-                app.save_config();
-                // 换平台后旧结果没用了，收起来重新搜
-                app.download.content_hits.clear();
-                app.download.content_detail = None;
-                app.download.content_versions.clear();
-                app.download.content_loaded_source = None;
-                run_search(app);
+            if let Some(picked) = sources.get(index).copied() {
+                if picked != app.download.content_source {
+                    app.download.content_source = picked;
+                    app.cfg.download.content_source = picked;
+                    app.save_config();
+                    // 换平台后旧结果没用了，收起来重新搜
+                    app.download.content_hits.clear();
+                    app.download.content_detail = None;
+                    app.download.content_versions.clear();
+                    app.download.content_loaded_source = None;
+                    run_search(app);
+                }
             }
         }
         ui.label(

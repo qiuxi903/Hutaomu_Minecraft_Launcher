@@ -140,7 +140,7 @@ pub struct ShotState {
 }
 
 /// 自检截图覆盖的场景（页面 + 关键子标签）
-pub const SHOT_SCENES: usize = 36;
+pub const SHOT_SCENES: usize = 37;
 
 /// 截图自检用的假日志
 ///
@@ -213,8 +213,8 @@ impl App {
             11 => {
                 // 整合包标签：同样靠自动加载
                 self.page = Page::Download;
-                self.download.tab = 5;
-                self.download.content_query = "complementary".into();
+                self.download.tab = 6;
+                self.download.content_query = "all the mods".into();
             }
             16 => {
                 // 光影标签：验证内容类型随标签切换
@@ -437,6 +437,17 @@ impl App {
                 self.page = Page::Home;
                 self.shot_mock_game_log();
                 self.game_starting = true;
+            }
+            36 => {
+                // 数据包标签：只有 CurseForge 收，平台切换里不该有 Modrinth
+                // 上一场是启动过场，假进程与日志面板得先收掉
+                self.game = None;
+                self.game_starting = false;
+                self.game_phase = GamePhase::Exited;
+                clear_game_log_ui(self);
+                self.page = Page::Download;
+                self.download.tab = 5;
+                self.download.content_query = "datapack".into();
             }
             _ => {
                 // 提示条位置与动效检查
@@ -3882,6 +3893,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         33 => "下载-CurseForge",
         34 => "游戏日志面板",
         35 => "启动过场",
+        36 => "下载-数据包",
         _ => "账号-皮肤站",
     }
 }
