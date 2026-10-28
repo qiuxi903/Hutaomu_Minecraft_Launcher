@@ -231,7 +231,9 @@ fn build_parts(slim: bool, time: f32, has_overlay: bool) -> Vec<Part> {
         let overlays = [
             // 帽子层 (32,0)
             Part {
-                center: V3::new(0.0, 28.375, 0.0),
+                // 放大是绕头部中心做的，头部中心在 y=28，放大后仍是 28。
+                // 之前写成 28.375，帽子会整体往上飘一点，看着没贴牢。
+                center: V3::new(0.0, 28.0, 0.0),
                 size: V3::new(hat, hat, hat),
                 uv_size: V3::new(8.0, 8.0, 8.0),
                 uv: UvRect { u: 32.0, v: 0.0, w: 8.0, h: 8.0 },

@@ -75,6 +75,9 @@ fn main() -> eframe::Result {
     let size = config.ui.window_size;
 
     let options = eframe::NativeOptions {
+        // 开 4 倍多重采样：几何边缘不再是硬邦邦的锯齿，
+        // 皮肤模型转过去时轮廓不会「爬」。
+        multisampling: 4,
         viewport: egui::ViewportBuilder::default()
             .with_title(APP_TITLE)
             .with_inner_size([size[0].max(960.0), size[1].max(640.0)])

@@ -160,6 +160,25 @@ const SHOT_MOCK_LOG: [&str; 12] = [
     "[12:31:12] [Server thread/WARN]: Can't keep up! Did the system get too busy?",
 ];
 
+/// 皮肤贴图的采样方式
+///
+/// 皮肤是 64×64 的像素画，贴到屏幕上要放大好几倍。
+/// 放大用最近邻：像素画的方块该是方的，一插值就糊成一团，
+/// 脸都看不清了。
+///
+/// 缩小（模型转过去，正面缩成侧面）用线性加 mipmap：
+/// 没有 mipmap 的话斜着的面会抖出一层摩尔纹，转动时满屏闪。
+///
+/// 透明处镶黑边的问题在 `skin.rs` 的 `bleed_alpha` 里处理。
+fn skin_texture_options() -> egui::TextureOptions {
+    egui::TextureOptions {
+        magnification: egui::TextureFilter::Nearest,
+        minification: egui::TextureFilter::Linear,
+        wrap_mode: egui::TextureWrapMode::ClampToEdge,
+        mipmap_mode: Some(egui::TextureFilter::Linear),
+    }
+}
+
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
         // 每次切换场景先关掉所有弹窗，避免互相遮挡
@@ -1702,18 +1721,18 @@ impl App {
         let texture = self.egui_ctx.load_texture(
             format!("skin:{account_id}"),
             image.to_color_image(),
-            egui::TextureOptions::NEAREST,
+            skin_texture_options(),
         );
         let head = self.egui_ctx.load_texture(
             format!("head:{account_id}"),
             image.head_icon(64),
-            egui::TextureOptions::NEAREST,
+            skin_texture_options(),
         );
         // 第二层用镂空版本，避免半透明像素和第一层混色
         let cutout = self.egui_ctx.load_texture(
             format!("skin_cutout:{account_id}"),
             image.to_cutout_color_image(),
-            egui::TextureOptions::NEAREST,
+            skin_texture_options(),
         );
         self.skin_cache.insert(
             account_id.to_string(),

@@ -82,9 +82,17 @@ impl SkinImage {
     }
 
     pub fn to_color_image(&self) -> egui::ColorImage {
+        let mut rgba = self.rgba.clone();
+        // 透明处的颜色铺开，免得线性过滤在边缘拉出黑边
+        bleed_alpha(
+            &mut rgba,
+            self.width as usize,
+            self.height as usize,
+            1,
+        );
         egui::ColorImage::from_rgba_unmultiplied(
             [self.width as usize, self.height as usize],
-            &self.rgba,
+            &rgba,
         )
     }
 
@@ -100,6 +108,13 @@ impl SkinImage {
                 px[3] = 0;
             }
         }
+        // 被抹成全透明的像素也要铺上颜色，不然边缘会镶黑边
+        bleed_alpha(
+            &mut rgba,
+            self.width as usize,
+            self.height as usize,
+            128,
+        );
         egui::ColorImage::from_rgba_unmultiplied([self.width as usize, self.height as usize], &rgba)
     }
 
@@ -133,6 +148,63 @@ impl SkinImage {
             }
         }
         out
+    }
+}
+
+/// 把透明处的颜色用最近的实心像素铺开
+///
+/// 线性过滤会在相邻像素之间插值。透明像素原本留着什么颜色
+/// （多半是黑），边缘就会镶上一圈脏边，看着毛糙。
+/// 这里把透明处填成邻居的颜色，插值时就不会拉进黑色。
+///
+/// `opaque_threshold` 是「算实心」的 alpha 门槛：
+/// 传 1 表示只有全透明的算空，传 128 则半透明的也算空。
+fn bleed_alpha(rgba: &mut [u8], width: usize, height: usize, opaque_threshold: u8) {
+    if width == 0 || height == 0 {
+        return;
+    }
+    let sources: Vec<bool> = rgba
+        .chunks_exact(4)
+        .map(|px| px[3] >= opaque_threshold)
+        .collect();
+    let mut filled = sources.clone();
+    // 空白区可能连着几十个像素，多铺几轮才能铺满
+    for _ in 0..64 {
+        let mut changed = false;
+        for y in 0..height {
+            for x in 0..width {
+                let index = y * width + x;
+                if filled[index] {
+                    continue;
+                }
+                let mut source = None;
+                for (dx, dy) in [(1isize, 0isize), (-1, 0), (0, 1), (0, -1)] {
+                    let nx = x as isize + dx;
+                    let ny = y as isize + dy;
+                    if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
+                        continue;
+                    }
+                    let neighbor = ny as usize * width + nx as usize;
+                    // 从已经铺过的像素继续往外铺，
+                    // 一次只铺一格的话，大片透明区根本铺不到
+                    if filled[neighbor] {
+                        source = Some(neighbor);
+                        break;
+                    }
+                }
+                if let Some(neighbor) = source {
+                    let (to, from) = (index * 4, neighbor * 4);
+                    rgba[to] = rgba[from];
+                    rgba[to + 1] = rgba[from + 1];
+                    rgba[to + 2] = rgba[from + 2];
+                    filled[index] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
     }
 }
 
@@ -313,6 +385,36 @@ fn fnv1a(text: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 透明处的颜色会被邻居铺开() {
+        // 4x4：最左边一列是实心红色，右边全透明
+        let mut rgba = vec![0u8; 4 * 4 * 4];
+        for y in 0..4 {
+            let i = (y * 4) * 4;
+            rgba[i] = 255;
+            rgba[i + 1] = 40;
+            rgba[i + 2] = 10;
+            rgba[i + 3] = 255;
+        }
+        bleed_alpha(&mut rgba, 4, 4, 1);
+        for y in 0..4 {
+            for x in 1..4 {
+                let i = (y * 4 + x) * 4;
+                assert_eq!(rgba[i], 255, "({x},{y}) 的红色应该从左边铺过来");
+                assert_eq!(rgba[i + 1], 40, "({x},{y}) 的绿色应该从左边铺过来");
+                assert_eq!(rgba[i + 3], 0, "({x},{y}) 的透明度不该被改");
+            }
+        }
+    }
+
+    #[test]
+    fn 全透明时铺开不会乱改() {
+        let mut rgba = vec![0u8; 4 * 4 * 4];
+        let before = rgba.clone();
+        bleed_alpha(&mut rgba, 4, 4, 1);
+        assert_eq!(rgba, before);
+    }
 
     #[test]
     fn default_skin_is_valid_size() {
