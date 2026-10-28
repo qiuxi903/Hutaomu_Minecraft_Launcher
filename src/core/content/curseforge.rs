@@ -1334,6 +1334,8 @@ pub fn projects_by_ids(dl: &Downloader, ids: &[u32]) -> Result<Vec<(u32, RemoteP
                 project.id,
                 RemoteProject {
                     slug: project.slug.clone(),
+                    // CurseForge 的接口只认数字编号，查版本列表时要用它
+                    project_id: Some(project.id.to_string()),
                     // 缩略图比原图小得多，列表里的小图标用它更合适
                     icon_url: project.logo.as_ref().map(|logo| {
                         logo.thumbnail_url

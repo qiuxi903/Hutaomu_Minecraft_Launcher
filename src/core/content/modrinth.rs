@@ -241,6 +241,11 @@ pub struct RemoteProject {
     pub slug: String,
     /// 项目图标地址
     pub icon_url: Option<String>,
+    /// 平台自己的项目编号
+    ///
+    /// Modrinth 用 slug 就够了，CurseForge 的接口却只认数字编号，
+    /// 查版本列表时得靠它，所以反查时一并带回来。
+    pub project_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

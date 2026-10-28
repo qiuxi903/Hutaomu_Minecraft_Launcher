@@ -3,7 +3,7 @@
 //! 二级页面左侧是导航（概览 / 设置 / 存档 / 截图 / 模组），右侧是内容。
 //! 二级页面里的设置只对当前版本生效，会覆盖全局设置。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::path::{Path, PathBuf};
 
@@ -31,12 +31,12 @@ pub struct VersionsState {
     pub section: &'static str,
     /// 本地文件名 → Modrinth 上的对应项目（后台反查得到，用于跳转官网与显示图标）
     pub content_slugs: HashMap<String, crate::core::content::RemoteProject>,
-    /// 已发起过反查的内容分区（模组 / 光影 / 资源包各反查一次）
-    pub content_lookup_section: Option<&'static str>,
+    /// 已经发起过 Modrinth 反查的本地内容，键是「分类|文件名」
+    pub content_looked_up: HashSet<String>,
     /// 本地文件名 → CurseForge 上的对应项目（用文件指纹反查得到）
     pub content_cf: HashMap<String, crate::core::content::RemoteProject>,
-    /// 已发起过 CurseForge 指纹反查的内容分区
-    pub content_cf_lookup_section: Option<&'static str>,
+    /// 已经发起过 CurseForge 指纹反查的本地内容
+    pub content_cf_looked_up: HashSet<String>,
     /// 内容列表每行放几个（1 或 2）
     pub content_columns: usize,
     pub detail_memory: f32,
@@ -99,9 +99,9 @@ impl Default for VersionsState {
             detail: None,
             section: "info",
             content_slugs: HashMap::new(),
-            content_lookup_section: None,
+            content_looked_up: HashSet::new(),
             content_cf: HashMap::new(),
-            content_cf_lookup_section: None,
+            content_cf_looked_up: HashSet::new(),
             content_columns: 2,
             detail_memory: 4096.0,
             detail_memory_mode: "global".to_string(),
@@ -817,12 +817,10 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                 "export" => crate::views::instance::export_tab(app, ui, &inst, &active),
                 "saves" => saves_tab(app, ui, &inst),
                 "screenshots" => screenshots_tab(app, ui, &inst),
-                "mod" => content_tab(app, ui, &inst, ContentKind::Mod, "mod"),
-                "shader" => content_tab(app, ui, &inst, ContentKind::Shader, "shader"),
-                "resourcepack" => {
-                    content_tab(app, ui, &inst, ContentKind::ResourcePack, "resourcepack")
-                }
-                "datapack" => content_tab(app, ui, &inst, ContentKind::DataPack, "datapack"),
+                "mod" => content_tab(app, ui, &inst, ContentKind::Mod),
+                "shader" => content_tab(app, ui, &inst, ContentKind::Shader),
+                "resourcepack" => content_tab(app, ui, &inst, ContentKind::ResourcePack),
+                "datapack" => content_tab(app, ui, &inst, ContentKind::DataPack),
                 section => match features.iter().find(|f| f.section == section) {
                     Some(feature) => mod_feature_tab(app, ui, &inst, feature),
                     None => crate::views::instance::overview_tab(app, ui, &inst, &active),
@@ -1454,8 +1452,11 @@ impl ContentKind {
         }
     }
 
-    /// CurseForge 的项目类型（决定主页链接的路径）
-    fn curseforge_type(self) -> crate::core::content::modrinth::ContentKind {
+    /// 内容平台那边的类型
+    ///
+    /// 缓存、查版本这些都要用平台这一套分类，
+    /// 界面这一套只管显示。
+    fn core_kind(self) -> crate::core::content::modrinth::ContentKind {
         use crate::core::content::modrinth::ContentKind as Kind;
         match self {
             Self::Mod => Kind::Mod,
@@ -1463,6 +1464,11 @@ impl ContentKind {
             Self::ResourcePack => Kind::ResourcePack,
             Self::DataPack => Kind::DataPack,
         }
+    }
+
+    /// CurseForge 的项目类型（决定主页链接的路径）
+    fn curseforge_type(self) -> crate::core::content::modrinth::ContentKind {
+        self.core_kind()
     }
 
     /// 相对游戏目录的位置
@@ -1914,7 +1920,6 @@ fn content_tab(
     ui: &mut Ui,
     inst: &crate::core::minecraft::GameInstance,
     kind: ContentKind,
-    section: &'static str,
 ) {
     let p = app.palette;
     let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
@@ -1924,30 +1929,60 @@ fn content_tab(
 
     // 反查 Modrinth 项目：模组能从 MCMod 词库拿到 slug，
     // 光影与资源包只能靠文件名猜项目名。
-    // Modrinth 不收录数据包，跳过免得误认成别的项目
-    if kind != ContentKind::DataPack && app.versions_ui.content_lookup_section != Some(section) {
-        app.versions_ui.content_lookup_section = Some(section);
-        let list: Vec<(String, Option<String>)> = items
-            .iter()
-            .map(|i| (i.file_name.clone(), i.modrinth_slug.clone()))
+    // Modrinth 不收录数据包，跳过免得误认成别的项目。
+    //
+    // 缓存里有的直接拿来用，不再联网；
+    // 只有缓存里没有的才去线上问一次，问完写回缓存，下次打开就是本地读。
+    if kind != ContentKind::DataPack {
+        let missing = fill_from_cache(
+            app,
+            kind,
+            &items,
+            crate::core::content::ContentSource::Modrinth,
+        );
+        let fresh: Vec<(String, Option<String>)> = missing
+            .into_iter()
+            .filter(|(name, _)| {
+                app.versions_ui
+                    .content_looked_up
+                    .insert(looked_up_key(kind, name))
+            })
             .collect();
-        lookup_content_slugs(app, list);
+        if !fresh.is_empty() {
+            lookup_content_slugs(app, kind, fresh);
+        }
     }
 
     // CurseForge 认文件指纹，改过名的光影、资源包也能反查出来，
     // 所以不管当前下载平台是哪个，都拿指纹问一次，能配上就配图标。
     // 模组不算：jar 自带图标，词库也能给出项目页，
     // 而一个整合包几十上百个模组，全算一遍指纹太慢。
-    if kind != ContentKind::Mod
-        && app.cfg.download.curseforge_key().is_some()
-        && app.versions_ui.content_cf_lookup_section != Some(section)
-    {
-        app.versions_ui.content_cf_lookup_section = Some(section);
-        let files: Vec<(String, PathBuf)> = items
-            .iter()
-            .map(|i| (i.file_name.clone(), i.path.clone()))
+    if kind != ContentKind::Mod && app.cfg.download.curseforge_key().is_some() {
+        let missing = fill_from_cache(
+            app,
+            kind,
+            &items,
+            crate::core::content::ContentSource::CurseForge,
+        );
+        let fresh: Vec<(String, PathBuf)> = missing
+            .into_iter()
+            .filter(|(name, _)| {
+                app.versions_ui
+                    .content_cf_looked_up
+                    .insert(looked_up_key(kind, name))
+            })
+            .map(|(name, _)| {
+                let path = items
+                    .iter()
+                    .find(|i| i.file_name == name)
+                    .map(|i| i.path.clone())
+                    .unwrap_or_default();
+                (name, path)
+            })
             .collect();
-        lookup_curseforge_projects(app, files);
+        if !fresh.is_empty() {
+            lookup_curseforge_projects(app, kind, fresh);
+        }
     }
 
     ui.horizontal(|ui| {
@@ -1956,6 +1991,19 @@ fn content_tab(
                 .font(ui::font(12.5))
                 .color(p.text_weak),
         );
+        // 锁住的有几个，一眼能看见
+        let locked_count = items
+            .iter()
+            .filter(|i| app.content_cache.is_locked(kind.core_kind(), &i.file_name))
+            .count();
+        if locked_count > 0 {
+            ui::icon(ui, "lock", 12.0, p.accent);
+            ui.label(
+                egui::RichText::new(format!("{locked_count} 项已锁定"))
+                    .font(ui::font(11.5))
+                    .color(p.text_faint),
+            );
+        }
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
                 let _ = paths::ensure_dir(&dir);
@@ -2039,6 +2087,8 @@ fn content_tab(
                     .as_ref()
                     .and_then(|p| p.icon_url.clone())
                     .or_else(|| modrinth_project.as_ref().and_then(|p| p.icon_url.clone()));
+                // 银锁：锁住的内容不会被自动更新
+                let locked = app.content_cache.is_locked(kind.core_kind(), &item.file_name);
                 ui.allocate_ui_with_layout(
                     Vec2::new(card_width, 0.0),
                     Layout::top_down(Align::Min),
@@ -2104,15 +2154,21 @@ fn content_tab(
                             // 标题、版本信息、文件名分三层排开，不再挤在一起
                             // 文字过长时截断，免得把卡片撑出格子
                             ui.set_width((card_width - 96.0).max(120.0));
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&item.display)
-                                        .font(ui::font(13.5))
-                                        .color(p.text)
-                                        .strong(),
-                                )
-                                .truncate(),
-                            );
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&item.display)
+                                            .font(ui::font(13.5))
+                                            .color(p.text)
+                                            .strong(),
+                                    )
+                                    .truncate(),
+                                );
+                                // 锁住的内容标出来，免得以为漏更新了
+                                if locked {
+                                    widgets::badge(ui, &p, "已锁定", p.accent);
+                                }
+                            });
                             ui.add_space(3.0);
                             if !item.subtitle.is_empty() {
                                 ui.add(
@@ -2170,7 +2226,8 @@ fn content_tab(
                                 .map(|url| (url, "在浏览器里打开 MC 百科".to_string()))
                         })
                         .unwrap_or_default();
-                        ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        let lock_clicked = ui
+                            .with_layout(Layout::right_to_left(Align::Min), |ui| {
                             // 打开所在目录
                             let folder = ui::round_icon_button(ui, &p, "folder-open", 22.0);
                             if folder.hovered() {
@@ -2198,7 +2255,33 @@ fn content_tab(
                                     let _ = open::that(&primary_url);
                                 }
                             }
-                        });
+                            // 银锁：锁住的内容不会被自动更新
+                            let lock = ui::round_icon_button_state(
+                                ui,
+                                &p,
+                                if locked { "lock" } else { "lock-open" },
+                                22.0,
+                                locked,
+                            );
+                            if lock.hovered() {
+                                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                let tip = if locked {
+                                    "已锁定，不会被自动更新，点击解除"
+                                } else {
+                                    "锁定这个内容，不会被自动更新"
+                                };
+                                lock.clone().on_hover_ui(|ui| {
+                                    ui.label(egui::RichText::new(tip).font(ui::font(11.0)));
+                                });
+                            }
+                            lock.clicked()
+                        })
+                        .inner;
+                        if lock_clicked {
+                            app.content_cache
+                                .set_locked(kind.core_kind(), &item.file_name, !locked);
+                            app.content_cache.save();
+                        }
                     });
                     ui.add_space(5.0);
                     // 底行：左边是文件位置，右边是相关网站与外链角标
@@ -2448,11 +2531,16 @@ fn collect_feature_files(
     }
 }
 
+/// 反查记录的键：分类 + 本地文件名
+fn looked_up_key(kind: ContentKind, file_name: &str) -> String {
+    format!("{}|{}", kind.core_kind().facet(), file_name)
+}
+
 /// 后台反查 Modrinth 项目，结果回来后再显示官网链接与图标
 ///
 /// 模组在 MCMod 词库里能直接拿到 slug，一次批量就能取回图标；
 /// 光影、资源包这些只能靠文件名猜项目名，再一个个查。
-fn lookup_content_slugs(app: &mut App, items: Vec<(String, Option<String>)>) {
+fn lookup_content_slugs(app: &mut App, kind: ContentKind, items: Vec<(String, Option<String>)>) {
     if items.is_empty() {
         return;
     }
@@ -2483,6 +2571,8 @@ fn lookup_content_slugs(app: &mut App, items: Vec<(String, Option<String>)>) {
                                     slug: project.slug.clone(),
                                     // 项目图标一并带回来，列表里直接拿来显示
                                     icon_url: project.icon_url.clone(),
+                                    // Modrinth 用 slug 当项目编号
+                                    project_id: Some(project.slug.clone()),
                                 },
                             );
                         }
@@ -2505,6 +2595,7 @@ fn lookup_content_slugs(app: &mut App, items: Vec<(String, Option<String>)>) {
                             crate::core::content::RemoteProject {
                                 slug: project.slug.clone(),
                                 icon_url: project.icon_url.clone(),
+                                project_id: Some(project.slug.clone()),
                             },
                         );
                         break;
@@ -2513,8 +2604,17 @@ fn lookup_content_slugs(app: &mut App, items: Vec<(String, Option<String>)>) {
             }
             Ok(found)
         })();
-        if let Ok(map) = result {
-            job.send(CoreEvent::ContentSlugs(map));
+        match result {
+            Ok(map) => job.send(CoreEvent::ContentLookup {
+                kind: kind.core_kind(),
+                source: crate::core::content::ContentSource::Modrinth,
+                asked: items.iter().map(|(name, _)| name.clone()).collect(),
+                map,
+            }),
+            Err(err) => {
+                log::warn!("反查 Modrinth 项目失败: {err}");
+                job.send(CoreEvent::ContentLookupFailed(kind.core_kind()));
+            }
         }
         job.done(true, "");
     });
@@ -2524,7 +2624,11 @@ fn lookup_content_slugs(app: &mut App, items: Vec<(String, Option<String>)>) {
 ///
 /// CurseForge 认的是文件指纹，算出来去问接口，
 /// 就能知道本地这个文件在 CurseForge 上属于哪个项目。
-fn lookup_curseforge_projects(app: &mut App, files: Vec<(String, PathBuf)>) {
+fn lookup_curseforge_projects(
+    app: &mut App,
+    kind: ContentKind,
+    files: Vec<(String, PathBuf)>,
+) {
     if files.is_empty() {
         return;
     }
@@ -2539,11 +2643,69 @@ fn lookup_curseforge_projects(app: &mut App, files: Vec<(String, PathBuf)>) {
                 .with_curseforge_key(key);
             crate::core::content::curseforge_projects(&dl, &files)
         })();
-        if let Ok(map) = result {
-            job.send(CoreEvent::ContentCurseForge(map));
+        match result {
+            Ok(map) => job.send(CoreEvent::ContentLookup {
+                kind: kind.core_kind(),
+                source: crate::core::content::ContentSource::CurseForge,
+                asked: files.iter().map(|(name, _)| name.clone()).collect(),
+                map,
+            }),
+            Err(err) => {
+                log::warn!("反查 CurseForge 项目失败: {err}");
+                job.send(CoreEvent::ContentLookupFailed(kind.core_kind()));
+            }
         }
         job.done(true, "");
     });
+}
+
+/// 用本地缓存补齐线上项目，返回缓存里还没有、需要联网去查的文件
+///
+/// 缓存是这个功能的关键：查过一次就记在本地，
+/// 下次打开这一页直接读缓存，不再联网问一遍。
+fn fill_from_cache(
+    app: &mut App,
+    kind: ContentKind,
+    items: &[LocalContent],
+    source: crate::core::content::ContentSource,
+) -> Vec<(String, Option<String>)> {
+    let mut missing = Vec::new();
+    for item in items {
+        let cached = app
+            .content_cache
+            .get(source, kind.core_kind(), &item.file_name)
+            .cloned();
+        match cached {
+            // 问过没找到的，短期内不再问
+            Some(entry) if entry.is_miss() && !entry.is_stale() => {}
+            Some(entry) if entry.is_miss() => {
+                missing.push((item.file_name.clone(), item.modrinth_slug.clone()));
+            }
+            Some(entry) => {
+                let project = crate::core::content::RemoteProject {
+                    slug: entry.slug.clone(),
+                    icon_url: entry.icon_url.clone(),
+                    project_id: Some(entry.project_id.clone()),
+                };
+                match source {
+                    crate::core::content::ContentSource::CurseForge => {
+                        app.versions_ui
+                            .content_cf
+                            .insert(item.file_name.clone(), project);
+                    }
+                    crate::core::content::ContentSource::Modrinth => {
+                        app.versions_ui
+                            .content_slugs
+                            .insert(item.file_name.clone(), project);
+                    }
+                }
+            }
+            None => {
+                missing.push((item.file_name.clone(), item.modrinth_slug.clone()));
+            }
+        }
+    }
+    missing
 }
 
 // ------------------------------------------------------------------ 重命名 / 复制 / 删除

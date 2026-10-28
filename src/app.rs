@@ -639,10 +639,16 @@ pub enum CoreEvent {
     McmodDbReady(crate::core::content::mcmod::Database),
     /// CurseForge API Key 连通性测试结果
     CurseForgeKeyTest(Result<String, String>),
-    /// 本地内容反查到的 Modrinth 项目：文件名 → 项目
-    ContentSlugs(std::collections::HashMap<String, crate::core::content::RemoteProject>),
-    /// 本地内容反查到的 CurseForge 项目：文件名 → 项目
-    ContentCurseForge(std::collections::HashMap<String, crate::core::content::RemoteProject>),
+    /// 本地内容反查到的线上项目
+    ContentLookup {
+        kind: crate::core::content::ContentKind,
+        source: crate::core::content::ContentSource,
+        map: std::collections::HashMap<String, crate::core::content::RemoteProject>,
+        /// 问过的文件名，没出现在结果里的就是没找到
+        asked: Vec<String>,
+    },
+    /// 反查没成功，下次打开还要再试
+    ContentLookupFailed(crate::core::content::ContentKind),
     /// 各实例里装了哪些模组自带的内容
     ModFeatures(
         std::collections::HashMap<String, Vec<crate::core::content::modfeature::ModFeature>>,
@@ -716,6 +722,10 @@ pub struct App {
     pub mcmod_db: crate::core::content::mcmod::Database,
     /// MCMod 元数据是否正在更新
     pub mcmod_db_loading: bool,
+    /// 本地内容的线上资料缓存（模组 / 光影 / 资源包）
+    ///
+    /// 查过一次就记在这里，下次打开直接读本地，不再联网反查。
+    pub content_cache: crate::core::content::cache::ContentCache,
     pub accounts_ui: views::accounts::AccountsState,
     pub settings_ui: views::settings::SettingsState,
     pub home_ui: views::home::HomeState,
@@ -847,6 +857,7 @@ impl App {
             download: Default::default(),
             mcmod_db: crate::core::content::mcmod::Database::load_cached().unwrap_or_default(),
             mcmod_db_loading: false,
+            content_cache: crate::core::content::cache::ContentCache::load(),
             accounts_ui: Default::default(),
             settings_ui: Default::default(),
             home_ui: Default::default(),
@@ -2087,15 +2098,54 @@ impl App {
                     self.cf_key_testing = false;
                     self.cf_key_test = Some(result);
                 }
-                CoreEvent::ContentSlugs(map) => {
+                CoreEvent::ContentLookup {
+                    kind,
+                    source,
+                    map,
+                    asked,
+                } => {
                     for (name, project) in map {
-                        self.versions_ui.content_slugs.insert(name, project);
+                        if source == crate::core::content::ContentSource::CurseForge {
+                            self.versions_ui.content_cf.insert(name.clone(), project.clone());
+                        } else {
+                            self.versions_ui.content_slugs.insert(name.clone(), project.clone());
+                        }
+                        // 查到的结果存进本地缓存，下次打开这一页不用再联网
+                        self.content_cache.set(
+                            crate::core::content::cache::Entry::from_remote(
+                                kind,
+                                source,
+                                &name,
+                                &project,
+                            ),
+                        );
                     }
+                    // 问过却没找到的也记下来，
+                    // 下次打开不会又去猜一遍文件名
+                    for name in asked {
+                        let already = self
+                            .content_cache
+                            .get(source, kind, &name)
+                            .map(|entry| !entry.is_miss())
+                            .unwrap_or(false);
+                        if already {
+                            continue;
+                        }
+                        self.content_cache.set(
+                            crate::core::content::cache::Entry::miss(kind, source, &name),
+                        );
+                    }
+                    self.content_cache.save();
                 }
-                CoreEvent::ContentCurseForge(map) => {
-                    for (name, project) in map {
-                        self.versions_ui.content_cf.insert(name, project);
-                    }
+                CoreEvent::ContentLookupFailed(kind) => {
+                    // 这次没查成，去掉标记，下次打开还能再试
+                    let prefix = format!("{}|", kind.facet());
+                    self.versions_ui
+                        .content_looked_up
+                        .retain(|key| !key.starts_with(&prefix));
+                    self.versions_ui
+                        .content_cf_looked_up
+                        .retain(|key| !key.starts_with(&prefix));
                 }
                 CoreEvent::ModFeatures(map) => {
                     self.mod_features_scanning = false;

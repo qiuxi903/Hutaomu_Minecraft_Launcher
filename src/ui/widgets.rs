@@ -1660,6 +1660,20 @@ pub fn modal(
 
 /// 详情页大返回按钮等使用的圆形图标按钮
 pub fn round_icon_button(ui: &mut Ui, p: &Palette, name: &str, size: f32) -> Response {
+    round_icon_button_state(ui, p, name, size, false)
+}
+
+/// 圆形图标按钮，可以带一个「亮着」的状态
+///
+/// 亮着的按钮用主色画图标，一眼能看出当前是开着的，
+/// 比如内容卡片上的银锁。
+pub fn round_icon_button_state(
+    ui: &mut Ui,
+    p: &Palette,
+    name: &str,
+    size: f32,
+    active: bool,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let hovered = response.hovered();
     // 悬停时底色淡入
@@ -1683,7 +1697,13 @@ pub fn round_icon_button(ui: &mut Ui, p: &Palette, name: &str, size: f32) -> Res
         ui.painter(),
         name,
         Rect::from_center_size(rect.center(), Vec2::splat(fs(17.0))),
-        if hovered { p.text } else { p.text_weak },
+        if active {
+            p.accent
+        } else if hovered {
+            p.text
+        } else {
+            p.text_weak
+        },
     );
     response
 }

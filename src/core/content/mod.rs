@@ -5,6 +5,7 @@
 //! 所以这里把两个平台都转成同一套结构（[`modrinth::Project`] 等），
 //! 界面按当前平台选一路走。
 
+pub mod cache;
 pub mod curseforge;
 pub mod mcmod;
 pub mod modfeature;
