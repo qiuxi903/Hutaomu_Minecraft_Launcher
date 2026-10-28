@@ -68,8 +68,8 @@ impl ContentSource {
     /// 平台的一句话说明，摆在平台切换旁边
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Modrinth => "开放平台，不用登录，模组最全",
-            Self::CurseForge => "老牌平台，整合包与光影很多，需要 API Key",
+            Self::Modrinth => "无需 API Key",
+            Self::CurseForge => "需要 API Key",
         }
     }
 

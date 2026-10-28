@@ -31,10 +31,10 @@ impl LoaderKind {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Fabric => "轻量、更新快，适合绝大多数模组",
+            Self::Fabric => "轻量、更新快",
             Self::Quilt => "Fabric 的分支，兼容大部分 Fabric 模组",
-            Self::Forge => "老牌加载器，模组生态庞大",
-            Self::NeoForge => "Forge 分支，1.20.2 之后的主流选择",
+            Self::Forge => "模组数量最多，1.7 到 1.12 的模组只能用它",
+            Self::NeoForge => "Forge 的分支，1.20.2 之后用它",
         }
     }
 
