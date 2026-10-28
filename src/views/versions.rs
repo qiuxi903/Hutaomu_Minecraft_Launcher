@@ -2702,16 +2702,17 @@ fn update_one(
 /// 把这一页能更新的内容全更新一遍
 ///
 /// 锁住的不动，没认出线上项目的也跳过。
+/// 查线上最新版是网络往返，一百多个模组一个个问要三十多秒，
+/// 这里并发地问完，再把要更新的一个个下下来。
 fn update_all(
     app: &mut App,
     inst: &crate::core::minecraft::GameInstance,
     kind: ContentKind,
     items: &[LocalContent],
 ) {
-    let mut targets: Vec<(
-        String,
-        crate::core::content::update::Target,
-    )> = Vec::new();
+    use crate::core::content::update::Checked;
+
+    let mut targets: Vec<crate::core::content::update::Target> = Vec::new();
     for item in items {
         if app.content_cache.is_locked(kind.core_kind(), &item.file_name) {
             continue;
@@ -2722,16 +2723,13 @@ fn update_all(
         let Some(project_id) = project.project_id.clone().filter(|id| !id.is_empty()) else {
             continue;
         };
-        targets.push((
-            item.file_name.clone(),
-            crate::core::content::update::Target {
-                kind: kind.core_kind(),
-                source,
-                project_id,
-                file_name: item.file_name.clone(),
-                path: item.path.clone(),
-            },
-        ));
+        targets.push(crate::core::content::update::Target {
+            kind: kind.core_kind(),
+            source,
+            project_id,
+            file_name: item.file_name.clone(),
+            path: item.path.clone(),
+        });
     }
     if targets.is_empty() {
         app.info("这一页没有可以更新的内容");
@@ -2739,56 +2737,88 @@ fn update_all(
     }
     let game_dir = app.cfg.effective_game_dir(&inst.instance_id);
     let (mc, loader) = instance_filter(app, &inst.instance_id);
-    let total = targets.len();
     // 先把状态标成「检查中」，不然点了没反应
-    for (file_name, _) in &targets {
+    for target in &targets {
         app.versions_ui
             .content_updates
-            .insert(update_key(kind, file_name), ContentUpdateState::Checking);
+            .insert(update_key(kind, &target.file_name), ContentUpdateState::Checking);
     }
     app.spawn_download("全部更新", move |dl, progress, job| {
+        // 第一步：并发地问线上最新版
+        let checked = crate::core::content::update::check_all(
+            &dl,
+            &targets,
+            mc.as_deref(),
+            loader.as_deref(),
+            crate::core::content::update::CHECK_CONCURRENCY,
+            &progress,
+        );
+
+        // 第二步：把要更新的下下来。下载一个一个来，
+        // 进度条才看得出在动哪个。
+        let to_download = checked
+            .iter()
+            .filter(|item| matches!(item, Checked::Stale(_)))
+            .count();
         let mut updated = 0usize;
         let mut newest = 0usize;
         let mut failed = 0usize;
-        for (index, (file_name, target)) in targets.iter().enumerate() {
-            progress.set_message(format!(
-                "正在检查 {}/{} · {}",
-                index + 1,
-                total,
-                file_name
-            ));
-            let key = update_key(kind, file_name);
-            match crate::core::content::update::update(
-                &dl,
-                target,
-                &game_dir,
-                mc.as_deref(),
-                loader.as_deref(),
-                &progress,
-            ) {
-                Ok(outcome) => {
-                    if outcome.updated {
-                        updated += 1;
-                    } else {
-                        newest += 1;
-                    }
+        let mut downloading = 0usize;
+        for (target, result) in targets.iter().zip(checked.iter()) {
+            let key = update_key(kind, &target.file_name);
+            match result {
+                Checked::Current(version) => {
+                    newest += 1;
                     job.send(CoreEvent::ContentUpdated {
                         key,
                         kind: target.kind,
                         old_file: target.file_name.clone(),
-                        new_file: outcome
-                            .path
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string()),
-                        version: outcome.version.clone(),
-                        updated: outcome.updated,
+                        new_file: Some(target.file_name.clone()),
+                        version: version.version_number.clone(),
+                        updated: false,
                     });
                 }
-                Err(err) => {
+                Checked::Stale(version) => {
+                    downloading += 1;
+                    progress.set_message(format!(
+                        "正在下载 {downloading}/{to_download} · {}",
+                        target.file_name
+                    ));
+                    match crate::core::content::update::apply(
+                        &dl,
+                        target,
+                        version,
+                        &game_dir,
+                        &progress,
+                    ) {
+                        Ok(outcome) => {
+                            updated += 1;
+                            job.send(CoreEvent::ContentUpdated {
+                                key,
+                                kind: target.kind,
+                                old_file: target.file_name.clone(),
+                                new_file: outcome
+                                    .path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string()),
+                                version: outcome.version.clone(),
+                                updated: outcome.updated,
+                            });
+                        }
+                        Err(err) => {
+                            failed += 1;
+                            job.send(CoreEvent::ContentUpdateFailed {
+                                key,
+                                error: err.to_string(),
+                            });
+                        }
+                    }
+                }
+                Checked::Failed(error) => {
                     failed += 1;
                     job.send(CoreEvent::ContentUpdateFailed {
                         key,
-                        error: err.to_string(),
+                        error: error.clone(),
                     });
                 }
             }
