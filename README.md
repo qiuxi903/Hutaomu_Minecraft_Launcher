@@ -281,7 +281,7 @@ src/
     ├── news.rs          资讯解析（JSON / RSS / Atom）
     ├── skin.rs          皮肤解析与默认皮肤程序化生成
     ├── auth/            offline / microsoft / authlib
-    ├── content/         modrinth 搜索、版本、安装、整合包
+    ├── content/         内容平台：modrinth / curseforge、整合包、缓存与更新
     └── minecraft/       manifest / version / install / launch / loaders / bundle
 ```
 
