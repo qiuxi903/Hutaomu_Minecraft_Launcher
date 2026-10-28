@@ -252,7 +252,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
             }
         }
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // 切到内容标签时自动加载，不用再点搜索按钮
     // 搜之前先把平台摆正：当前分类没有这个平台时，换回有的那个
@@ -310,7 +310,7 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
             }
         });
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     if let Some(err) = app.manifest_error.clone() {
         ui::inset(ui, &p, |ui| {
@@ -379,12 +379,7 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
                     p.text_weak,
                 );
                 ui.add_space(8.0);
-                ui.label(
-                    egui::RichText::new(&entry.id)
-                        .font(ui::font(14.5))
-                        .color(p.text)
-                        .strong(),
-                );
+                widgets::card_title(ui, &p, &entry.id);
                 widgets::badge(
                     ui,
                     &p,
@@ -789,12 +784,7 @@ fn loader_tab(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
 
     ui::card(ui, &p, |ui| {
-        ui.label(
-            egui::RichText::new("安装加载器")
-                .font(ui::font(14.5))
-                .color(p.text)
-                .strong(),
-        );
+        widgets::card_title(ui, &p, "安装加载器");
         ui.add_space(4.0);
 
         // 加载器类型
@@ -1102,7 +1092,7 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
 }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // 走了社区镜像就说一声，别让人以为数据来自官方
     if app.download.content_via_mirror {
@@ -1575,7 +1565,7 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
             );
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------- 项目信息 ----------
     ui::card(ui, &p, |ui| {
@@ -1748,7 +1738,7 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
             });
         });
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------- 安装 ----------
     install_card(app, ui, &p, &project, kind);
@@ -1756,12 +1746,7 @@ fn content_detail(app: &mut App, ui: &mut Ui, kind: ContentKind) {
     if !project.body.is_empty() {
         ui.add_space(12.0);
         ui::card(ui, &p, |ui| {
-            ui.label(
-                egui::RichText::new("项目介绍")
-                    .font(ui::font(14.5))
-                    .color(p.text)
-                    .strong(),
-            );
+            widgets::card_title(ui, &p, "项目介绍");
             ui.add_space(8.0);
             let text = strip_markdown(&project.body);
             ui.label(
@@ -1884,12 +1869,7 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
     // ---- 卡片 ----
     ui::card(ui, p, |ui| {
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("安装")
-                    .font(ui::font(14.5))
-                    .color(p.text)
-                    .strong(),
-            );
+            widgets::card_title(ui, &p, "安装");
             if app.download.content_versions_loading {
                 ui::spinner(ui, p, 14.0);
             }
@@ -2198,12 +2178,7 @@ fn install_card_modpack(app: &mut App, ui: &mut Ui, p: &Palette, project: &Proje
 
     ui::card(ui, p, |ui| {
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("安装为独立实例")
-                    .font(ui::font(14.5))
-                    .color(p.text)
-                    .strong(),
-            );
+            widgets::card_title(ui, &p, "安装为独立实例");
             if app.download.content_versions_loading {
                 ui::spinner(ui, p, 14.0);
             }

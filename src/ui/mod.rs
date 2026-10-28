@@ -90,6 +90,15 @@ pub fn install_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// 卡片与卡片之间的间隔
+///
+/// 全应用只用这一档。同一个间隔在不同页面写成不同的数，
+/// 页面之间看着就会参差不齐。
+pub const GAP_CARD: f32 = 12.0;
+
+/// 卡片里相邻两行的间隔
+pub const GAP_ROW: f32 = 8.0;
+
 pub fn install_style(ctx: &egui::Context, p: &Palette, font_scale: f32) {
     set_font_scale(font_scale);
     let mut style = (*ctx.style_of(egui::Theme::Light)).clone();

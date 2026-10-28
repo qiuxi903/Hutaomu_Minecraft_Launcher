@@ -914,7 +914,7 @@ fn game_section(app: &mut App, ui: &mut Ui) {
             });
         });
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 内存 ----------------
     ui::card(ui, &p, |ui| {
@@ -960,7 +960,7 @@ fn game_section(app: &mut App, ui: &mut Ui) {
             app.save_config();
         }
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 启动进阶 ----------------
     ui::card(ui, &p, |ui| {
@@ -1058,7 +1058,7 @@ fn game_section(app: &mut App, ui: &mut Ui) {
             },
         );
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 启动参数 ----------------
     ui::card(ui, &p, |ui| {
@@ -1112,7 +1112,7 @@ fn game_section(app: &mut App, ui: &mut Ui) {
                 .color(p.text_faint),
         );
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 游戏目录 ----------------
     ui::card(ui, &p, |ui| {
@@ -1484,7 +1484,7 @@ fn misc_section(app: &mut App, ui: &mut Ui) {
                 .color(p.text_faint),
         );
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 日志与调试 ----------------
     ui::card(ui, &p, |ui| {
@@ -1512,7 +1512,7 @@ fn misc_section(app: &mut App, ui: &mut Ui) {
             }
         });
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 配置备份 ----------------
     ui::card(ui, &p, |ui| {

@@ -36,10 +36,10 @@ fn section(ui: &mut Ui, key: &str, index: usize, f: impl FnOnce(&mut Ui)) {
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
     section(ui, "launch", 0, |ui| launch_card(app, ui));
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 14.0;
+        ui.spacing_mut().item_spacing.x = crate::ui::GAP_CARD;
         let total = ui.available_width();
         // 右边停靠了游戏日志面板，内容区会窄一截。
         // 两栏最少要 560：左栏 320 加右栏 226 再加中间的间隔，
@@ -47,11 +47,11 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         if total < 560.0 {
             ui.vertical(|ui| {
                 section(ui, "news", 1, |ui| news_section(app, ui));
-                ui.add_space(14.0);
+                ui.add_space(crate::ui::GAP_CARD);
                 section(ui, "skin", 2, |ui| skin_card(app, ui));
-                ui.add_space(14.0);
+                ui.add_space(crate::ui::GAP_CARD);
                 section(ui, "stats", 3, |ui| stats_card(app, ui));
-                ui.add_space(14.0);
+                ui.add_space(crate::ui::GAP_CARD);
                 section(ui, "shortcuts", 4, |ui| shortcuts_card(app, ui));
             });
             return;
@@ -67,9 +67,9 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         ui.vertical(|ui| {
             ui.set_width(right_width);
             section(ui, "skin", 2, |ui| skin_card(app, ui));
-            ui.add_space(14.0);
+            ui.add_space(crate::ui::GAP_CARD);
             section(ui, "stats", 3, |ui| stats_card(app, ui));
-            ui.add_space(14.0);
+            ui.add_space(crate::ui::GAP_CARD);
             section(ui, "shortcuts", 4, |ui| shortcuts_card(app, ui));
         });
     });
@@ -297,7 +297,7 @@ fn news_section(app: &mut App, ui: &mut Ui) {
             }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     if let Some(err) = app.news_error.clone() {
         ui::inset(ui, &p, |ui| {
@@ -480,12 +480,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
 
     ui::card(ui, &p, |ui| {
         ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("皮肤预览")
-                    .font(ui::font(14.5))
-                    .color(p.text)
-                    .strong(),
-            );
+            widgets::card_title(ui, &p, "皮肤预览");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 widgets::badge(ui, &p, model.short(), p.text_weak);
             });
@@ -518,12 +513,7 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
 fn shortcuts_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     ui::card(ui, &p, |ui| {
-        ui.label(
-            egui::RichText::new("快捷入口")
-                .font(ui::font(14.5))
-                .color(p.text)
-                .strong(),
-        );
+        widgets::card_title(ui, &p, "快捷入口");
         ui.add_space(8.0);
 
         let entries: [(&str, &str, Page); 4] = [
@@ -599,12 +589,7 @@ fn stats_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     let total_size: u64 = app.instances.iter().map(|i| i.size()).sum();
     ui::card(ui, &p, |ui| {
-        ui.label(
-            egui::RichText::new("概览")
-                .font(ui::font(14.5))
-                .color(p.text)
-                .strong(),
-        );
+        widgets::card_title(ui, &p, "概览");
         ui.add_space(8.0);
         widgets::key_value(ui, &p, "已安装实例", &format!("{} 个", app.instances.len()));
         ui.add_space(4.0);

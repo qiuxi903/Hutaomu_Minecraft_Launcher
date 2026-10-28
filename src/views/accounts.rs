@@ -217,14 +217,14 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     widgets::page_title(ui, &p, "账号", "");
 
     add_account_card(app, ui);
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(300.0);
             account_list(app, ui);
         });
-        ui.add_space(14.0);
+        ui.add_space(crate::ui::GAP_CARD);
         ui.vertical(|ui| {
             let width = ui.available_width();
             ui.set_width(width);
@@ -245,7 +245,7 @@ fn add_account_card(app: &mut App, ui: &mut Ui) {
             app.accounts_ui.device_code = None;
             app.accounts_ui.ms_logging_in = false;
         }
-        ui.add_space(14.0);
+        ui.add_space(crate::ui::GAP_CARD);
 
         // 换登录方式时内容淡入
         let tab = app.accounts_ui.tab;
@@ -455,7 +455,7 @@ fn authlib_form(app: &mut App, ui: &mut Ui) {
             });
         }
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------- 账号与密码：上下分行，避免两个输入框挤在一起 ----------
     let mut user = app.accounts_ui.authlib_user.clone();
@@ -508,7 +508,7 @@ fn authlib_form(app: &mut App, ui: &mut Ui) {
             );
         }
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------- 选择角色 ----------
     let profiles = app.accounts_ui.authlib_profiles.clone();
@@ -689,21 +689,7 @@ fn start_authlib_select(app: &mut App, profile: AuthlibProfile) {
 fn account_list(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     ui::card(ui, &p, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("账号列表")
-                    .font(ui::font(14.5))
-                    .color(p.text)
-                    .strong(),
-            );
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} 个", app.accounts.accounts.len()))
-                        .font(ui::font(11.5))
-                        .color(p.text_faint),
-                );
-            });
-        });
+        widgets::card_title(ui, &p, "账号列表");
         ui.add_space(10.0);
 
         if app.accounts.accounts.is_empty() {
@@ -725,13 +711,32 @@ fn account_list(app: &mut App, ui: &mut Ui) {
             }
             let texture = app.skin_of(&id).map(|s| s.head.clone());
 
+            // 悬停时底色与边框淡入。帧里拿不到自己的悬停状态，
+            // 用上一帧记下的那个，差一帧看不出来。
+            let row_id = ui.id().with(("account_row", id.clone()));
+            let was_hovered: bool = ui
+                .data(|d| d.get_temp::<bool>(row_id.with("hovered")).unwrap_or(false));
+            let hover_t = crate::ui::anim::to_bool(
+                ui.ctx(),
+                row_id.with("hover_t"),
+                was_hovered,
+                crate::ui::anim::DUR_BASE,
+            );
+            let fill = if selected {
+                p.accent_weak
+            } else {
+                widgets::lerp_color(p.surface, p.surface_alt, hover_t)
+            };
+            let border = if selected {
+                p.accent
+            } else {
+                widgets::lerp_color(p.border, p.accent, hover_t * 0.4)
+            };
+
             let response = ui.scope(|ui| {
                 let frame = egui::Frame::NONE
-                    .fill(if selected { p.accent_weak } else { p.surface })
-                    .stroke(egui::Stroke::new(
-                        1.0,
-                        if selected { p.accent } else { p.border },
-                    ))
+                    .fill(fill)
+                    .stroke(egui::Stroke::new(1.0, border))
                     .corner_radius(p.corner_sm())
                     .inner_margin(egui::Margin::symmetric(10, 8));
                 frame
@@ -790,6 +795,7 @@ fn account_list(app: &mut App, ui: &mut Ui) {
             })
             .inner;
             let clickable = response.interact(Sense::click());
+            ui.data_mut(|d| d.insert_temp(row_id.with("hovered"), clickable.hovered()));
             if clickable.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
@@ -830,15 +836,17 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
     let texture = skin.map(|s| s.texture.clone());
     let cutout = skin.map(|s| s.cutout.clone());
     let has_overlay = skin.map(|s| s.has_overlay).unwrap_or(true);
+    // 皮肤是从哪来的，排查问题时才要看
     let source = skin.map(|s| s.source).unwrap_or(SkinSource::Generated);
+    let source_hint = match (account.is_offline(), source) {
+        (true, SkinSource::Local) => "皮肤来源：本地图片",
+        (true, _) => "皮肤来源：按用户名自动生成",
+        (false, SkinSource::Local) | (false, SkinSource::Remote) => "皮肤来源：账号皮肤（已缓存）",
+        _ => "皮肤来源：账号皮肤",
+    };
 
     ui::card(ui, &p, |ui| {
-        ui.label(
-            egui::RichText::new("账号详情")
-                .font(ui::font(14.5))
-                .color(p.text)
-                .strong(),
-        );
+        widgets::card_title(ui, &p, "账号详情");
         ui.add_space(12.0);
 
         ui.horizontal_top(|ui| {
@@ -858,12 +866,22 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
             });
             ui.add_space(16.0);
             ui.vertical(|ui| {
+                // UUID、皮肤站地址与皮肤来源是排查问题时才要看的，
+                // 挂在名字的悬停提示里，不占地方
+                let mut detail = format!("UUID  {}", account.uuid());
+                if let Some(url) = account.authlib_url() {
+                    detail.push_str(&format!("
+{url}"));
+                }
+                detail.push_str(&format!("
+{source_hint}"));
                 ui.label(
                     egui::RichText::new(account.name())
                         .font(ui::font(19.0))
                         .color(p.text)
                         .strong(),
-                );
+                )
+                .on_hover_text(detail);
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     widgets::badge(ui, &p, account.kind_label(), p.accent);
@@ -872,46 +890,31 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                         widgets::badge(ui, &p, "登录已过期", p.warning);
                     }
                 });
-                ui.add_space(6.0);
-                ui.label(
-                    egui::RichText::new(format!("UUID  {}", account.uuid()))
-                        .font(ui::mono(11.0))
-                        .color(p.text_faint),
-                );
-                if let Some(url) = account.authlib_url() {
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(url)
-                            .font(ui::font(11.0))
-                            .color(p.text_faint),
-                    );
-                }
                 // 皮肤站的令牌有时效，刷新一下就能继续用，不必重新输密码
                 if let Account::Authlib(a) = &account {
                     ui.add_space(10.0);
+                    // 令牌什么时候到期，悬停看就行
+                    let expires_hint = if a.expires_at > 0 {
+                        let until = chrono::DateTime::from_timestamp(a.expires_at, 0)
+                            .map(|t| {
+                                t.with_timezone(&chrono::Local)
+                                    .format("%m-%d %H:%M")
+                                    .to_string()
+                            })
+                            .unwrap_or_else(|| "未知".into());
+                        format!("令牌有效期至 {until}")
+                    } else {
+                        String::new()
+                    };
                     ui.horizontal(|ui| {
-                        if ui::button(
+                        let refresh = ui::button(
                             ui,
                             &p,
                             ButtonOpts::secondary("刷新登录状态").icon("refresh"),
                         )
-                        .clicked()
-                        {
+                        .on_hover_text(&expires_hint);
+                        if refresh.clicked() {
                             start_authlib_refresh(app, a.clone());
-                        }
-                        if a.expires_at > 0 {
-                            let until = chrono::DateTime::from_timestamp(a.expires_at, 0)
-                                .map(|t| {
-                                    t.with_timezone(&chrono::Local)
-                                        .format("%m-%d %H:%M")
-                                        .to_string()
-                                })
-                                .unwrap_or_else(|| "未知".into());
-                            ui.label(
-                                egui::RichText::new(format!("令牌有效期至 {until}"))
-                                    .font(ui::font(11.0))
-                                    .color(p.text_faint),
-                            );
                         }
                     });
                     // 记住密码后令牌到期会自动续期，这里能关掉
@@ -961,21 +964,6 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                         app.save_accounts();
                     }
                 });
-                ui.add_space(10.0);
-
-                // 皮肤来源
-                ui.label(
-                    egui::RichText::new(match (account.is_offline(), source) {
-                        (true, SkinSource::Local) => "皮肤来源：本地图片",
-                        (true, _) => "皮肤来源：按用户名自动生成",
-                        (false, SkinSource::Local) | (false, SkinSource::Remote) => {
-                            "皮肤来源：账号皮肤（已缓存）"
-                        }
-                        _ => "皮肤来源：账号皮肤",
-                    })
-                    .font(ui::font(12.0))
-                    .color(p.text_weak),
-                );
                 ui.add_space(10.0);
 
                 ui.horizontal_wrapped(|ui| {

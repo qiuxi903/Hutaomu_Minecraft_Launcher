@@ -257,14 +257,14 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
             }
         });
     });
-    ui.add_space(8.0);
+    ui.add_space(crate::ui::GAP_CARD);
     ui.horizontal(|ui| {
         let mut filter = app.versions_ui.filter;
         if ui::segmented(ui, &p, "ver_filter", &mut filter, &FILTERS).clicked() {
             app.versions_ui.filter = filter;
         }
     });
-    ui.add_space(8.0);
+    ui.add_space(crate::ui::GAP_CARD);
     ui.horizontal(|ui| {
         ui.label(
             egui::RichText::new("排序")
@@ -652,7 +652,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             return;
         }
     });
-    ui.add_space(8.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // 版本目录里有自定义图标就用它，没有再按版本分类给一个
     let icon_texture = inst
@@ -767,7 +767,7 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             reinstall_modpack(app, &id);
         }
     });
-    ui.add_space(16.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------- 左侧导航 + 右侧内容 ----------
     //
@@ -1230,7 +1230,7 @@ fn saves_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInst
             }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     if worlds.is_empty() {
         ui::empty_state(ui, &p, "world", "还没有存档", "进入游戏创建世界后会显示在这里");
@@ -1314,7 +1314,7 @@ fn screenshots_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::Ga
             }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     if files.is_empty() {
         ui::empty_state(ui, &p, "image", "还没有截图", "在游戏里按 F2 截图后会显示在这里");
@@ -2046,7 +2046,7 @@ fn content_tab(
             }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     if items.is_empty() {
         let tip = match kind {
@@ -2064,9 +2064,7 @@ fn content_tab(
     let columns = match app.versions_ui.content_columns {
         1 => 1,
         _ => {
-            if width > 980.0 {
-                2
-            } else if width > 640.0 {
+            if width > 640.0 {
                 2
             } else {
                 1
@@ -2432,7 +2430,7 @@ fn mod_feature_tab(
             }
         });
     });
-    ui.add_space(10.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     if files.is_empty() {
         let tip = format!(

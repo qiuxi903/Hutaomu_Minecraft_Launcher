@@ -6,6 +6,7 @@ use crate::app::{App, TaskItem};
 use crate::core::paths;
 use crate::icons;
 use crate::ui;
+use crate::ui::widgets;
 use crate::theme::Palette;
 
 struct TaskSnapshot {
@@ -123,12 +124,7 @@ impl App {
                                 palette.accent,
                             );
                             ui.add_space(24.0);
-                            ui.label(
-                                egui::RichText::new("下载中心")
-                                    .font(ui::font(14.5))
-                                    .color(palette.text)
-                                    .strong(),
-                            );
+                            widgets::card_title(ui, &palette, "下载中心");
                             if !active.is_empty() {
                                 ui.label(
                                     egui::RichText::new(format!("{} 个任务", active.len()))

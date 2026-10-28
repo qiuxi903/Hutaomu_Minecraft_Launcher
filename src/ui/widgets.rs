@@ -8,6 +8,12 @@ use crate::theme::Palette;
 
 use super::{font, fs};
 
+/// 卡片内边距
+///
+/// 卡片里要塞东西进某一栏时，宽度要自己收一下，
+/// 收掉的量就是这里的两倍。
+pub const CARD_PAD: f32 = 18.0;
+
 // ---------------------------------------------------------------- 颜色工具
 
 pub fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -83,6 +89,19 @@ pub fn section_title(ui: &mut Ui, p: &Palette, title: &str) {
     ui.add_space(10.0);
 }
 
+/// 卡片标题
+///
+/// 跟 section_title 一样，但不留上下留白：卡片自己已经有内边距了。
+/// 卡片标题全走这一个入口，字号才不会各处不一样。
+pub fn card_title(ui: &mut Ui, p: &Palette, title: &str) {
+    ui.label(
+        egui::RichText::new(title)
+            .font(font(15.0))
+            .color(p.text)
+            .strong(),
+    );
+}
+
 pub fn divider(ui: &mut Ui, p: &Palette) {
     let width = ui.available_width();
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 1.0), Sense::hover());
@@ -139,7 +158,7 @@ pub fn icon_text(
 // ---------------------------------------------------------------- 容器
 
 pub fn card(ui: &mut Ui, p: &Palette, add: impl FnOnce(&mut Ui)) -> Response {
-    card_padded(ui, p, 18, add)
+    card_padded(ui, p, CARD_PAD as i8, add)
 }
 
 pub fn card_padded(ui: &mut Ui, p: &Palette, padding: i8, add: impl FnOnce(&mut Ui)) -> Response {

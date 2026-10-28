@@ -168,7 +168,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         let left_width = cols[0].available_width();
         ui::card(&mut cols[0], &p, |ui| {
             // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
-            ui.set_width((left_width - 36.0).max(220.0));
+            ui.set_width((left_width - widgets::CARD_PAD * 2.0).max(220.0));
             widgets::section_title(ui, &p, "功能验证情况");
             ui.add_space(6.0);
             ui.label(
@@ -200,7 +200,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         // 右：运行环境
         let right_width = cols[1].available_width();
         ui::card(&mut cols[1], &p, |ui| {
-            ui.set_width((right_width - 36.0).max(220.0));
+            ui.set_width((right_width - widgets::CARD_PAD * 2.0).max(220.0));
             widgets::section_title(ui, &p, "运行环境");
             // 六个键值排两列，一眼能扫完
             let rows: Vec<(&str, String)> = vec![
@@ -262,7 +262,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
                 let width = col.available_width();
                 ui::card(col, &p, |ui| {
-                    ui.set_width((width - 36.0).max(160.0));
+                    ui.set_width((width - widgets::CARD_PAD * 2.0).max(160.0));
                     ui.horizontal(|ui| {
                         ui.label(
                             egui::RichText::new(name)
@@ -300,7 +300,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         let left_width = cols[0].available_width();
         ui::card(&mut cols[0], &p, |ui| {
             // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
-            ui.set_width((left_width - 36.0).max(220.0));
+            ui.set_width((left_width - widgets::CARD_PAD * 2.0).max(220.0));
             widgets::section_title(ui, &p, "使用的开源组件");
             ui.add_space(6.0);
             for (name, license, usage) in LIBRARIES.into_iter() {
@@ -311,7 +311,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         // 右：数据来源
         let right_width = cols[1].available_width();
         ui::card(&mut cols[1], &p, |ui| {
-            ui.set_width((right_width - 36.0).max(220.0));
+            ui.set_width((right_width - widgets::CARD_PAD * 2.0).max(220.0));
             widgets::section_title(ui, &p, "数据来源");
             ui.add_space(6.0);
             for (name, url, usage) in DATA_SOURCES.into_iter() {

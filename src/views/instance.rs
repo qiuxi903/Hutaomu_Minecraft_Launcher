@@ -109,7 +109,7 @@ if inst.variants.len() > 1 {
             );
         }
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 光影 ----------------
     let shader = shader_loader::detect(&game_dir);
@@ -189,7 +189,7 @@ if inst.variants.len() > 1 {
             }
         }
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 实例信息 ----------------
     ui::card(ui, &p, |ui| {
@@ -204,7 +204,7 @@ if inst.variants.len() > 1 {
             ui.add_space(8.0);
         }
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 个性化 ----------------
     personalization_card(app, ui, inst);
@@ -453,36 +453,33 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "启动选项");
 
+        // 游戏目录在哪，悬停开关看就行，不用一直占一行
+        let isolated_dir = version::version_dir(&app.cfg.game_dir, &instance_id);
+        let dir_hint = if isolation {
+            format!("该实例的游戏目录：{}", isolated_dir.display())
+        } else {
+            "该实例与其它实例共用游戏目录".to_string()
+        };
+
         // ---- 版本隔离 ----
         widgets::setting_row(
             ui,
             &p,
             "版本隔离",
-            "每个实例使用独立的模组、存档与配置目录",
+            "",
             |ui| {
-                if ui::toggle(ui, &p, &mut isolation).changed() {
+                if ui::toggle(ui, &p, &mut isolation).on_hover_text(&dir_hint).changed() {
                     app.versions_ui.detail_isolation = isolation;
                 }
             },
         );
-        let isolated_dir = version::version_dir(&app.cfg.game_dir, &instance_id);
-        ui.label(
-            egui::RichText::new(if isolation {
-                format!("该实例的游戏目录：{}", isolated_dir.display())
-            } else {
-                "该实例与其它实例共用游戏目录".to_string()
-            })
-            .font(ui::font(11.5))
-            .color(p.text_faint),
-        );
-        ui.add_space(14.0);
 
         // ---- 窗口标题 ----
         widgets::setting_row(
             ui,
             &p,
             "游戏窗口标题",
-            "留空就用游戏自己的标题",
+            "",
             |ui| {
                 if ui::text_field(ui, &p, &mut custom_title, "留空用默认标题", 220.0, false)
                     .changed()
@@ -510,7 +507,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
             ui,
             &p,
             "游戏 Java",
-            "默认按游戏版本自动挑够用的 Java，也可以手动指定",
+            "",
             |ui| {
                 if app.javas.is_empty() {
                     ui.label(
@@ -552,9 +549,9 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
             ui,
             &p,
             "额外启动参数",
-            "跟在游戏参数后面，比如 --fullscreen",
+            "",
             |ui| {
-                if ui::text_field(ui, &p, &mut extra_args, "留空表示没有", 220.0, false).changed() {
+                if ui::text_field(ui, &p, &mut extra_args, "例如 --fullscreen", 220.0, false).changed() {
                     app.versions_ui.detail_extra_args = extra_args.clone();
                 }
             },
@@ -565,9 +562,9 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
             ui,
             &p,
             "额外 JVM 参数",
-            "传给 Java 的参数，比如 -XX:+UseG1GC",
+            "",
             |ui| {
-                if ui::text_field(ui, &p, &mut jvm_args, "留空表示没有", 220.0, false).changed() {
+                if ui::text_field(ui, &p, &mut jvm_args, "例如 -XX:+UseG1GC", 220.0, false).changed() {
                     app.versions_ui.detail_jvm = jvm_args.clone();
                 }
             },
@@ -578,7 +575,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
             ui,
             &p,
             "独立游戏目录",
-            "留空表示跟随全局 / 版本隔离",
+            "",
             |ui| {
                 ui.horizontal(|ui| {
                     // 这一块是右到左排的，先加的靠右，所以按钮先写
@@ -599,7 +596,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
                 });            },
         );
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 内存分配 ----------------
     ui::card(ui, &p, |ui| {
@@ -616,7 +613,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
             ui,
             &p,
             "分配方式",
-            "自动配置按机器的物理内存推算，自定义自己填",
+            "",
             |ui| {
                 if ui::segmented(ui, &p, "detail_memory_mode", &mut index, &modes).clicked() {
                     memory_mode = match index {
@@ -717,7 +714,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
             ui.add_space(12.0);
         }
     });
-    ui.add_space(14.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 保存 ----------------
     ui.horizontal(|ui| {
@@ -812,7 +809,7 @@ for variant in &inst.variants {
             ui.add_space(8.0);
         }
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---------------- 安装新的 ----------------
     if inst.is_modpack {
@@ -1026,7 +1023,7 @@ let mut options = app.versions_ui.export_options;
             }
         });
     });
-    ui.add_space(12.0);
+    ui.add_space(crate::ui::GAP_CARD);
 
     // ---- 目录里现在有什么 ----
     //

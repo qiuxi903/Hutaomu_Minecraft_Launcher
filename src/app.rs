@@ -3173,12 +3173,7 @@ impl App {
                         palette.accent,
                     );
                     ui.add_space(18.0);
-                    ui.label(
-                        egui::RichText::new(&version)
-                            .font(ui::font(14.5))
-                            .color(palette.text)
-                            .strong(),
-                    );
+                    widgets::card_title(ui, &palette, &version);
                     status_badge(ui, &palette, phase.label(), phase.color(&palette));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui::ghost(ui, &palette, "收起").clicked() {
