@@ -785,6 +785,10 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
     ui.add_space(16.0);
 
     // ---------- 左侧导航 + 右侧内容 ----------
+    //
+    // 顶部的返回按钮与版本信息、左边的导航都钉在原地，
+    // 只有右边的内容滚动。外层已经不再套滚动条了。
+    let height = ui.available_height();
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 16.0;
         ui.vertical(|ui| {
@@ -792,43 +796,55 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
             // 导航项会随安装的模组变多，装不下时滚动，别把后面的项挤出去
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
-                .max_height(ui.available_height())
+                .max_height(height)
                 .show(ui, |ui| {
                     ui::card_padded(ui, &p, 10, |ui| {
                         ui.set_width(152.0);
+                        // 项与项之间只留 egui 自己的间距，不再额外加，
+                        // 十来项才装得下，不用动不动就多一条滚动条
+                        ui.spacing_mut().item_spacing.y = 6.0;
                         for (id, label, icon) in sections.iter() {
                             let selected = app.versions_ui.section == *id;
                             if ui::nav_item(ui, &p, icon, label, selected).clicked() {
                                 app.versions_ui.section = id;
                             }
-                            ui.add_space(3.0);
                         }
                     });
                 });
         });
         ui.vertical(|ui| {
             let width = ui.available_width();
-            ui.set_width(width);
             // 换子标签时内容淡入，不是一下子跳过去
             let section = app.versions_ui.section;
             let appear = ui::anim::fade_in(ui.ctx(), ui.id().with(("section", &section)), 0.0);
             ui.set_opacity(appear);
-            match app.versions_ui.section {
-                "info" => crate::views::instance::overview_tab(app, ui, &inst, &active),
-                "settings" => crate::views::instance::setup_tab(app, ui, &inst),
-                "loaders" => crate::views::instance::loaders_tab(app, ui, &inst, &active),
-                "export" => crate::views::instance::export_tab(app, ui, &inst, &active),
-                "saves" => saves_tab(app, ui, &inst),
-                "screenshots" => screenshots_tab(app, ui, &inst),
-                "mod" => content_tab(app, ui, &inst, ContentKind::Mod),
-                "shader" => content_tab(app, ui, &inst, ContentKind::Shader),
-                "resourcepack" => content_tab(app, ui, &inst, ContentKind::ResourcePack),
-                "datapack" => content_tab(app, ui, &inst, ContentKind::DataPack),
-                section => match features.iter().find(|f| f.section == section) {
-                    Some(feature) => mod_feature_tab(app, ui, &inst, feature),
-                    None => crate::views::instance::overview_tab(app, ui, &inst, &active),
-                },
-            }
+            // 内容自己滚，左边的导航与顶部不跟着走
+            egui::ScrollArea::vertical()
+                // 带上分区名，换分区时滚动位置回到顶部
+                .id_salt(("version_detail", section))
+                .auto_shrink([false, false])
+                .max_height(height)
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    match app.versions_ui.section {
+                        "info" => crate::views::instance::overview_tab(app, ui, &inst, &active),
+                        "settings" => crate::views::instance::setup_tab(app, ui, &inst),
+                        "loaders" => {
+                            crate::views::instance::loaders_tab(app, ui, &inst, &active)
+                        }
+                        "export" => crate::views::instance::export_tab(app, ui, &inst, &active),
+                        "saves" => saves_tab(app, ui, &inst),
+                        "screenshots" => screenshots_tab(app, ui, &inst),
+                        "mod" => content_tab(app, ui, &inst, ContentKind::Mod),
+                        "shader" => content_tab(app, ui, &inst, ContentKind::Shader),
+                        "resourcepack" => content_tab(app, ui, &inst, ContentKind::ResourcePack),
+                        "datapack" => content_tab(app, ui, &inst, ContentKind::DataPack),
+                        section => match features.iter().find(|f| f.section == section) {
+                            Some(feature) => mod_feature_tab(app, ui, &inst, feature),
+                            None => crate::views::instance::overview_tab(app, ui, &inst, &active),
+                        },
+                    }
+                });
             ui.set_opacity(1.0);
         });
     });

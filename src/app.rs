@@ -2560,6 +2560,28 @@ impl App {
         }
     }
 
+    /// 画当前页面
+    fn draw_page(&mut self, ui: &mut Ui) {
+        match self.page {
+            Page::Home => views::home::ui(self, ui),
+            Page::Download => views::download::ui(self, ui),
+            Page::Versions => views::versions::ui(self, ui),
+            Page::Accounts => views::accounts::ui(self, ui),
+            Page::Settings => views::settings::ui(self, ui),
+            Page::About => views::about::ui(self, ui),
+        }
+    }
+
+    /// 这个页面要不要自己管滚动
+    ///
+    /// 版本详情页顶部有返回按钮、下面有左侧导航，这两块要钉在原地，
+    /// 只有右边的内容滚。外层再套一个滚动条会把它们一起带走。
+    fn page_scrolls_itself(&self) -> bool {
+        !self.show_game_log_page
+            && matches!(self.page, Page::Versions)
+            && self.versions_ui.detail.is_some()
+    }
+
     fn sidebar(&mut self, ui: &mut Ui) {
         let collapsed = self.cfg.ui.sidebar_collapsed;
         let width = if collapsed { 64.0 } else { 186.0 };
@@ -3750,26 +3772,27 @@ impl eframe::App for App {
                 if !(self.game_log_docked && self.has_game_log() && !self.show_game_log_page) {
                     self.game_bar(ui);
                 }
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.add_space(6.0);
-                        ui.set_max_width(content_rect.width() - 14.0);
-                        ui.set_width(content_rect.width() - 14.0);
-                        if self.show_game_log_page && self.has_game_log() {
-                            self.game_log_page(ui);
-                        } else {
-                            match self.page {
-                                Page::Home => views::home::ui(self, ui),
-                                Page::Download => views::download::ui(self, ui),
-                                Page::Versions => views::versions::ui(self, ui),
-                                Page::Accounts => views::accounts::ui(self, ui),
-                                Page::Settings => views::settings::ui(self, ui),
-                                Page::About => views::about::ui(self, ui),
+                if self.page_scrolls_itself() {
+                    // 详情页自己管滚动，别再套一层
+                    ui.add_space(6.0);
+                    ui.set_max_width(content_rect.width() - 14.0);
+                    ui.set_width(content_rect.width() - 14.0);
+                    self.draw_page(ui);
+                } else {
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.add_space(6.0);
+                            ui.set_max_width(content_rect.width() - 14.0);
+                            ui.set_width(content_rect.width() - 14.0);
+                            if self.show_game_log_page && self.has_game_log() {
+                                self.game_log_page(ui);
+                            } else {
+                                self.draw_page(ui);
                             }
-                        }
-                        ui.add_space(24.0);
-                    });
+                            ui.add_space(24.0);
+                        });
+                }
             },
         );
 
