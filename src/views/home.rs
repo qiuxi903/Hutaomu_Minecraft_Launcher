@@ -20,24 +20,39 @@ pub struct HomeState {
     pub config_open: bool,
 }
 
+/// 一块内容入场：淡入并轻轻上移
+///
+/// 首页是停留最久的页面，卡片依次落位比一下子全亮出来舒服。
+fn section(ui: &mut Ui, key: &str, index: usize, f: impl FnOnce(&mut Ui)) {
+    let t = crate::ui::anim::fade_in(
+        ui.ctx(),
+        ui.id().with(("home_card", key)),
+        crate::ui::anim::stagger(index, 0.04),
+    );
+    ui.set_opacity(t);
+    f(ui);
+    ui.set_opacity(1.0);
+}
+
 pub fn ui(app: &mut App, ui: &mut Ui) {
-    launch_card(app, ui);
+    section(ui, "launch", 0, |ui| launch_card(app, ui));
     ui.add_space(14.0);
 
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 14.0;
         let total = ui.available_width();
         // 右边停靠了游戏日志面板，内容区会窄一截。
-        // 窄到两栏都站不下就改成上下排，否则右栏跟着一起收窄。
-        if total < 500.0 {
+        // 两栏最少要 560：左栏 320 加右栏 226 再加中间的间隔，
+        // 窄到这份就改成上下排，否则左边的资讯被挤扁。
+        if total < 560.0 {
             ui.vertical(|ui| {
-                news_section(app, ui);
+                section(ui, "news", 1, |ui| news_section(app, ui));
                 ui.add_space(14.0);
-                skin_card(app, ui);
+                section(ui, "skin", 2, |ui| skin_card(app, ui));
                 ui.add_space(14.0);
-                stats_card(app, ui);
+                section(ui, "stats", 3, |ui| stats_card(app, ui));
                 ui.add_space(14.0);
-                shortcuts_card(app, ui);
+                section(ui, "shortcuts", 4, |ui| shortcuts_card(app, ui));
             });
             return;
         }
@@ -46,16 +61,16 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
 
         ui.vertical(|ui| {
             ui.set_width(left_width);
-            news_section(app, ui);
+            section(ui, "news", 1, |ui| news_section(app, ui));
         });
 
         ui.vertical(|ui| {
             ui.set_width(right_width);
-            skin_card(app, ui);
+            section(ui, "skin", 2, |ui| skin_card(app, ui));
             ui.add_space(14.0);
-            stats_card(app, ui);
+            section(ui, "stats", 3, |ui| stats_card(app, ui));
             ui.add_space(14.0);
-            shortcuts_card(app, ui);
+            section(ui, "shortcuts", 4, |ui| shortcuts_card(app, ui));
         });
     });
 }
@@ -185,14 +200,9 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                     .as_ref()
                     .map(|v| v.instance_id.clone())
                     .unwrap_or_default();
+                // 版本与加载器上面已经写了，这里只补运行时要用到的两项
                 let java = app.java_for_current();
                 let mut parts: Vec<String> = Vec::new();
-                if let Some(v) = &version {
-                    parts.push(format!("Minecraft {}", v.mc_version));
-                    if let Some(loader) = &v.loader {
-                        parts.push(loader.clone());
-                    }
-                }
                 parts.push(match &java {
                     Some(java) => format!("Java {}", java.major),
                     None if app.java_searching => "Java 搜索中".into(),
@@ -214,6 +224,10 @@ fn launch_card(app: &mut App, ui: &mut Ui) {
                 let running = app.game.is_some();
                 let has_version = app.selected_version_id().is_some();
                 let label = if running { "游戏运行中" } else { "启动游戏" };
+                // 内存、Java 这些常用设置放在启动键旁边，不用先跑到设置页
+                if ui::icon_button(ui, &p, "settings", "游戏配置").clicked() {
+                    app.home_ui.config_open = true;
+                }
                 let clicked = ui::button(
                     ui,
                     &p,
@@ -491,16 +505,11 @@ fn skin_card(app: &mut App, ui: &mut Ui) {
         );
 
         ui.add_space(12.0);
-        ui.horizontal(|ui| {
-            let half = (ui.available_width() - 8.0) / 2.0;
-            if ui::button(ui, &p, ButtonOpts::secondary("切换账号").width(half)).clicked() {
-                app.page = Page::Accounts;
-            }
-            if ui::button(ui, &p, ButtonOpts::secondary("更换皮肤").width(half)).clicked() {
-                app.page = Page::Accounts;
-                app.accounts_ui.tab = 0;
-            }
-        });
+        if ui::button(ui, &p, ButtonOpts::secondary("管理账号与皮肤")).clicked() {
+            app.page = Page::Accounts;
+            // 皮肤站那一页才是换皮肤的地方
+            app.accounts_ui.tab = 2;
+        }
     });
 }
 
@@ -589,14 +598,6 @@ fn shortcuts_card(app: &mut App, ui: &mut Ui) {
 fn stats_card(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
     let total_size: u64 = app.instances.iter().map(|i| i.size()).sum();
-    let last_launch = app
-        .cfg
-        .version_stats
-        .values()
-        .map(|s| s.last_launch)
-        .max()
-        .unwrap_or(0);
-
     ui::card(ui, &p, |ui| {
         ui.label(
             egui::RichText::new("概览")
@@ -609,23 +610,5 @@ fn stats_card(app: &mut App, ui: &mut Ui) {
         ui.add_space(4.0);
         widgets::key_value(ui, &p, "版本占用", &paths::format_size(total_size));
         ui.add_space(4.0);
-        widgets::key_value(ui, &p, "账号", &format!("{} 个", app.accounts.accounts.len()));
-        ui.add_space(4.0);
-        widgets::key_value(
-            ui,
-            &p,
-            "上次启动",
-            &if last_launch > 0 {
-                chrono::DateTime::from_timestamp(last_launch, 0)
-                    .map(|t| {
-                        t.with_timezone(&chrono::Local)
-                            .format("%m-%d %H:%M")
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "—".into())
-            } else {
-                "还没有启动过".to_string()
-            },
-        );
     });
 }

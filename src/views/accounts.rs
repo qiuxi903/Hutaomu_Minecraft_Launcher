@@ -214,12 +214,7 @@ impl AccountsState {
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    widgets::page_title(
-        ui,
-        &p,
-        "账号",
-        "支持离线登录、微软正版登录，以及兼容 Yggdrasil 协议的皮肤站",
-    );
+    widgets::page_title(ui, &p, "账号", "");
 
     add_account_card(app, ui);
     ui.add_space(14.0);
@@ -277,12 +272,6 @@ fn offline_form(app: &mut App, ui: &mut Ui) {
             add_offline(app);
         }
     });
-    ui.add_space(6.0);
-    ui.label(
-        egui::RichText::new("离线账号无需正版，仅在本机与离线服务器使用；皮肤可在右侧单独设置。")
-            .font(ui::font(11.5))
-            .color(p.text_faint),
-    );
 }
 
 fn add_offline(app: &mut App) {
@@ -332,15 +321,6 @@ fn microsoft_form(app: &mut App, ui: &mut Ui) {
                 let _ = open::that(&code.verification_uri);
             }
         });
-        ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(format!(
-                "在浏览器打开 {} 并输入上面的验证码。",
-                code.verification_uri
-            ))
-            .font(ui::font(12.0))
-            .color(p.text_weak),
-        );
     } else {
         ui.horizontal(|ui| {
             let enabled = !app.accounts_ui.ms_logging_in;
@@ -364,12 +344,6 @@ fn microsoft_form(app: &mut App, ui: &mut Ui) {
                 ui::spinner(ui, &p, 16.0);
             }
         });
-        ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new("登录会在浏览器完成，启动器只保存登录令牌，不会接触你的密码。")
-                .font(ui::font(11.5))
-                .color(p.text_faint),
-        );
     }
 
     if !app.accounts_ui.ms_status.is_empty() {
@@ -383,12 +357,6 @@ fn microsoft_form(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(8.0);
     ui.collapsing("高级：自定义 Azure 客户端 ID", |ui| {
-        ui.label(
-            egui::RichText::new("默认客户端 ID 适用于大多数情况，一般无需修改。")
-                .font(ui::font(11.5))
-                .color(p.text_faint),
-        );
-        ui.add_space(4.0);
         let mut id = app.accounts_ui.ms_client_id.clone();
         if ui::text_field(ui, &p, &mut id, "Azure Application (client) ID", 360.0, false).changed() {
             app.accounts_ui.ms_client_id = id;
@@ -607,12 +575,6 @@ fn authlib_form(app: &mut App, ui: &mut Ui) {
         });
         ui.add_space(10.0);
     }
-
-    ui.label(
-        egui::RichText::new("默认使用 skin.hutaomu.cn，兼容 Blessing Skin 等皮肤站；登录后启动时会自动挂载 authlib-injector。")
-            .font(ui::font(11.5))
-            .color(p.text_faint),
-    );
     if !app.accounts_ui.authlib_status.is_empty() {
         ui.add_space(8.0);
         ui.label(
@@ -956,11 +918,6 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                     if a.saved_password.is_some() {
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new("已记住密码，令牌到期后自动续期")
-                                    .font(ui::font(11.0))
-                                    .color(p.text_faint),
-                            );
                             if ui::button(
                                 ui,
                                 &p,

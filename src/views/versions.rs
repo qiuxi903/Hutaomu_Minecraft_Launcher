@@ -218,12 +218,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
 
 fn list_page(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    widgets::page_title(
-        ui,
-        &p,
-        "版本管理",
-        "查看已安装的实例，点进去可以切换加载器、配置启动参数、管理存档与模组",
-    );
+    widgets::page_title(ui, &p, "版本管理", "");
 
     if app.instances.is_empty() {
         ui::empty_state(
@@ -244,7 +239,6 @@ fn list_page(app: &mut App, ui: &mut Ui) {
 /// 一级页面的工具栏
 fn toolbar(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    let total_size: u64 = app.instances.iter().map(|i| i.size()).sum();
 
     ui.horizontal(|ui| {
         let mut search = app.versions_ui.search.clone();
@@ -269,17 +263,6 @@ fn toolbar(app: &mut App, ui: &mut Ui) {
         if ui::segmented(ui, &p, "ver_filter", &mut filter, &FILTERS).clicked() {
             app.versions_ui.filter = filter;
         }
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(format!(
-                    "共 {} 个实例 · 占用 {}",
-                    app.instances.len(),
-                    paths::format_size(total_size)
-                ))
-                .font(ui::font(11.5))
-                .color(p.text_faint),
-            );
-        });
     });
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -440,23 +423,24 @@ fn instance_card(
         ui.allocate_exact_size(Vec2::new(card_width, CARD_HEIGHT), Sense::click());
     // 悬停时轻微上浮并把边框染上主色，让人知道这张卡能点
     let hovered = response.hovered();
-    let lift = if hovered && ui::animations_enabled() { 2.0 } else { 0.0 };
+    // 上浮与染色都走过渡，不要啪地一下跳过去
+    let hover_t = crate::ui::anim::to_bool(
+        ui.ctx(),
+        response.id.with("hov"),
+        hovered,
+        crate::ui::anim::DUR_BASE,
+    );
+    let lift = hover_t * 2.0;
     let rect = rect.translate(Vec2::new(0.0, -lift));
     let border = if is_current {
         p.accent
-    } else if hovered {
-        widgets::lerp_color(p.border, p.accent, 0.55)
     } else {
-        p.border
+        widgets::lerp_color(p.border, p.accent, hover_t * 0.55)
     };
     ui.painter().rect_filled(
         rect,
         p.corner_sm(),
-        if hovered {
-            widgets::lerp_color(p.surface, p.surface_alt, 0.6)
-        } else {
-            p.surface
-        },
+        widgets::lerp_color(p.surface, p.surface_alt, hover_t * 0.6),
     );
     ui.painter().rect_stroke(
         rect,
@@ -725,13 +709,14 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
                 });
                 ui.add_space(5.0);
                 // 路径不放这里，概览里也不摆，要看目录点「打开目录」
-                let mut meta = format!("{}", paths::format_size(inst.size()));
+                let mut parts: Vec<String> = Vec::new();
                 if inst.variant_count() > 1 {
-                    meta.push_str(&format!(" · {} 个变体", inst.variant_count()));
+                    parts.push(format!("{} 个变体", inst.variant_count()));
                 }
                 if let Some(loader_version) = &active.loader_version {
-                    meta.push_str(&format!(" · {loader_version}"));
+                    parts.push(loader_version.clone());
                 }
+                let meta = parts.join(" · ");
                 ui.label(
                     egui::RichText::new(meta)
                         .font(ui::font(12.5))
@@ -1074,14 +1059,14 @@ fn shader_modal(app: &mut App, ui: &mut Ui) {
 
     widgets::modal(&ctx, &p, &mut open, &title, 520.0, |ui| {
         ui.label(
-            egui::RichText::new("光影包要靠光影加载器才能用。装好之后就能在左边的「光影」里挑光影包了。")
+            egui::RichText::new("需要光影加载器才能用")
                 .font(ui::font(12.5))
                 .color(p.text_weak),
         );
         ui.add_space(16.0);
         if options.is_empty() {
             ui.label(
-                egui::RichText::new("当前加载器没有可用的光影加载器，先换一个加载器再来。")
+                egui::RichText::new("当前加载器没有可用的光影加载器")
                     .font(ui::font(12.5))
                     .color(p.warning),
             );
@@ -1238,11 +1223,6 @@ fn saves_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::GameInst
     worlds.sort_by(|a, b| b.2.cmp(&a.2));
 
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{} 个存档", worlds.len()))
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui::button(ui, &p, ButtonOpts::secondary("打开存档目录").icon("folder")).clicked() {
                 let _ = paths::ensure_dir(&saves_dir);
@@ -1327,11 +1307,6 @@ fn screenshots_tab(app: &mut App, ui: &mut Ui, inst: &crate::core::minecraft::Ga
     files.reverse();
 
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{} 张截图", files.len()))
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui::button(ui, &p, ButtonOpts::secondary("打开截图目录").icon("folder")).clicked() {
                 let _ = paths::ensure_dir(&shots_dir);
@@ -2028,11 +2003,6 @@ fn content_tab(
     }
 
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{} 个{}", items.len(), kind.display_label()))
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
         // 锁住的有几个，一眼能看见
         let locked_count = items
             .iter()
@@ -2449,11 +2419,6 @@ fn mod_feature_tab(
     files.sort_by(|a, b| a.rel.to_lowercase().cmp(&b.rel.to_lowercase()));
 
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!("{} 个{}", files.len(), feature.label))
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if ui::button(ui, &p, ButtonOpts::secondary("打开目录").icon("folder")).clicked() {
                 // 优先打开已经存在的目录，没有就建第一个
@@ -3099,11 +3064,6 @@ fn rename_modal(app: &mut App, ui: &mut Ui) {
     let title = format!("重命名 {old_id}");
 
     widgets::modal(&ctx, &p, &mut open, &title, 420.0, |ui| {
-        ui.label(
-            egui::RichText::new("新名称只影响版本目录与显示，不会改变游戏内容。")
-                .font(ui::font(12.0))
-                .color(p.text_weak),
-        );
         ui.add_space(10.0);
         let mut name = app.versions_ui.rename_value.clone();
         if ui::text_field(ui, &p, &mut name, "版本名称", 360.0, false).changed() {

@@ -35,7 +35,6 @@ pub fn overview_tab(
     active: &LocalVersion,
 ) {
     let p = app.palette;
-    let stat = app.cfg.stat_of(&active.id);
     // 整合包实例的 id 是自己的名字，Minecraft 版本要看标记文件里记的
     let mc_version = active
         .modpack
@@ -51,14 +50,7 @@ pub fn overview_tab(
         // 卡片宽度统一，否则短内容的卡片会缩成一小块
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "加载器");
-        ui.label(
-            egui::RichText::new("模组要靠加载器才能用。换了加载器，模组、光影和存档还是同一份。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        if inst.variants.len() > 1 {
+if inst.variants.len() > 1 {
             let labels: Vec<String> = inst.variants.iter().map(|v| v.variant_label()).collect();
             let current = labels
                 .iter()
@@ -94,7 +86,7 @@ pub fn overview_tab(
 
         if inst.is_modpack {
             // 整合包的加载器由整合包自己决定，换了也对不上模组
-            widgets::setting_row(ui, &p, "更换加载器", "整合包的加载器由整合包决定", |ui| {
+            widgets::setting_row(ui, &p, "更换加载器", "", |ui| {
                 ui.label(
                     egui::RichText::new("整合包自带")
                         .font(ui::font(12.5))
@@ -135,7 +127,7 @@ pub fn overview_tab(
                 } else {
                     format!("{} {}", installed.kind.label(), installed.version)
                 };
-                widgets::setting_row(ui, &p, "光影加载器", "光影包要靠它才能加载", |ui| {
+                widgets::setting_row(ui, &p, "光影加载器", "", |ui| {
                     ui.label(
                         egui::RichText::new(&name)
                             .font(ui::font(13.5))
@@ -147,7 +139,7 @@ pub fn overview_tab(
                     ui,
                     &p,
                     "更换光影加载器",
-                    "装好之后就能在左边的「光影」里挑光影包了",
+                    "",
                     |ui| {
                         // 控件区是右到左排的，卸载写在前面，画面上「更换」才在左边
                         if ui::button(ui, &p, ButtonOpts::danger("卸载").icon("trash")).clicked() {
@@ -164,12 +156,12 @@ pub fn overview_tab(
             None => {
                 if loader_kind.is_none() {
                     ui.label(
-                        egui::RichText::new("原版不带光影支持，先装一个加载器再来装光影加载器。")
+                        egui::RichText::new("需要先装加载器")
                             .font(ui::font(12.0))
                             .color(p.text_faint),
                     );
                 } else {
-                    widgets::setting_row(ui, &p, "光影加载器", "当前还没有安装", |ui| {
+                    widgets::setting_row(ui, &p, "光影加载器", "", |ui| {
                         ui.label(
                             egui::RichText::new("未安装")
                                 .font(ui::font(13.5))
@@ -180,7 +172,7 @@ pub fn overview_tab(
                         ui,
                         &p,
                         "安装光影加载器",
-                        "装好之后就能在左边的「光影」里挑光影包了",
+                        "",
                         |ui| {
                             if ui::button(
                                 ui,
@@ -205,28 +197,10 @@ pub fn overview_tab(
         widgets::section_title(ui, &p, "实例信息");
         widgets::key_value(ui, &p, "Minecraft 版本", &mc_version);
         ui.add_space(8.0);
-        widgets::key_value(
-            ui,
-            &p,
-            "版本类型",
-            crate::views::versions::version_type_label(&active.version_type),
-        );
-        ui.add_space(8.0);
         widgets::key_value(ui, &p, "加载器", &active.variant_label());
         ui.add_space(8.0);
         if let Some(info) = &active.modpack {
             widgets::key_value(ui, &p, "整合包", &info.name);
-            ui.add_space(8.0);
-        }
-        widgets::key_value(ui, &p, "占用空间", &paths::format_size(inst.size()));
-        ui.add_space(8.0);
-        widgets::key_value(ui, &p, "启动次数", &format!("{} 次", stat.launches));
-        ui.add_space(8.0);
-        if stat.last_launch > 0 {
-            let dt = chrono::DateTime::from_timestamp(stat.last_launch, 0)
-                .map(|t| t.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_default();
-            widgets::key_value(ui, &p, "最后启动", &dt);
             ui.add_space(8.0);
         }
     });
@@ -254,17 +228,10 @@ fn personalization_card(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "个性化");
-        ui.label(
-            egui::RichText::new("给这个实例起个名字、写句备注，方便自己分清楚。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        // ---- 图标 ----
+// ---- 图标 ----
         let version_dir = version::version_dir(&app.cfg.game_dir, &instance_id);
         let icon_path = version_icon::custom_icon(&version_dir);
-        widgets::setting_row(ui, &p, "实例图标", "换个图标更好认", |ui| {
+        widgets::setting_row(ui, &p, "实例图标", "", |ui| {
             ui.horizontal(|ui| {
                 // 控件区是右到左排的，先写的靠右，这里倒着写，
                 // 画面上才是「预览 选择图标 恢复默认」
@@ -306,21 +273,21 @@ fn personalization_card(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
         });
 
         // ---- 名字 ----
-        widgets::setting_row(ui, &p, "实例名字", "留空就用默认显示名", |ui| {
+        widgets::setting_row(ui, &p, "实例名字", "", |ui| {
             if ui::text_field(ui, &p, &mut meta.name, "默认名字", 220.0, false).changed() {
                 changed = true;
             }
         });
 
         // ---- 描述 ----
-        widgets::setting_row(ui, &p, "实例描述", "写点备注，比如「和朋友一起玩的」", |ui| {
+        widgets::setting_row(ui, &p, "实例描述", "", |ui| {
             if ui::text_field(ui, &p, &mut meta.description, "没有描述", 220.0, false).changed() {
                 changed = true;
             }
         });
 
         // ---- 分类 ----
-        widgets::setting_row(ui, &p, "分类", "给实例分个类，比如「联机」「画质」", |ui| {
+        widgets::setting_row(ui, &p, "分类", "", |ui| {
             if ui::text_field(ui, &p, &mut meta.category, "没有分类", 220.0, false).changed() {
                 changed = true;
             }
@@ -328,7 +295,7 @@ fn personalization_card(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
 
         // ---- 收藏 ----
         let mut favorite = meta.favorite;
-        widgets::setting_row(ui, &p, "收藏", "标出来后在列表里一眼看到", |ui| {
+        widgets::setting_row(ui, &p, "收藏", "", |ui| {
             if ui::toggle(ui, &p, &mut favorite).changed() {
                 meta.favorite = favorite;
                 changed = true;
@@ -366,14 +333,7 @@ fn shortcuts_card(app: &mut App, ui: &mut Ui, inst: &GameInstance, game_dir: &st
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "快捷方式");
-        ui.label(
-            egui::RichText::new("点一下直接打开对应的文件夹。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(12.0);
-
-        let entries: Vec<(&str, &str, PathBuf)> = vec![
+let entries: Vec<(&str, &str, PathBuf)> = vec![
             ("实例目录", "folder", game_dir.to_path_buf()),
             ("模组", "mod", game_dir.join("mods")),
             ("存档", "world", game_dir.join("saves")),
@@ -414,14 +374,7 @@ fn advanced_card(app: &mut App, ui: &mut Ui, inst: &GameInstance, active: &Local
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "高级管理");
-        ui.label(
-            egui::RichText::new("导出、补全、删除这些操作，出问题的时候用得上。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        ui.horizontal_wrapped(|ui| {
+ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
             ui.spacing_mut().item_spacing.y = 8.0;
             if ui::button(ui, &p, ButtonOpts::secondary("导出整合包").icon("upload")).clicked() {
@@ -495,14 +448,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
     let mut isolation = app.versions_ui.detail_isolation;
     let mut game_dir_text = app.versions_ui.detail_dir.clone();
 
-    ui.label(
-        egui::RichText::new("这里的设置只对当前实例生效，会覆盖全局设置。")
-            .font(ui::font(12.0))
-            .color(p.text_weak),
-    );
-    ui.add_space(14.0);
-
-    // ---------------- 启动选项 ----------------
+// ---------------- 启动选项 ----------------
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "启动选项");
@@ -659,14 +605,7 @@ pub fn setup_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance) {
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "内存分配");
-        ui.label(
-            egui::RichText::new("内存给少了游戏会卡，给多了又占着机器不放。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        // ---- 三档 ----
+// ---- 三档 ----
         let modes = ["跟随全局", "自动配置", "自定义"];
         let mut index = match memory_mode.as_str() {
             "auto" => 1,
@@ -840,14 +779,7 @@ pub fn loaders_tab(
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "已安装的加载器");
-        ui.label(
-            egui::RichText::new("同一个版本可以装好几个加载器，模组与存档还是共用一份。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        for variant in &inst.variants {
+for variant in &inst.variants {
             let is_active = variant.id == active.id;
             ui.horizontal(|ui| {
                 ui.label(
@@ -887,26 +819,14 @@ pub fn loaders_tab(
         ui::card(ui, &p, |ui| {
             ui.set_width(ui.available_width());
             widgets::section_title(ui, &p, "安装加载器");
-            ui.label(
-                egui::RichText::new("整合包的加载器由整合包自己决定，换了会对不上里面的模组。")
-                    .font(ui::font(12.5))
-                    .color(p.text_faint),
-            );
-        });
+});
         return;
     }
 
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "安装加载器");
-        ui.label(
-            egui::RichText::new("新加载器会装成这个版本的一个变体，模组、存档和光影跟现在这份共用。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        let kinds = LoaderKind::all();
+let kinds = LoaderKind::all();
         let labels: Vec<&str> = kinds.iter().map(|k| k.label()).collect();
         let kind = app.versions_ui.loader_kind.unwrap_or(kinds[0]);
         let mut index = kinds.iter().position(|k| *k == kind).unwrap_or(0);
@@ -939,7 +859,7 @@ pub fn loaders_tab(
         }
 
         // ---- 版本 ----
-        widgets::setting_row(ui, &p, "加载器版本", "自动挑一个推荐的稳定版", |ui| {
+        widgets::setting_row(ui, &p, "加载器版本", "", |ui| {
             ui.vertical(|ui| {
                 let modes = ["自动选择", "手动选择"];
                 let mut mode = if app.versions_ui.loader_auto { 0 } else { 1 };
@@ -955,7 +875,7 @@ pub fn loaders_tab(
                 ui.add_space(8.0);
                 if app.versions_ui.loader_auto {
                     ui.label(
-                        egui::RichText::new("装推荐的稳定版就行")
+                        egui::RichText::new("推荐版本")
                             .font(ui::font(12.0))
                             .color(p.text_faint),
                     );
@@ -1021,14 +941,7 @@ pub fn export_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance, active: &Loca
     ui::card(ui, &p, |ui| {
         ui.set_width(ui.available_width());
         widgets::section_title(ui, &p, "导出整合包");
-        ui.label(
-            egui::RichText::new("挑要带走的内容，打包成一个 zip，解压到游戏的 .minecraft 目录就能用。")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
-        ui.add_space(14.0);
-
-        let mut options = app.versions_ui.export_options;
+let mut options = app.versions_ui.export_options;
         for (label, checked) in options.items() {
             let mut flag = checked;
             if widgets::checkbox(ui, &p, &mut flag, label).changed() {
@@ -1116,22 +1029,6 @@ pub fn export_tab(app: &mut App, ui: &mut Ui, inst: &GameInstance, active: &Loca
     ui.add_space(12.0);
 
     // ---- 目录里现在有什么 ----
-    ui::card(ui, &p, |ui| {
-        ui.set_width(ui.available_width());
-        widgets::section_title(ui, &p, "这个实例里有什么");
-        let rows: Vec<(&str, &str)> = vec![
-            ("mods", "模组"),
-            ("resourcepacks", "资源包"),
-            ("shaderpacks", "光影包"),
-            ("saves", "单人存档"),
-            ("config", "配置"),
-        ];
-        for (folder, label) in rows {
-            let dir = game_dir.join(folder);
-            let count = std::fs::read_dir(&dir)
-                .map(|entries| entries.flatten().count())
-                .unwrap_or(0);
-            widgets::key_value(ui, &p, label, &format!("{count} 个"));
-        }
-    });
+    //
+    // 各分类的内容在左边的导航里就能看到，这里再数一遍没有意义。
 }

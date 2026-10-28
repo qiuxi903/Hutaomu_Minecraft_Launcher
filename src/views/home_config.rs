@@ -17,13 +17,6 @@ pub fn game_config_modal(app: &mut App, ctx: &egui::Context) {
     let mut close = false;
 
     widgets::modal(ctx, &p, &mut open, "游戏配置", 520.0, |ui| {
-        ui.label(
-            egui::RichText::new("修改会立即生效并保存。完整设置请到「设置 - 游戏」。")
-                .font(ui::font(12.0))
-                .color(p.text_weak),
-        );
-        ui.add_space(14.0);
-
         version_row(app, ui);
         ui.add_space(8.0);
         memory_row(app, ui);

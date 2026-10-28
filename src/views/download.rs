@@ -234,12 +234,7 @@ impl DownloadState {
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    widgets::page_title(
-        ui,
-        &p,
-        "下载",
-        "安装游戏本体、加载器，以及 Mod、光影、资源包与整合包",
-    );
+    widgets::page_title(ui, &p, "下载", "");
 
     ui.horizontal(|ui| {
         let mut tab = app.download.tab;
@@ -312,13 +307,6 @@ fn game_tab(app: &mut App, ui: &mut Ui) {
             }
             if app.manifest_loading {
                 ui::spinner(ui, &p, 15.0);
-            }
-            if let Some(manifest) = &app.manifest {
-                ui.label(
-                    egui::RichText::new(format!("共 {} 个版本", manifest.versions.len()))
-                        .font(ui::font(12.0))
-                        .color(p.text_faint),
-                );
             }
         });
     });
@@ -514,12 +502,6 @@ fn install_modal(app: &mut App, ui: &mut Ui) {
     let loader_labels = ["不安装", "Fabric", "Quilt", "Forge", "NeoForge"];
 
     widgets::modal(&ctx, &p, &mut open, &title, 500.0, |ui| {
-        ui.label(
-            egui::RichText::new("启动器会把游戏和加载器一起装好，不需要再单独安装加载器。")
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
-        ui.add_space(16.0);
 
         // ---------- 加载器 ----------
         ui.label(
@@ -607,17 +589,7 @@ fn install_modal(app: &mut App, ui: &mut Ui) {
         }
 
         ui.add_space(14.0);
-        let timing = app.cfg.download.loader_timing();
-        let timing_hint = match timing {
-            bundle::LoaderTiming::Parallel => "加载器会在游戏下载过程中一并安装。",
-            bundle::LoaderTiming::After => "游戏下载完成后再安装加载器。",
-            bundle::LoaderTiming::Manual => "当前设置不自动安装加载器，手动选择后仍会安装。",
-        };
-        ui.label(
-            egui::RichText::new(timing_hint)
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
+        let _timing = app.cfg.download.loader_timing();
 
         ui.add_space(18.0);
         ui.horizontal(|ui| {
@@ -824,12 +796,6 @@ fn loader_tab(app: &mut App, ui: &mut Ui) {
                 .strong(),
         );
         ui.add_space(4.0);
-        ui.label(
-            egui::RichText::new("加载器用于支持 Mod。安装时会自动补齐对应的原版版本。")
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
-        ui.add_space(14.0);
 
         // 加载器类型
         let kinds: Vec<&str> = LoaderKind::all().iter().map(|k| k.label()).collect();
@@ -916,12 +882,10 @@ fn loader_tab(app: &mut App, ui: &mut Ui) {
                             .font(ui::font(12.0))
                             .color(p.danger),
                     );
+                    if ui::ghost(ui, &p, "重试").clicked() {
+                        load_loader_versions(app);
+                    }
                 } else if app.download.loader_versions.is_empty() {
-                    ui.label(
-                        egui::RichText::new("选择游戏版本后自动加载")
-                            .font(ui::font(12.5))
-                            .color(p.text_faint),
-                    );
                 } else {
                     // 第 0 项为「自动选择」，交由启动器按策略挑选
                     let mut labels: Vec<String> = vec!["自动选择（推荐）".to_string()];
@@ -1117,7 +1081,7 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
             ui,
             &p,
             &mut query,
-            &format!("搜索{}（支持中文）", kind.label()),
+            &format!("搜索{}", kind.label()),
             300.0,
         );
         if response.changed() {
@@ -1135,12 +1099,7 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
                 ui::spinner(ui, &p, 15.0);
             }
             if app.download.content_total > 0 {
-                ui.label(
-                    egui::RichText::new(format!("共 {} 个结果", app.download.content_total))
-                        .font(ui::font(12.0))
-                        .color(p.text_faint),
-                );
-            }
+}
         });
     });
     ui.add_space(10.0);
@@ -1195,12 +1154,17 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
     if let Some(err) = app.download.content_error.clone() {
         ui::inset(ui, &p, |ui| {
             ui.horizontal(|ui| {
-                ui::icon(ui, "alert", 15.0, p.warning);
+                ui::icon(ui, "alert", 15.0, p.danger);
                 ui.label(
                     egui::RichText::new(err)
                         .font(ui::font(12.5))
-                        .color(p.text_weak),
+                        .color(p.danger),
                 );
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui::ghost(ui, &p, "重试").clicked() {
+                        run_search(app);
+                    }
+                });
             });
         });
         ui.add_space(10.0);
@@ -1209,14 +1173,14 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
     if app.download.content_hits.is_empty() {
         if app.download.content_loading {
             let source = app.download.content_source.label();
-            ui::empty_state(ui, &p, "loader", "正在加载", &format!("内容来自 {source}"));
+            ui::empty_state(ui, &p, kind.icon(), "正在加载", &format!("内容来自 {source}"));
         } else {
             ui::empty_state(
                 ui,
                 &p,
                 kind.icon(),
                 &format!("没有找到{}", kind.label()),
-                "换个关键词试试，支持中文搜索",
+                "",
             );
         }
         return;
@@ -1929,13 +1893,6 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
             if app.download.content_versions_loading {
                 ui::spinner(ui, p, 14.0);
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} 个可用版本", filtered.len()))
-                        .font(ui::font(12.0))
-                        .color(p.text_faint),
-                );
-            });
         });
         ui.add_space(12.0);
 
@@ -1993,24 +1950,18 @@ fn install_card(app: &mut App, ui: &mut Ui, p: &Palette, project: &Project, kind
                         .color(p.text_weak),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    // 路径可能很长，按可用宽度省略
-                    let width = ((ui.available_width() - 60.0).max(120.0) / 7.0) as usize;
+                    // 路径可能很长，按可用宽度省略；点一下打开所在目录
+                    let width = ((ui.available_width() - 12.0).max(120.0) / 7.0) as usize;
                     let short = ellipsize_path(&path_text, width);
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(short)
-                                .font(ui::font(12.0))
-                                .color(p.text_faint),
-                        )
-                        .truncate(),
-                    );
-                    // 完整路径放到悬浮提示里
                     if ui
-                        .add(egui::Label::new(
-                            egui::RichText::new("完整路径")
-                                .font(ui::font(12.0))
-                                .color(p.text_faint),
-                        ))
+                        .add(
+                            egui::Label::new(
+                                egui::RichText::new(short)
+                                    .font(ui::font(12.0))
+                                    .color(p.text_faint),
+                            )
+                            .truncate(),
+                        )
                         .on_hover_text(&path_text)
                         .clicked()
                     {
@@ -2256,21 +2207,8 @@ fn install_card_modpack(app: &mut App, ui: &mut Ui, p: &Palette, project: &Proje
             if app.download.content_versions_loading {
                 ui::spinner(ui, p, 14.0);
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(format!("{} 个可用版本", filtered.len()))
-                        .font(ui::font(12.0))
-                        .color(p.text_faint),
-                );
-            });
         });
         ui.add_space(6.0);
-        ui.label(
-            egui::RichText::new("整合包会新建一个独立实例，自带模组、配置与脚本，不影响已有实例")
-                .font(ui::font(12.5))
-                .color(p.text_weak),
-        );
-        ui.add_space(12.0);
 
         if app.download.content_versions_loading {
             ui.label(
@@ -2354,22 +2292,17 @@ fn install_card_modpack(app: &mut App, ui: &mut Ui, p: &Palette, project: &Proje
                     .color(p.text_weak),
             );
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let width = ((ui.available_width() - 60.0).max(120.0) / 7.0) as usize;
+                let width = ((ui.available_width() - 12.0).max(120.0) / 7.0) as usize;
                 let short = ellipsize_path(&path_text, width);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(short)
-                            .font(ui::font(12.0))
-                            .color(p.text_faint),
-                    )
-                    .truncate(),
-                );
                 if ui
-                    .add(egui::Label::new(
-                        egui::RichText::new("完整路径")
-                            .font(ui::font(12.0))
-                            .color(p.text_faint),
-                    ))
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(short)
+                                .font(ui::font(12.0))
+                                .color(p.text_faint),
+                        )
+                        .truncate(),
+                    )
                     .on_hover_text(&path_text)
                     .clicked()
                 {

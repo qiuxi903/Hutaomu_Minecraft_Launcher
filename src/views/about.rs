@@ -1,4 +1,4 @@
-use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
+use egui::{Align, Color32, Layout, Rect, Sense, Ui, Vec2};
 
 use crate::app::App;
 use crate::icons;
@@ -102,7 +102,7 @@ const UNVERIFIED: [&str; 3] = [
 
 pub fn ui(app: &mut App, ui: &mut Ui) {
     let p = app.palette;
-    widgets::page_title(ui, &p, "关于", "胡桃木 Minecraft 启动器");
+    widgets::page_title(ui, &p, "关于", "");
 
     // ------------------------------------------------------------ 应用信息
     ui::card(ui, &p, |ui| {
@@ -116,12 +116,6 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                         .font(ui::font(21.0))
                         .color(p.text)
                         .strong(),
-                );
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new("Hutaomu Minecraft Launcher · htmcl")
-                        .font(ui::font(12.5))
-                        .color(p.text_weak),
                 );
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
@@ -168,23 +162,6 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
 
     ui.add_space(12.0);
 
-    // ------------------------------------------------------------ 项目速览
-    ui::card(ui, &p, |ui| {
-        stat_tiles(
-            ui,
-            &p,
-            &[
-                (env!("CARGO_PKG_VERSION"), "当前版本", p.accent),
-                (&LIBRARIES.len().to_string(), "开源组件", p.text),
-                (&DATA_SOURCES.len().to_string(), "数据来源", p.text),
-                (&REFERENCE_PROJECTS.len().to_string(), "参考项目", p.text),
-                (&VERIFIED.len().to_string(), "已验证功能", p.success),
-            ],
-        );
-    });
-
-    ui.add_space(12.0);
-
     // ------------------------------------------------------------ 功能验证
     ui.columns(2, |cols| {
         // 左：已验证与待验证
@@ -193,12 +170,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
             // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
             ui.set_width((left_width - 36.0).max(220.0));
             widgets::section_title(ui, &p, "功能验证情况");
-            ui.label(
-                egui::RichText::new("下面这些是在真实环境里跑通过的，不是纸面功能。")
-                    .font(ui::font(12.0))
-                    .color(p.text_weak),
-            );
-            ui.add_space(12.0);
+            ui.add_space(6.0);
             ui.label(
                 egui::RichText::new(format!("已验证 {} 项", VERIFIED.len()))
                     .font(ui::font(13.0))
@@ -223,15 +195,6 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 check_item(ui, &p, item, p.warning, "clock");
                 ui.add_space(3.0);
             }
-            ui.add_space(10.0);
-            ui.label(
-                egui::RichText::new(
-                    "这几项要么需要特定的运行环境，要么还没来得及在真实机器上跑一遍。\
-                     遇到问题欢迎到 GitHub Issues 反馈。",
-                )
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-            );
         });
 
         // 右：运行环境
@@ -245,19 +208,6 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
                 (
                     "构建配置",
                     if cfg!(debug_assertions) { "Debug" } else { "Release" }.to_string(),
-                ),
-                (
-                    "配置文件",
-                    crate::core::paths::config_file().display().to_string(),
-                ),
-                (
-                    "账号文件",
-                    crate::core::paths::accounts_file().display().to_string(),
-                ),
-                ("游戏目录", app.cfg.game_dir_display()),
-                (
-                    "日志目录",
-                    crate::core::paths::logs_dir().display().to_string(),
                 ),
             ];
             // 一行一项，路径长了才有地方显示
@@ -305,12 +255,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     // ------------------------------------------------------------ 参考项目
     ui::card(ui, &p, |ui| {
         widgets::section_title(ui, &p, "参考项目");
-        ui.label(
-            egui::RichText::new("本项目在交互设计与功能组织上参考了以下开源/公开项目，代码为完全重写，未复制其源码。")
-                .font(ui::font(12.0))
-                .color(p.text_weak),
-        );
-        ui.add_space(12.0);
+        ui.add_space(6.0);
         ui.columns(2, |cols| {
             for (i, (name, url, license, note)) in REFERENCE_PROJECTS.into_iter().enumerate() {
                 let col = if i % 2 == 0 { &mut cols[0] } else { &mut cols[1] };
@@ -357,12 +302,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
             // 卡片自带内边距，宽度要自己收一下，否则会顶出这一栏
             ui.set_width((left_width - 36.0).max(220.0));
             widgets::section_title(ui, &p, "使用的开源组件");
-            ui.label(
-                egui::RichText::new(format!("共 {} 个组件，许可均为宽松协议。", LIBRARIES.len()))
-                    .font(ui::font(12.0))
-                    .color(p.text_weak),
-            );
-            ui.add_space(10.0);
+            ui.add_space(6.0);
             for (name, license, usage) in LIBRARIES.into_iter() {
                 component_row(ui, &p, name, usage, license);
             }
@@ -373,12 +313,7 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         ui::card(&mut cols[1], &p, |ui| {
             ui.set_width((right_width - 36.0).max(220.0));
             widgets::section_title(ui, &p, "数据来源");
-            ui.label(
-                egui::RichText::new(format!("共 {} 个接口与站点。", DATA_SOURCES.len()))
-                    .font(ui::font(12.0))
-                    .color(p.text_weak),
-            );
-            ui.add_space(10.0);
+            ui.add_space(6.0);
             for (name, url, usage) in DATA_SOURCES.into_iter() {
                 source_row(ui, &p, name, url, usage);
             }
@@ -390,15 +325,6 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
     // ------------------------------------------------------------ 协议与声明
     ui::card(ui, &p, |ui| {
         widgets::section_title(ui, &p, "开源协议与声明");
-        ui.label(
-            egui::RichText::new(
-                "本项目以 GNU Affero General Public License v3.0（AGPL-3.0）协议开源。你可以自由使用、修改与分发，\
-                 但分发修改后的版本时必须同样以 AGPL-3.0 开源，并提供完整源代码。",
-            )
-            .font(ui::font(12.5))
-            .color(p.text_weak),
-        );
-        ui.add_space(10.0);
         ui.label(
             egui::RichText::new(
                 "本启动器与 Mojang Studios、Microsoft 无任何关联。「Minecraft」为 Mojang Studios 的商标。\
@@ -425,50 +351,9 @@ pub fn ui(app: &mut App, ui: &mut Ui) {
         });
     });
 
-    ui.add_space(18.0);
-    ui.vertical_centered(|ui| {
-        ui.label(
-            egui::RichText::new("胡桃木 Minecraft 启动器 · 用 Rust 写的 Minecraft 启动器")
-                .font(ui::font(11.5))
-                .color(p.text_faint),
-        );
-    });
 }
 
 // ------------------------------------------------------------------ 小部件
-
-/// 一排统计小方块
-fn stat_tiles(ui: &mut Ui, p: &Palette, items: &[(&str, &str, Color32)]) {
-    let count = items.len().max(1) as f32;
-    let spacing = 10.0;
-    let width = ((ui.available_width() - spacing * (count - 1.0)) / count).max(90.0);
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = spacing;
-        for (value, label, color) in items {
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 64.0), Sense::hover());
-            ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
-            let value_galley = ui
-                .painter()
-                .layout_no_wrap(value.to_string(), ui::font(18.0), *color);
-            ui.painter().galley(
-                Pos2::new(rect.left() + 13.0, rect.top() + 11.0),
-                value_galley,
-                *color,
-            );
-            let label_galley = ui
-                .painter()
-                .layout_no_wrap(label.to_string(), ui::font(11.5), p.text_weak);
-            ui.painter().galley(
-                Pos2::new(
-                    rect.left() + 13.0,
-                    rect.bottom() - label_galley.size().y - 10.0,
-                ),
-                label_galley,
-                p.text_weak,
-            );
-        }
-    });
-}
 
 /// 带勾的条目，图标跟文字对齐
 fn check_item(ui: &mut Ui, p: &Palette, text: &str, color: Color32, icon: &str) {
