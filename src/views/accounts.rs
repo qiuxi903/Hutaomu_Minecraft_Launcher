@@ -733,73 +733,79 @@ fn account_list(app: &mut App, ui: &mut Ui) {
                 widgets::lerp_color(p.border, p.accent, hover_t * 0.4)
             };
 
-            let response = ui.scope(|ui| {
-                let frame = egui::Frame::NONE
-                    .fill(fill)
-                    .stroke(egui::Stroke::new(1.0, border))
-                    .corner_radius(p.corner_sm())
-                    .inner_margin(egui::Margin::symmetric(10, 8));
-                frame
-                    .show(ui, |ui| {
-                        ui.horizontal(|ui| {
-                            if let Some(texture) = &texture {
-                                let _ = ui::avatar(ui, &p, texture, 32.0);
-                            } else {
-                                let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
-                                ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
-                                icons::paint(
-                                    ui.ctx(),
-                                    ui.painter(),
-                                    "user",
-                                    rect.shrink(8.0),
-                                    p.text_faint,
-                                );
-                            }
-                            ui.add_space(4.0);
-                            ui.vertical(|ui| {
-                                ui.label(
-                                    egui::RichText::new(account.name())
-                                        .font(ui::font(13.5))
-                                        .color(p.text)
-                                        .strong(),
-                                );
-                                ui.label(
-                                    egui::RichText::new(account.kind_label())
-                                        .font(ui::font(11.0))
-                                        .color(p.text_faint),
-                                );
-                            });
-                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                if ui::icon_button(ui, &p, "trash", "删除账号").clicked() {
-                                    remove = Some((
-                                        account.id().to_string(),
-                                        account.kind_label().to_string(),
-                                    ));
-                                }
-                                if selected {
+            // 整行的可点语义必须在行创建时就注册上。
+            // 要是像以前那样在 scope 结束后才 interact 一把，
+            // 行会作为新条目排到行内垃圾桶按钮的后面，
+            // egui 的命中测试平局时后注册的赢，垃圾桶就永远收不到点击。
+            let response = ui.scope_builder(
+                egui::UiBuilder::new().sense(egui::Sense::click()),
+                |ui| {
+                    let frame = egui::Frame::NONE
+                        .fill(fill)
+                        .stroke(egui::Stroke::new(1.0, border))
+                        .corner_radius(p.corner_sm())
+                        .inner_margin(egui::Margin::symmetric(10, 8));
+                    frame.show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                if let Some(texture) = &texture {
+                                    let _ = ui::avatar(ui, &p, texture, 32.0);
+                                } else {
+                                    let (rect, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
+                                    ui.painter().rect_filled(rect, p.corner_sm(), p.surface_alt);
                                     icons::paint(
                                         ui.ctx(),
                                         ui.painter(),
-                                        "check-circle",
-                                        Rect::from_center_size(
-                                            Pos2::new(ui.cursor().right() - 8.0, ui.cursor().center().y),
-                                            Vec2::splat(16.0),
-                                        ),
-                                        p.accent,
+                                        "user",
+                                        rect.shrink(8.0),
+                                        p.text_faint,
                                     );
                                 }
-                            });
+                                ui.add_space(4.0);
+                                ui.vertical(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(account.name())
+                                            .font(ui::font(13.5))
+                                            .color(p.text)
+                                            .strong(),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(account.kind_label())
+                                            .font(ui::font(11.0))
+                                            .color(p.text_faint),
+                                    );
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    if ui::icon_button(ui, &p, "trash", "删除账号").clicked() {
+                                        remove = Some((
+                                            account.id().to_string(),
+                                            account.kind_label().to_string(),
+                                        ));
+                                    }
+                                    if selected {
+                                        icons::paint(
+                                            ui.ctx(),
+                                            ui.painter(),
+                                            "check-circle",
+                                            Rect::from_center_size(
+                                                Pos2::new(ui.cursor().right() - 8.0, ui.cursor().center().y),
+                                                Vec2::splat(16.0),
+                                            ),
+                                            p.accent,
+                                        );
+                                    }
+                                });
                         });
-                    })
-                    .response
-            })
-            .inner;
-            let clickable = response.interact(Sense::click());
-            ui.data_mut(|d| d.insert_temp(row_id.with("hovered"), clickable.hovered()));
-            if clickable.hovered() {
+                    });
+                },
+            );
+            let row = response.response;
+            // 悬停用 contains_pointer：指针在垃圾桶上时行也该亮着
+            let hovered = row.contains_pointer();
+            ui.data_mut(|d| d.insert_temp(row_id.with("hovered"), hovered));
+            if hovered {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            if clickable.clicked() {
+            if row.clicked() {
                 select = Some(id.clone());
             }
             ui.add_space(6.0);
@@ -1020,7 +1026,144 @@ fn account_detail(app: &mut App, ui: &mut Ui) {
                         }
                     }
                 });
+
+                ui.add_space(14.0);
+                widgets::divider(ui, &p);
+                ui.add_space(10.0);
+                // 退出登录就是删除账号：令牌与本地资料一起清掉。
+                // 列表行的垃圾桶太小容易漏，这里给个明面上的入口。
+                ui.horizontal(|ui| {
+                    let kind = account.kind_label();
+                    let label = if account.is_offline() {
+                        "删除账号"
+                    } else {
+                        "退出登录并删除"
+                    };
+                    if ui::button(ui, &p, ButtonOpts::danger(label).icon("trash")).clicked() {
+                        app.accounts.remove(&id, kind);
+                        app.save_accounts();
+                        app.skin_cache.remove(&id);
+                        app.skin_local_checked.remove(&id);
+                        app.skin_pending.remove(&id);
+                        app.info("账号已删除");
+                    }
+                });
             });
         });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct RowState {
+        button_rect: egui::Rect,
+        row_rect: egui::Rect,
+        button_clicked: bool,
+        row_clicked: bool,
+    }
+
+    /// 账号行：整行的可点语义在行创建时就注册（scope_builder + sense），
+    /// 行内的垃圾桶按钮注册在后。
+    ///
+    /// 这是为了「账号删不掉」兜底：以前是在 scope 结束后才把整行
+    /// interact 成可点，行作为新条目排到垃圾桶后面，
+    /// egui 命中测试平局时后注册的赢，垃圾桶永远收不到点击。
+    fn run_row(ui: &mut egui::Ui, state: &mut RowState) {
+        let response = ui.scope_builder(
+            egui::UiBuilder::new().sense(egui::Sense::click()),
+            |ui| {
+                egui::Frame::NONE.show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("账号名");
+                        let (rect, button) =
+                            ui.allocate_exact_size(egui::Vec2::splat(30.0), egui::Sense::click());
+                        state.button_rect = rect;
+                        state.button_clicked = button.clicked();
+                    });
+                });
+            },
+        );
+        state.row_rect = response.response.rect;
+        state.row_clicked = response.response.clicked();
+    }
+
+    fn click_at(ctx: &egui::Context, screen: egui::Rect, pos: egui::Pos2, state: &mut RowState) {
+        // 按下
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        input.events.push(egui::Event::PointerMoved(pos));
+        input.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        });
+        let _ = ctx.run_ui(input, |ui| run_row(ui, state));
+        // 松开
+        let mut input = egui::RawInput::default();
+        input.screen_rect = Some(screen);
+        input.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        });
+        let _ = ctx.run_ui(input, |ui| run_row(ui, state));
+    }
+
+    /// 与真实应用一致的测试环境：文字默认不可选
+    /// （可选的文字自带 click 感知，会把行上的点击抢走，真实应用没有这个问题）
+    fn test_ctx() -> egui::Context {
+        let ctx = egui::Context::default();
+        ctx.all_styles_mut(|style| style.interaction.selectable_labels = false);
+        ctx
+    }
+
+    #[test]
+    fn 点垃圾桶删得掉账号() {
+        let ctx = test_ctx();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(400.0, 300.0));
+        let mut state = RowState {
+            button_rect: egui::Rect::NOTHING,
+            row_rect: egui::Rect::NOTHING,
+            button_clicked: false,
+            row_clicked: false,
+        };
+
+        // 第一帧：把行摆出来
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| run_row(ui, &mut state));
+
+        click_at(&ctx, screen, state.button_rect.center(), &mut state);
+        assert!(state.button_clicked, "行内的垃圾桶按钮应该收到点击");
+        assert!(!state.row_clicked, "点垃圾桶不该把行也当成点了");
+    }
+
+    #[test]
+    fn 点行空白处能选中() {
+        let ctx = test_ctx();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::new(400.0, 300.0));
+        let mut state = RowState {
+            button_rect: egui::Rect::NOTHING,
+            row_rect: egui::Rect::NOTHING,
+            button_clicked: false,
+            row_clicked: false,
+        };
+
+        let input = egui::RawInput {
+            screen_rect: Some(screen),
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| run_row(ui, &mut state));
+
+        let pos = egui::Pos2::new(state.row_rect.left() + 6.0, state.row_rect.center().y);
+        click_at(&ctx, screen, pos, &mut state);
+        assert!(state.row_clicked, "点行空白处应该选中");
+        assert!(!state.button_clicked, "不该误触垃圾桶");
+    }
 }
