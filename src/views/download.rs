@@ -1208,7 +1208,8 @@ fn content_tab(app: &mut App, ui: &mut Ui) {
 
     if app.download.content_hits.is_empty() {
         if app.download.content_loading {
-            ui::empty_state(ui, &p, "loader", "正在加载", "内容来自 Modrinth 开放平台");
+            let source = app.download.content_source.label();
+            ui::empty_state(ui, &p, "loader", "正在加载", &format!("内容来自 {source}"));
         } else {
             ui::empty_state(
                 ui,
