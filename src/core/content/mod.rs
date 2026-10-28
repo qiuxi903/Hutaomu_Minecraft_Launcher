@@ -15,6 +15,7 @@ pub mod modrinth;
 pub mod translate;
 pub mod update;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -27,7 +28,7 @@ pub use modrinth::ContentKind;
 pub use modrinth::RemoteProject;
 
 /// 内容平台
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ContentSource {
     /// Modrinth 开放平台，不需要 API Key
@@ -113,6 +114,181 @@ pub fn search(
             curseforge::search(dl, kind, query, mc_version, loader, offset, limit)
         }
     }
+}
+
+/// 双平台搜索的结果
+#[derive(Debug, Default)]
+pub struct UnifiedSearch {
+    /// 去重合并后的结果，按下载量从多到少排
+    pub hits: Vec<modrinth::SearchHit>,
+    /// 合并后的总条数
+    pub total: u32,
+    /// 有没有哪一路走了社区镜像
+    pub via_mirror: bool,
+    /// 哪一路失败了（键是平台，值是原因）
+    pub errors: Vec<(ContentSource, String)>,
+}
+
+/// 双平台一起搜，结果去重合并
+///
+/// 两个平台各搜一遍，同一个项目只留一条：
+/// 先用 MCMod 的对照表配对（它记着同一个模组在两边的 slug），
+/// 没有对照的再按「标题与作者都一样」兜底。
+/// 两边都有时优先用 `preferred` 那边的名字、图标与版本。
+pub fn search_unified(
+    dl: &Downloader,
+    kind: ContentKind,
+    query: &str,
+    mc_version: Option<&str>,
+    loader: Option<&str>,
+    limit: u32,
+    preferred: ContentSource,
+    mcmod: &mcmod::Database,
+) -> UnifiedSearch {
+    let platforms = sources_for(kind);
+    let mut results: Vec<(ContentSource, Result<modrinth::SearchResponse, String>)> = Vec::new();
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = platforms
+            .iter()
+            .map(|&source| {
+                let dl = dl.clone();
+                let query = query.to_string();
+                let mc = mc_version.map(|s| s.to_string());
+                let loader = loader.map(|s| s.to_string());
+                scope.spawn(move || {
+                    let result = search(
+                        &dl,
+                        source,
+                        kind,
+                        &query,
+                        mc.as_deref(),
+                        loader.as_deref(),
+                        0,
+                        limit,
+                    );
+                    (source, result.map_err(|e| format!("{e:#}")))
+                })
+            })
+            .collect();
+        for handle in handles {
+            if let Ok(pair) = handle.join() {
+                results.push(pair);
+            }
+        }
+    });
+
+    let mut unified = UnifiedSearch::default();
+    let mut by_platform: HashMap<ContentSource, Vec<modrinth::SearchHit>> = HashMap::new();
+    for (source, result) in results {
+        match result {
+            Ok(response) => {
+                if response.via_mirror {
+                    unified.via_mirror = true;
+                }
+                by_platform.insert(source, response.hits);
+            }
+            Err(err) => {
+                log::warn!("{} 搜索失败: {err}", source.label());
+                unified.errors.push((source, err));
+            }
+        }
+    }
+
+    let first = by_platform.remove(&preferred).unwrap_or_default();
+    let second: Vec<modrinth::SearchHit> =
+        by_platform.values().flat_map(|hits| hits.clone()).collect();
+    unified.hits = merge_hits(&first, &second, mcmod);
+    unified.total = unified.hits.len() as u32;
+    unified
+}
+
+/// 把两路搜索结果去重合并
+///
+/// 判断两边是不是同一个项目：
+/// 1. MCMod 对照表（curseforge_slug ↔ modrinth_slug）；
+/// 2. 标题与作者归一化后都相同（两边的作者都非空时才比作者）。
+///
+/// 配上对的：`preferred` 那边做底，补上另一边的平台项目编号；
+/// 没配上的各自保留。结果按下载量从多到少排。
+fn merge_hits(
+    preferred: &[modrinth::SearchHit],
+    other: &[modrinth::SearchHit],
+    db: &mcmod::Database,
+) -> Vec<modrinth::SearchHit> {
+    let mut merged: Vec<modrinth::SearchHit> = Vec::with_capacity(preferred.len() + other.len());
+    let mut taken_other = vec![false; other.len()];
+
+    for mut hit in preferred.to_vec() {
+        // 在另一边找同一个项目
+        let partner = other.iter().enumerate().position(|(index, candidate)| {
+            if taken_other[index] {
+                return false;
+            }
+            if same_project(&db, &hit, candidate) {
+                return true;
+            }
+            false
+        });
+        if let Some(index) = partner {
+            taken_other[index] = true;
+            let mate = &other[index];
+            // 两边的平台编号都留住，装哪个平台由详情页决定
+            if hit.cf_id.is_none() {
+                hit.cf_id = mate.cf_id;
+            }
+        }
+        merged.push(hit);
+    }
+    for (index, hit) in other.iter().enumerate() {
+        if !taken_other[index] {
+            merged.push(hit.clone());
+        }
+    }
+    merged.sort_by(|a, b| b.downloads.cmp(&a.downloads));
+    merged
+}
+
+/// 两边的搜索结果是不是同一个项目
+fn same_project(
+    db: &crate::core::content::mcmod::Database,
+    a: &modrinth::SearchHit,
+    b: &modrinth::SearchHit,
+) -> bool {
+    if a.source == b.source {
+        return false;
+    }
+    // MCMod 对照表最可靠
+    let (mr_slug, cf_slug) = if a.source == ContentSource::Modrinth {
+        (&a.slug, &b.slug)
+    } else {
+        (&b.slug, &a.slug)
+    };
+    if let Some(entry) = db.lookup_modrinth(mr_slug) {
+        if !entry.curseforge_slug.is_empty() && entry.curseforge_slug.eq_ignore_ascii_case(cf_slug)
+        {
+            return true;
+        }
+    }
+    // 兜底：标题与作者都一样
+    if normalize_title(&a.title) == normalize_title(&b.title) && !a.title.is_empty() {
+        let (author_a, author_b) = (&a.author, &b.author);
+        if author_a.trim().is_empty() || author_b.trim().is_empty() {
+            return true;
+        }
+        if author_a.trim().eq_ignore_ascii_case(author_b.trim()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// 标题归一化：小写、只留字母与数字
+fn normalize_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 /// 项目详情
@@ -373,5 +549,86 @@ mod tests {
                 kind.label()
             );
         }
+    }
+
+    fn hit(source: ContentSource, slug: &str, title: &str, downloads: u64) -> modrinth::SearchHit {
+        modrinth::SearchHit {
+            project_id: slug.to_string(),
+            slug: slug.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            author: "作者".to_string(),
+            icon_url: None,
+            downloads,
+            follows: 0,
+            categories: vec![],
+            versions: vec![],
+            project_type: "mod".to_string(),
+            date_modified: String::new(),
+            license: String::new(),
+            gallery: vec![],
+            cf_id: if source == ContentSource::CurseForge {
+                Some(42)
+            } else {
+                None
+            },
+            source,
+        }
+    }
+
+    #[test]
+    fn 两边都有的项目只留一条() {
+        let db = mcmod::Database::parse(
+            "mcmod_id,curseforge_slug,modrinth_slug,name,subname,abbr
+459,jei,jei,JEI,Just Enough Items,JEI
+",
+        );
+        let mr = vec![hit(ContentSource::Modrinth, "jei", "Just Enough Items (JEI)", 100)];
+        let cf = vec![hit(ContentSource::CurseForge, "jei", "Just Enough Items (JEI)", 90)];
+        let merged = merge_hits(&mr, &cf, &db);
+        assert_eq!(merged.len(), 1, "MCMod 对照表配上对的应该合并成一条");
+        // 优先平台（这里是 Modrinth）的数据做底
+        assert_eq!(merged[0].source, ContentSource::Modrinth);
+        // 另一边的平台编号留了下来
+        assert_eq!(merged[0].cf_id, Some(42));
+    }
+
+    #[test]
+    fn 标题作者都一样的也算同一个项目() {
+        let db = mcmod::Database::default();
+        let mr = vec![hit(ContentSource::Modrinth, "some-mod", "Some Mod!", 100)];
+        let cf = vec![hit(ContentSource::CurseForge, "some-mod-cf", "Some  Mod", 90)];
+        let merged = merge_hits(&mr, &cf, &db);
+        assert_eq!(merged.len(), 1, "标题与作者归一化后相同应该合并");
+    }
+
+    #[test]
+    fn 不同项目各自保留() {
+        let db = mcmod::Database::default();
+        let mr = vec![hit(ContentSource::Modrinth, "aaa", "Alpha", 100)];
+        let cf = vec![hit(ContentSource::CurseForge, "bbb", "Beta", 90)];
+        let merged = merge_hits(&mr, &cf, &db);
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn 合并结果按下载量排() {
+        let db = mcmod::Database::default();
+        let mr = vec![
+            hit(ContentSource::Modrinth, "small", "Small", 10),
+            hit(ContentSource::Modrinth, "big", "Big", 999),
+        ];
+        let cf = vec![hit(ContentSource::CurseForge, "mid", "Mid", 100)];
+        let merged = merge_hits(&mr, &cf, &db);
+        let downloads: Vec<u64> = merged.iter().map(|hit| hit.downloads).collect();
+        let mut sorted = downloads.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(downloads, sorted, "应该按下载量从多到少排");
+    }
+
+    #[test]
+    fn 标题归一化忽略大小写与符号() {
+        assert_eq!(normalize_title("Some Mod!"), normalize_title("some  mod"));
+        assert!(normalize_title("!!!").is_empty());
     }
 }

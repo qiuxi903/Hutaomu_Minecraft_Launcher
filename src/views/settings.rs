@@ -532,7 +532,7 @@ fn content_source_section(app: &mut App, ui: &mut Ui) {
         widgets::section_title(ui, &p, "内容平台");
 
         ui.label(
-            egui::RichText::new("Mod、光影、资源包与整合包从哪个平台下载")
+            egui::RichText::new("搜索时 Modrinth 与 CurseForge 一起查；两边都有时，优先用这边的版本与下载")
                 .font(ui::font(12.0))
                 .color(p.text_faint),
         );
@@ -541,7 +541,7 @@ fn content_source_section(app: &mut App, ui: &mut Ui) {
         // ---- 平台 ----
         ui.horizontal(|ui| {
             ui.label(
-                egui::RichText::new("默认平台")
+                egui::RichText::new("优先平台")
                     .font(ui::font(13.0))
                     .color(p.text_weak),
             );

@@ -547,6 +547,7 @@ fn project_to_hit(project: &CfProject, kind: ContentKind) -> SearchHit {
             .map(|s| s.url.clone())
             .collect(),
         cf_id: Some(project.id),
+        source: super::ContentSource::CurseForge,
     }
 }
 
@@ -702,6 +703,7 @@ pub fn search(
         .map(|p| project_to_hit(p, kind))
         .collect();
     Ok(SearchResponse {
+        errors: Vec::new(),
         hits,
         offset,
         limit,

@@ -246,7 +246,12 @@ impl App {
                 self.page = Page::Download;
                 self.download.tab = 2;
                 self.download.content_loaded_tab = Some(2);
-                views::download::open_project(self, "sodium", "jellysquid3");
+                views::download::open_project(
+                    self,
+                    crate::core::content::ContentSource::Modrinth,
+                    "sodium",
+                    "jellysquid3",
+                );
             }
             18 => {
                 // 版本详情：原版实例（左侧导航没有模组与光影）
@@ -387,7 +392,12 @@ impl App {
                 self.page = Page::Download;
                 self.download.tab = 5;
                 self.download.content_loaded_tab = Some(5);
-                views::download::open_project(self, "compsmp", "CompSMP-OptionalModpack");
+                views::download::open_project(
+                    self,
+                    crate::core::content::ContentSource::Modrinth,
+                    "compsmp",
+                    "CompSMP-OptionalModpack",
+                );
             }
             28 => {
                 // 整合包实例详情：独立实例与重新安装入口
@@ -435,12 +445,12 @@ impl App {
                 }
             }
             33 => {
-                // 下载页切到 CurseForge 平台
+                // 双平台合并搜索：工业时代2两边都有，正好看出去重；
+                // 它没有最新版的构建，关掉版本筛选才搜得到
                 self.page = Page::Download;
                 self.download.tab = 2;
-                self.download.content_source = ContentSource::CurseForge;
-                self.cfg.download.content_source = ContentSource::CurseForge;
-                self.download.content_query = "sodium".into();
+                self.download.use_version_filter = false;
+                self.download.content_query = "industrial craft".into();
                 // 上一个场景可能停在详情页，这里退回列表
                 self.download.content_detail = None;
                 self.download.content_hits.clear();
@@ -696,6 +706,10 @@ pub enum CoreEvent {
         key: String,
         error: String,
     },
+    /// 搜索结果卡片的中文简介到了（键是「平台|项目编号」）
+    ContentHitsTranslated {
+        entries: Vec<(String, String)>,
+    },
     /// 内容装好了，记进本地缓存
     ContentInstalled {
         kind: crate::core::content::ContentKind,
@@ -777,7 +791,7 @@ pub struct App {
 
     pub download: views::download::DownloadState,
     /// MCMod 元数据库（Mod 中文名、缩写与 MCMod 链接）
-    pub mcmod_db: crate::core::content::mcmod::Database,
+    pub mcmod_db: std::sync::Arc<crate::core::content::mcmod::Database>,
     /// MCMod 元数据是否正在更新
     pub mcmod_db_loading: bool,
     /// 本地内容的线上资料缓存（模组 / 光影 / 资源包）
@@ -913,7 +927,9 @@ impl App {
             news_error: None,
             news_fetched_at: None,
             download: Default::default(),
-            mcmod_db: crate::core::content::mcmod::Database::load_cached().unwrap_or_default(),
+            mcmod_db: std::sync::Arc::new(
+                crate::core::content::mcmod::Database::load_cached().unwrap_or_default(),
+            ),
             mcmod_db_loading: false,
             content_cache: crate::core::content::cache::ContentCache::load(),
             accounts_ui: Default::default(),
@@ -998,7 +1014,7 @@ impl App {
             return;
         }
         if let Some(db) = crate::core::content::mcmod::Database::load_cached() {
-            self.mcmod_db = db;
+            self.mcmod_db = std::sync::Arc::new(db);
             return;
         }
         self.mcmod_db_loading = true;
@@ -2150,7 +2166,7 @@ impl App {
                 }
                 CoreEvent::McmodDbReady(db) => {
                     self.mcmod_db_loading = false;
-                    self.mcmod_db = db;
+                    self.mcmod_db = std::sync::Arc::new(db);
                 }
                 CoreEvent::CurseForgeKeyTest(result) => {
                     self.cf_key_testing = false;
@@ -2252,6 +2268,11 @@ impl App {
                     self.versions_ui
                         .content_updates
                         .insert(key, views::versions::ContentUpdateState::Failed(error));
+                }
+                CoreEvent::ContentHitsTranslated { entries } => {
+                    for (key, text) in entries {
+                        self.download.card_translations.insert(key, text);
+                    }
                 }
                 CoreEvent::ContentInstalled {
                     kind,
@@ -3930,7 +3951,7 @@ fn shot_scene_label(scene: usize) -> &'static str {
         30 => "版本管理-光影加载器",
         31 => "版本管理-导出",
         32 => "版本管理-概览",
-        33 => "下载-CurseForge",
+        33 => "下载-双平台去重",
         34 => "游戏日志面板",
         35 => "启动过场",
         36 => "下载-数据包",

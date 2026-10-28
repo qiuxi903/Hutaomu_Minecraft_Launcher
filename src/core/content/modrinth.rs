@@ -188,6 +188,9 @@ pub struct SearchResponse {
     pub limit: u32,
     #[serde(default)]
     pub total_hits: u32,
+    /// 哪些平台没搜到（键是平台，值是原因）
+    #[serde(default)]
+    pub errors: Vec<(super::ContentSource, String)>,
     /// 搜索是不是走了社区镜像
     ///
     /// CurseForge 官方搜索端点偶尔会临时拦截请求并返回 403，
@@ -229,6 +232,12 @@ pub struct SearchHit {
     /// CurseForge 的项目 id，Modrinth 的结果没有这个
     #[serde(default)]
     pub cf_id: Option<u32>,
+    /// 来自哪个平台
+    ///
+    /// Modrinth 的搜索结果直接反序列化，走 default（Modrinth）；
+    /// CurseForge 的结果在映射时手动标上。
+    #[serde(default)]
+    pub source: super::ContentSource,
 }
 
 /// 反查本地文件得到的线上项目

@@ -32,6 +32,8 @@ const MCMOD_BASE: &str = "https://www.mcmod.cn/class/";
 pub struct Entry {
     /// MCMod 的数字 id
     pub mcmod_id: u32,
+    /// 对应的 CurseForge 项目 slug
+    pub curseforge_slug: String,
     /// 对应的 Modrinth 项目 slug
     pub modrinth_slug: String,
     /// 中文名
@@ -72,6 +74,8 @@ impl Entry {
 pub struct Database {
     /// Modrinth slug → 条目
     by_modrinth: HashMap<String, Entry>,
+    /// CurseForge slug → 条目
+    by_curseforge: HashMap<String, Entry>,
     /// 英文名（小写）→ 条目，用于匹配 jar 元数据里的名称
     by_english: HashMap<String, Entry>,
     /// 条目总数
@@ -96,6 +100,7 @@ impl Database {
                 continue;
             }
             let mcmod_id: u32 = fields[0].trim().parse().unwrap_or(0);
+            let curseforge_slug = fields[1].trim();
             let modrinth_slug = fields[2].trim();
             // 只要有 MC 百科的编号就收下：没有 Modrinth 对照的模组，
             // 照样能给出中文名和 MC 百科页面
@@ -104,6 +109,7 @@ impl Database {
             }
             let entry = Entry {
                 mcmod_id,
+                curseforge_slug: curseforge_slug.to_string(),
                 modrinth_slug: modrinth_slug.to_string(),
                 name: fields[3].trim().to_string(),
                 subname: fields[4].trim().to_string(),
@@ -112,6 +118,10 @@ impl Database {
             if !modrinth_slug.is_empty() {
                 db.by_modrinth
                     .insert(modrinth_slug.to_lowercase(), entry.clone());
+            }
+            if !curseforge_slug.is_empty() {
+                db.by_curseforge
+                    .insert(curseforge_slug.to_lowercase(), entry.clone());
             }
             if !entry.subname.is_empty() {
                 db.by_english
@@ -126,6 +136,11 @@ impl Database {
     /// 按 Modrinth slug 查找
     pub fn lookup_modrinth(&self, slug: &str) -> Option<&Entry> {
         self.by_modrinth.get(&slug.to_lowercase())
+    }
+
+    /// 按 CurseForge slug 查找
+    pub fn lookup_curseforge(&self, slug: &str) -> Option<&Entry> {
+        self.by_curseforge.get(&slug.to_lowercase())
     }
 
     /// 按英文名查找
@@ -282,6 +297,20 @@ fn split_csv_line(line: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn 按_curseforge_slug_能查到() {
+        let db = Database::parse(
+            "mcmod_id,curseforge_slug,modrinth_slug,name,subname,abbr
+459,jei,jei,JEI物品管理器,Just Enough Items,JEI
+",
+        );
+        let entry = db.lookup_curseforge("JEI").expect("应能按 CurseForge slug 找到");
+        assert_eq!(entry.mcmod_id, 459);
+        assert_eq!(entry.name, "JEI物品管理器");
+        // Modrinth 那条索引不受影响
+        assert!(db.lookup_modrinth("jei").is_some());
+    }
+
     use super::*;
 
     #[test]
@@ -320,6 +349,7 @@ mod tests {
     fn display_name_falls_back_to_english() {
         let entry = Entry {
             mcmod_id: 1,
+                curseforge_slug: String::new(),
             modrinth_slug: String::new(),
             name: String::new(),
             subname: "Minecraft".into(),
