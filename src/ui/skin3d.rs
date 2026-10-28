@@ -322,9 +322,10 @@ pub fn skin_preview(
         *yaw += response.drag_delta().x * 0.012;
     }
     if animate {
-        // 只在拖动时转，不自己转圈：默认就停在斜侧的角度
+        // 待机时只是手臂微微摆一下，很慢，20 帧就够，
+        // 30 帧白白多烧一半的 CPU
         ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(33));
+            .request_repaint_after(std::time::Duration::from_millis(50));
     }
 
     // 地面阴影
