@@ -65,14 +65,6 @@ impl ContentSource {
         }
     }
 
-    /// 平台的一句话说明，摆在平台切换旁边
-    pub fn hint(self) -> &'static str {
-        match self {
-            Self::Modrinth => "无需 API Key",
-            Self::CurseForge => "需要 API Key",
-        }
-    }
-
     /// 这个平台收不收这类内容
     ///
     /// Modrinth 不收数据包，也不收世界。数据包那个筛选它会直接忽略，

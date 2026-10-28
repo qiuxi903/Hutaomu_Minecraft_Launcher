@@ -1076,11 +1076,6 @@ fn platform_switcher(app: &mut App, ui: &mut Ui) {
                 }
             }
         }
-        ui.label(
-            egui::RichText::new(app.download.content_source.hint())
-                .font(ui::font(11.5))
-                .color(p.text_faint),
-        );
     });
 
     // CurseForge 没有 key 就先用不了，提前说清楚

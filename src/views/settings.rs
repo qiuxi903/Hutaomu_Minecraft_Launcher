@@ -440,11 +440,6 @@ fn download_section(app: &mut App, ui: &mut Ui) {
                 app.save_config();
                 app.load_manifest();
             }
-            ui.label(
-                egui::RichText::new("镜像源对国内网络更友好")
-                    .font(ui::font(11.5))
-                    .color(p.text_faint),
-            );
         });
         ui.add_space(10.0);
 
@@ -541,11 +536,6 @@ fn content_source_section(app: &mut App, ui: &mut Ui) {
                 .font(ui::font(12.0))
                 .color(p.text_faint),
         );
-        ui.label(
-            egui::RichText::new("数据包只有 CurseForge 收，默认平台对它不生效")
-                .font(ui::font(12.0))
-                .color(p.text_faint),
-        );
         ui.add_space(12.0);
 
         // ---- 平台 ----
@@ -570,11 +560,6 @@ fn content_source_section(app: &mut App, ui: &mut Ui) {
                 app.download.content_source = picked;
                 app.save_config();
             }
-            ui.label(
-                egui::RichText::new(app.cfg.download.content_source.hint())
-                    .font(ui::font(11.5))
-                    .color(p.text_faint),
-            );
         });
         ui.add_space(14.0);
 
