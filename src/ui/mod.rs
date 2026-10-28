@@ -99,7 +99,7 @@ pub fn install_style(ctx: &egui::Context, p: &Palette, font_scale: f32) {
     style.spacing.interact_size = egui::vec2(40.0, 32.0);
     style.spacing.scroll.bar_width = 8.0;
     style.spacing.scroll.floating = true;
-    style.animation_time = 0.12;
+    style.animation_time = anim::DUR_HOVER;
     // 文字默认不可选
     //
     // 可选的文字会自己吃掉鼠标点击，卡片里点了标题反而进不去详情，

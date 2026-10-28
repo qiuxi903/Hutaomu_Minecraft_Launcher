@@ -36,20 +36,7 @@ pub fn ease_out(t: f32) -> f32 {
 }
 
 /// 以首次渲染时间为基准计算 0→1 的入场进度；active 为 false 时清除状态
-pub fn enter_progress(ctx: &egui::Context, id: Id, active: bool, duration: f32) -> f32 {
-    if !active {
-        ctx.memory_mut(|m| m.data.remove::<f64>(id));
-        return 0.0;
-    }
-    let now = ctx.input(|i| i.time);
-    let start = ctx
-        .memory(|m| m.data.get_temp::<f64>(id))
-        .unwrap_or_else(|| {
-            ctx.memory_mut(|m| m.data.insert_temp(id, now));
-            now
-        });
-    ease_out(((now - start) as f32 / duration).clamp(0.0, 1.0))
-}
+pub use super::anim::enter_progress;
 
 // ---------------------------------------------------------------- 文本工具
 
@@ -191,14 +178,7 @@ fn paint_card_state(ui: &Ui, p: &Palette, response: &Response, id: Id, with_shad
         return;
     }
     let hovered = response.hovered();
-    let t = if super::animations_enabled() {
-        ui.ctx()
-            .animate_bool_with_time(id.with("hov"), hovered, 0.16)
-    } else if hovered {
-        1.0
-    } else {
-        0.0
-    };
+    let t = super::anim::to_bool(ui.ctx(), id.with("hov"), hovered, super::anim::DUR_BASE);
     let radius = p.corner(0);
     // 边框：平时是灰的，悬停时染上主色
     let border = lerp_color(p.border, p.accent, t * 0.85);
@@ -362,22 +342,10 @@ pub fn button(ui: &mut Ui, p: &Palette, opts: ButtonOpts<'_>) -> Response {
     let radius = p.corner(-2);
 
     // 悬停与按压都做插值，避免颜色突变
-    let hover_t = if super::animations_enabled() {
-        ui.ctx()
-            .animate_bool_with_time(response.id.with("hov"), hovered, 0.10)
-    } else if hovered {
-        1.0
-    } else {
-        0.0
-    };
-    let press_t = if super::animations_enabled() {
-        ui.ctx()
-            .animate_bool_with_time(response.id.with("prs"), pressed, 0.06)
-    } else if pressed {
-        1.0
-    } else {
-        0.0
-    };
+    let hover_t =
+        super::anim::to_bool(ui.ctx(), response.id.with("hov"), hovered, super::anim::DUR_HOVER);
+    let press_t =
+        super::anim::to_bool(ui.ctx(), response.id.with("prs"), pressed, super::anim::DUR_PRESS);
 
     let (base, hover_bg, active_bg, fg, border) = match opts.kind {
         ButtonKind::Primary => (
@@ -480,14 +448,8 @@ pub fn icon_button(ui: &mut Ui, p: &Palette, name: &str, tip: &str) -> Response 
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
         // 悬停底色淡入，不要啪地一下冒出来
-        let t = if super::animations_enabled() {
-            ui.ctx()
-                .animate_bool_with_time(response.id.with("hov"), hovered, 0.12)
-        } else if hovered {
-            1.0
-        } else {
-            0.0
-        };
+        let t =
+            super::anim::to_bool(ui.ctx(), response.id.with("hov"), hovered, super::anim::DUR_HOVER);
         if t > 0.001 {
             ui.painter().rect_filled(
                 rect,
@@ -517,22 +479,10 @@ pub fn nav_item(ui: &mut Ui, p: &Palette, name: &str, label: &str, selected: boo
     let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click());
     if ui.is_rect_visible(rect) {
         let hovered = response.hovered();
-        let hover_t = if super::animations_enabled() {
-            ui.ctx()
-                .animate_bool_with_time(response.id.with("hov"), hovered, 0.12)
-        } else if hovered {
-            1.0
-        } else {
-            0.0
-        };
-        let sel_t = if super::animations_enabled() {
-            ui.ctx()
-                .animate_bool_with_time(response.id.with("sel"), selected, 0.16)
-        } else if selected {
-            1.0
-        } else {
-            0.0
-        };
+        let hover_t =
+            super::anim::to_bool(ui.ctx(), response.id.with("hov"), hovered, super::anim::DUR_HOVER);
+        let sel_t =
+            super::anim::to_bool(ui.ctx(), response.id.with("sel"), selected, super::anim::DUR_BASE);
         let hover_bg = if p.dark {
             alpha(Color32::WHITE, 8)
         } else {
@@ -710,14 +660,7 @@ pub fn toggle(ui: &mut Ui, p: &Palette, value: &mut bool) -> Response {
         *value = !*value;
         response.mark_changed();
     }
-    let t = if super::animations_enabled() {
-        ui.ctx()
-            .animate_bool_with_time(response.id.with("t"), *value, 0.14)
-    } else if *value {
-        1.0
-    } else {
-        0.0
-    };
+    let t = super::anim::to_bool(ui.ctx(), response.id.with("t"), *value, super::anim::DUR_BASE);
     let bg = lerp_color(p.surface_alt, p.accent, t);
     ui.painter().rect_filled(rect, CornerRadius::same(11), bg);
     if t < 0.5 {
@@ -816,15 +759,11 @@ pub fn segmented(
     let picked = (*index).min(labels.len().saturating_sub(1));
     let target_x = rect.left() + 3.0 + widths[..picked].iter().sum::<f32>();
     let target_w = widths[picked];
-    let (indicator_x, indicator_w) = if super::animations_enabled() {
-        let anim = Id::new(("htmcl_segmented", id_source));
-        (
-            ui.ctx().animate_value_with_time(anim.with("x"), target_x, 0.16),
-            ui.ctx().animate_value_with_time(anim.with("w"), target_w, 0.16),
-        )
-    } else {
-        (target_x, target_w)
-    };
+    let anim = Id::new(("htmcl_segmented", id_source));
+    let (indicator_x, indicator_w) = (
+        super::anim::to_value(ui.ctx(), anim.with("x"), target_x, super::anim::DUR_BASE),
+        super::anim::to_value(ui.ctx(), anim.with("w"), target_w, super::anim::DUR_BASE),
+    );
     let indicator = Rect::from_min_size(
         Pos2::new(indicator_x, rect.top() + 3.0),
         Vec2::new(indicator_w, height - 6.0),
@@ -1193,14 +1132,7 @@ pub fn fixed_card(
     let radius = p.corner_sm();
     let hovered = response.hovered();
     // 悬停时边框染上主色，阴影也重一点，扫一眼就知道点的是哪张
-    let t = if super::animations_enabled() {
-        ui.ctx()
-            .animate_bool_with_time(response.id.with("hov"), hovered, 0.14)
-    } else if hovered {
-        1.0
-    } else {
-        0.0
-    };
+    let t = super::anim::to_bool(ui.ctx(), response.id.with("hov"), hovered, super::anim::DUR_BASE);
     let border = lerp_color(p.border, p.accent, t * 0.8);
     ui.painter().rect_filled(rect, radius, p.surface);
     ui.painter()
@@ -1235,15 +1167,12 @@ pub fn progress(
         .rect_filled(rect, radius, p.surface_alt);
     let target = fraction.clamp(0.0, 1.0);
     // 进度平滑过渡，不要一格一格地跳
-    let t = if super::animations_enabled() {
-        ui.ctx().animate_value_with_time(
-            ui.make_persistent_id(id_source).with("htmcl_progress"),
-            target,
-            0.18,
-        )
-    } else {
-        target
-    };
+    let t = super::anim::to_value(
+        ui.ctx(),
+        ui.make_persistent_id(id_source).with("htmcl_progress"),
+        target,
+        super::anim::DUR_BASE,
+    );
     if t > 0.0 {
         let filled = Rect::from_min_size(
             rect.min,
@@ -1279,7 +1208,12 @@ pub fn spinner(ui: &mut Ui, p: &Palette, size: f32) -> Response {
     let time = ui.input(|i| i.time) as f32;
     let center = rect.center();
     let radius = size / 2.0 - 2.0;
-    let start = time * 4.0;
+    // 关掉动画就画一个静止的环，不再驱动重绘
+    let start = if super::animations_enabled() {
+        time * 4.0
+    } else {
+        0.0
+    };
     let points: Vec<Pos2> = (0..=20)
         .map(|i| {
             let angle = start + (i as f32 / 20.0) * std::f32::consts::TAU * 0.75;
@@ -1288,17 +1222,22 @@ pub fn spinner(ui: &mut Ui, p: &Palette, size: f32) -> Response {
         .collect();
     ui.painter()
         .add(egui::Shape::line(points, Stroke::new(2.0, p.accent)));
-    ui.ctx().request_repaint();
+    if super::animations_enabled() {
+        // 只在转的时候要下一帧，别让整个窗口跟着常驻重绘
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(33));
+    }
     response
 }
 
 pub fn empty_state(ui: &mut Ui, p: &Palette, icon_name: &str, title: &str, desc: &str) {
     // 空状态出现时淡入，不要突然冒出来
-    let t = if super::animations_enabled() {
-        enter_progress(ui.ctx(), ui.id().with("htmcl_empty_state"), true, 0.22)
-    } else {
-        1.0
-    };
+    let t = enter_progress(
+        ui.ctx(),
+        ui.id().with("htmcl_empty_state"),
+        true,
+        super::anim::DUR_ENTER,
+    );
     ui.add_space(28.0);
     ui.vertical_centered(|ui| {
         ui.set_opacity(t);
@@ -1468,8 +1407,12 @@ pub fn toast_layer(
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                 for toast in toasts.iter().rev() {
                     let elapsed = now - toast.created;
-                    let fade = if elapsed > TOAST_LIFETIME - 0.45 {
-                        ((TOAST_LIFETIME - elapsed) / 0.45).clamp(0.0, 1.0) as f32
+                    // 关掉动画就直接显示与消失，不做淡入淡出
+                    let fade = if !super::animations_enabled() {
+                        1.0
+                    } else if elapsed > TOAST_LIFETIME - super::anim::DUR_FADE as f64 {
+                        ((TOAST_LIFETIME - elapsed) / super::anim::DUR_FADE as f64)
+                            .clamp(0.0, 1.0) as f32
                     } else {
                         1.0
                     };
@@ -1488,7 +1431,11 @@ pub fn toast_layer(
                     let height = galley.size().y + 22.0;
                     let (slot, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
                     // 入场时从右侧滑入
-                    let slide = (elapsed / 0.18).clamp(0.0, 1.0) as f32;
+                    let slide = if super::animations_enabled() {
+                        (elapsed / super::anim::DUR_BASE as f64).clamp(0.0, 1.0) as f32
+                    } else {
+                        1.0
+                    };
                     let rect = slot.translate(Vec2::new((1.0 - ease_out(slide)) * 26.0, 0.0));
                     ui.painter().rect_filled(rect, p.corner(-2), p.surface);
                     ui.painter().rect_stroke(
@@ -1677,14 +1624,7 @@ pub fn round_icon_button_state(
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
     let hovered = response.hovered();
     // 悬停时底色淡入
-    let t = if super::animations_enabled() {
-        ui.ctx()
-            .animate_bool_with_time(response.id.with("hov"), hovered, 0.12)
-    } else if hovered {
-        1.0
-    } else {
-        0.0
-    };
+    let t = super::anim::to_bool(ui.ctx(), response.id.with("hov"), hovered, super::anim::DUR_HOVER);
     if t > 0.001 {
         ui.painter().rect_filled(
             rect,

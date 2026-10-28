@@ -47,11 +47,12 @@ impl App {
 
         // 开合都走同一条动画：关闭时不是啪地消失，而是缩回去
         let target = if self.download_panel_open { 1.0 } else { 0.0 };
-        let anim = if crate::ui::animations_enabled() {
-            ctx.animate_value_with_time(egui::Id::new("htmcl_download_panel_anim"), target, 0.18)
-        } else {
-            target
-        };
+        let anim = crate::ui::anim::to_value(
+            ctx,
+            egui::Id::new("htmcl_download_panel_anim"),
+            target,
+            crate::ui::anim::DUR_BASE,
+        );
 
         if anim <= 0.001 {
             // 完全收起了，只留一个胶囊提示

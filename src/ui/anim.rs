@@ -5,30 +5,29 @@
 //! 界面回到静态的样子。
 //!
 //! 动画状态存在 egui 的内存里（按 Id 索引），不用自己维护生命周期。
+//!
+//! **时长只用下面这几个档位**，不要再随手写数字。同一个交互在不同控件里
+//! 用不同时间，手感会打架：按下去要跟手，展开要稳，入场要看得清。
 
 use egui::{Color32, Context, Id, Rect, Stroke, Vec2};
 
 use super::animations_enabled;
 
-/// 入场动画的默认时长（秒）
-pub const FADE: f32 = 0.22;
-/// 位移的距离（像素）
-pub const SLIDE: f32 = 10.0;
+/// 按下反馈：最快，要有一点「咔」的手感
+pub const DUR_PRESS: f32 = 0.08;
+/// 悬停
+pub const DUR_HOVER: f32 = 0.12;
+/// 选中、展开这类状态变化
+pub const DUR_BASE: f32 = 0.16;
+/// 入场
+pub const DUR_ENTER: f32 = 0.22;
+/// 淡出
+pub const DUR_FADE: f32 = 0.30;
 
 /// 缓出：起步快，收尾稳
 pub fn ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t) * (1.0 - t)
-}
-
-/// 缓入缓出：两头慢，中间快
-pub fn ease_in_out(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if t < 0.5 {
-        2.0 * t * t
-    } else {
-        1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
-    }
 }
 
 /// 带回弹的缓出：收尾时轻轻弹一下
@@ -37,6 +36,26 @@ pub fn ease_out_back(t: f32) -> f32 {
     let c1 = 1.70158;
     let c3 = c1 + 1.0;
     1.0 + c3 * (t - 1.0).powi(3) + c1 * (t - 1.0).powi(2)
+}
+
+/// 布尔状态过渡
+///
+/// 关掉动画时直接给目标值，不做过渡。
+pub fn to_bool(ctx: &Context, id: Id, target: bool, duration: f32) -> f32 {
+    if !animations_enabled() {
+        return if target { 1.0 } else { 0.0 };
+    }
+    ctx.animate_bool_with_time(id, target, duration)
+}
+
+/// 数值过渡
+///
+/// 关掉动画时直接给目标值。
+pub fn to_value(ctx: &Context, id: Id, target: f32, duration: f32) -> f32 {
+    if !animations_enabled() {
+        return target;
+    }
+    ctx.animate_value_with_time(id, target, duration)
 }
 
 /// 一条动画的进度
@@ -60,9 +79,23 @@ pub fn progress(ctx: &Context, id: Id, delay: f32, duration: f32) -> f32 {
     ease_out(elapsed / duration.max(0.01))
 }
 
+/// 以首次渲染时间为基准计算 0→1 的入场进度；active 为 false 时清除状态
+///
+/// 关掉动画时直接到 1，控件不会再有淡入与位移。
+pub fn enter_progress(ctx: &Context, id: Id, active: bool, duration: f32) -> f32 {
+    if !active {
+        ctx.memory_mut(|m| m.data.remove::<f64>(id));
+        return 0.0;
+    }
+    if !animations_enabled() {
+        return 1.0;
+    }
+    progress(ctx, id, 0.0, duration)
+}
+
 /// 淡入：0 → 1
 pub fn fade_in(ctx: &Context, id: Id, delay: f32) -> f32 {
-    progress(ctx, id, delay, FADE)
+    progress(ctx, id, delay, DUR_ENTER)
 }
 
 /// 入场时的位移量：起点是 `distance`，结束时回到 0
@@ -72,14 +105,9 @@ pub fn slide_in(ctx: &Context, id: Id, delay: f32, distance: f32) -> f32 {
 
 /// 入场时的缩放：略小一点再弹回原位
 pub fn scale_in(ctx: &Context, id: Id, delay: f32) -> f32 {
-    let t = progress(ctx, id, delay, FADE);
+    let t = progress(ctx, id, delay, DUR_ENTER);
     let eased = ease_out_back(t);
     0.965 + 0.035 * eased
-}
-
-/// 淡入的透明度（乘上原本的透明度）
-pub fn alpha_in(ctx: &Context, id: Id, delay: f32) -> f32 {
-    fade_in(ctx, id, delay)
 }
 
 /// 脉动：加载中的占位块一亮一暗
@@ -88,15 +116,9 @@ pub fn pulse(ctx: &Context, id: Id) -> f32 {
         return 0.5;
     }
     let now = ctx.input(|i| i.time) as f32;
-    (now * 1.6).sin() * 0.5 + 0.5
-}
-
-/// 数值平滑过渡
-pub fn number(ctx: &Context, id: Id, target: f32, duration: f32) -> f32 {
-    if !animations_enabled() {
-        return target;
-    }
-    ctx.animate_value_with_time(id, target, duration)
+    // 同一个 Id 各自的相位错开，避免一排占位块一起闪
+    let phase = (id.value() % 1000) as f32 * 0.01;
+    ((now + phase) * 1.6).sin() * 0.5 + 0.5
 }
 
 /// 一组条目的交错延迟
@@ -119,32 +141,24 @@ pub struct Enter {
 /// 给页面内容算一个入场状态
 ///
 /// 透明度不从 0 开始：整页一起淡入时，卡片的阴影也会跟着变浓变淡，
-/// 起点太低时看着像阴影在闪。这里留一半底，只做轻微的渐入。
+/// 起点太低时看着像阴影在闪。这里留大半底，只做轻微的渐入。
 pub fn enter(ctx: &Context, id: Id, delay: f32) -> Enter {
-    let t = progress(ctx, id, delay, 0.26);
+    let t = progress(ctx, id, delay, DUR_ENTER);
     Enter {
-        opacity: 0.55 + 0.45 * t,
-        offset: (1.0 - t) * 8.0,
-        scale: 0.99 + 0.01 * t,
+        opacity: 0.82 + 0.18 * t,
+        offset: (1.0 - t) * 6.0,
+        scale: 0.995 + 0.005 * t,
     }
 }
 
 /// 按下时的缩放：按下去缩一点，松开弹回来
 pub fn press_scale(ctx: &Context, id: Id, pressed: bool) -> f32 {
-    if !animations_enabled() {
-        return 1.0;
-    }
-    let target = if pressed { 0.96 } else { 1.0 };
-    ctx.animate_value_with_time(id, target, 0.09)
+    to_value(ctx, id, if pressed { 0.96 } else { 1.0 }, DUR_PRESS)
 }
 
 /// 悬停时的缩放：轻轻放大一点点
 pub fn hover_scale(ctx: &Context, id: Id, hovered: bool) -> f32 {
-    if !animations_enabled() {
-        return 1.0;
-    }
-    let target = if hovered { 1.03 } else { 1.0 };
-    ctx.animate_value_with_time(id, target, 0.14)
+    to_value(ctx, id, if hovered { 1.03 } else { 1.0 }, DUR_HOVER)
 }
 
 /// 画一个柔和的阴影
@@ -212,8 +226,10 @@ mod tests {
         for step in 0..=10 {
             let t = step as f32 / 10.0;
             assert!((0.0..=1.0).contains(&ease_out(t)));
-            assert!((0.0..=1.0).contains(&ease_in_out(t)));
+            // 回弹缓动会冲过 1 再落回来，这是它本来的样子
+            assert!((-0.1..=1.2).contains(&ease_out_back(t)));
         }
+        assert!((ease_out_back(1.0) - 1.0).abs() < 1e-5);
     }
 
     #[test]
@@ -221,5 +237,13 @@ mod tests {
         assert_eq!(stagger(0, 0.03), 0.0);
         assert!((stagger(10, 0.03) - 0.3).abs() < 1e-5);
         assert!(stagger(1000, 0.03) <= 0.6);
+    }
+
+    #[test]
+    fn 时长档位由快到慢() {
+        assert!(DUR_PRESS < DUR_HOVER);
+        assert!(DUR_HOVER < DUR_BASE);
+        assert!(DUR_BASE < DUR_ENTER);
+        assert!(DUR_ENTER < DUR_FADE);
     }
 }

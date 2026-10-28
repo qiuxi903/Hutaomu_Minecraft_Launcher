@@ -2714,10 +2714,11 @@ impl App {
                                     Sense::click(),
                                 );
                                 if ui.is_rect_visible(rect) {
-                                    let t = ui.ctx().animate_bool_with_time(
+                                    let t = ui::anim::to_bool(
+                                        ui.ctx(),
                                         response.id.with("h"),
                                         response.hovered(),
-                                        0.12,
+                                        ui::anim::DUR_HOVER,
                                     );
                                     ui.painter().rect_filled(
                                         rect,
@@ -3712,11 +3713,12 @@ impl eframe::App for App {
         let collapsed = self.cfg.ui.sidebar_collapsed;
         // 侧栏收放是滑动的，不是啪地一下变窄
         let target_width = if collapsed { 64.0 } else { 186.0 };
-        let sidebar_width = if ui::animations_enabled() {
-            ctx.animate_value_with_time(egui::Id::new("sidebar_width"), target_width, 0.2)
-        } else {
-            target_width
-        };
+        let sidebar_width = ui::anim::to_value(
+            &ctx,
+            egui::Id::new("sidebar_width"),
+            target_width,
+            ui::anim::DUR_BASE,
+        );
         let sidebar_rect = Rect::from_min_size(
             Pos2::new(body.left() + 8.0, body.top()),
             Vec2::new(sidebar_width, body.height()),
@@ -3738,11 +3740,12 @@ impl eframe::App for App {
         } else {
             0.0
         };
-        let dock_anim = if ui::animations_enabled() {
-            ctx.animate_value_with_time(egui::Id::new("game_log_dock"), dock_target, 0.18)
-        } else {
-            dock_target
-        };
+        let dock_anim = ui::anim::to_value(
+            &ctx,
+            egui::Id::new("game_log_dock"),
+            dock_target,
+            ui::anim::DUR_BASE,
+        );
         let dock_width = DOCK_WIDTH * dock_anim;
 
         let content_rect = Rect::from_min_max(

@@ -322,9 +322,12 @@ fn news_row(app: &mut App, ui: &mut Ui, item: &NewsItem, width: f32) -> egui::Re
 
     let clickable = !item.url.is_empty();
     let hovered = response.hovered() && clickable;
-    let t = ui
-        .ctx()
-        .animate_bool_with_time(response.id.with("hover"), hovered, 0.12);
+    let t = crate::ui::anim::to_bool(
+        ui.ctx(),
+        response.id.with("hover"),
+        hovered,
+        crate::ui::anim::DUR_HOVER,
+    );
 
     let bg = widgets::lerp_color(p.surface, p.surface_alt, t * 0.75);
     let border = widgets::lerp_color(p.border, p.accent, t * 0.55);
@@ -524,9 +527,12 @@ fn shortcuts_card(app: &mut App, ui: &mut Ui) {
             let (rect, response) =
                 ui.allocate_exact_size(Vec2::new(ui.available_width(), 38.0), Sense::click());
             if ui.is_rect_visible(rect) {
-                let t = ui
-                    .ctx()
-                    .animate_bool_with_time(response.id.with("h"), response.hovered(), 0.12);
+                let t = crate::ui::anim::to_bool(
+                    ui.ctx(),
+                    response.id.with("h"),
+                    response.hovered(),
+                    crate::ui::anim::DUR_HOVER,
+                );
                 if t > 0.0 {
                     ui.painter().rect_filled(
                         rect,
