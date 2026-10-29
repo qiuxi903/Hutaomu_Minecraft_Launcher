@@ -182,6 +182,8 @@ fn skin_texture_options() -> egui::TextureOptions {
 impl App {
     fn apply_shot_scene(&mut self, scene: usize) {
         // 每次切换场景先关掉所有弹窗，避免互相遮挡
+        self.tasks.clear();
+        self.download_panel_open = false;
         self.home_ui.config_open = false;
         self.versions_ui.loader_modal = None;
         self.versions_ui.shader_modal = None;
@@ -338,29 +340,32 @@ impl App {
                 }
             }
             12 => {
-                // 触发一次真实下载，用于检查下载中心面板
+                // 塞一个不会完成的假任务，专门检查下载中心面板。
+                // 以前是触发真实下载，但文件齐了任务秒完，
+                // 面板自动收起，截图里永远看不到它。
                 self.page = Page::Home;
-                if let Some(manifest) = &self.manifest {
-                    if let Some(entry) = manifest
-                        .versions
-                        .iter()
-                        .find(|v| v.id == "1.7.10")
-                        .cloned()
-                    {
-                        let game_dir = self.cfg.game_dir.clone();
-                        let id = entry.id.clone();
-                        let opts = self.cfg.download.install_options();
-                        self.spawn_download(format!("安装 {id}"), move |dl, progress, _job| {
-                            crate::core::minecraft::install::ensure_version_json(
-                                &dl, &game_dir, &entry,
-                            )?;
-                            crate::core::minecraft::install::install_version(
-                                &dl, &game_dir, &id, &progress, opts,
-                            )?;
-                            Ok(format!("{id} 安装完成"))
-                        });
-                    }
-                }
+                let progress = crate::core::download::DownloadProgress::new();
+                progress.add_total(2 * 1024 * 1024);
+                progress.add_done(1024 * 768);
+                self.next_task_id += 1;
+                self.tasks.push(TaskItem {
+                    id: self.next_task_id,
+                    title: "安装 1.7.10".into(),
+                    fraction: 0.42,
+                    message: "正在下载 1.7.10.json ...".into(),
+                    done: false,
+                    ok: true,
+                    cancellable: true,
+                    progress: Some(progress),
+                    bytes_done: 1024 * 768,
+                    bytes_total: 2 * 1024 * 1024,
+                    speed: 450_000.0,
+                    started: std::time::Instant::now(),
+                    last_bytes: 0,
+                    last_time: std::time::Instant::now(),
+                });
+                self.download_panel_open = true;
+                self.download_panel_auto = false;
             }
             14 => {
                 // 安装弹窗：选择加载器与版本
@@ -2725,8 +2730,9 @@ impl App {
                         )
                         .clicked()
                     };
+                    // 再点一下就是收起，面板会顺着原路缩回去
                     if opened {
-                        self.download_panel_open = true;
+                        self.download_panel_open = !self.download_panel_open;
                         self.download_panel_auto = false;
                     }
 
@@ -3859,7 +3865,9 @@ impl eframe::App for App {
         self.game_log_modal(&ctx);
         self.download_panel(&ctx);
         // 提示条摆在窗口下方中间：右下角让给下载中心，右边让给日志面板
-        widgets::toast_layer(&ctx, &self.palette, &mut self.toasts, now, 0.0);
+        // 下载中心开着时，提示条往右让一让，别压在面板上
+        let toast_x = if self.download_panel_open { 210.0 } else { 0.0 };
+        widgets::toast_layer(&ctx, &self.palette, &mut self.toasts, now, 0.0, toast_x);
 
         // 启动过场盖在最上面，底下的界面还看得见
         if self.game_starting {

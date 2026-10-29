@@ -900,10 +900,16 @@ pub fn dropdown(
     }
 
     let mut result = None;
-    if is_open {
+    // 展开与收起都走同一条动画：收起时缩回去，不是啪地消失
+    let progress = crate::ui::anim::to_value(
+        ui.ctx(),
+        popup_id.with("anim"),
+        if is_open { 1.0 } else { 0.0 },
+        crate::ui::anim::DUR_BASE,
+    );
+    if progress > 0.001 {
         let max_height = 280.0;
         let mut close = false;
-        let progress = enter_progress(ui.ctx(), popup_id.with("anim"), true, 0.12);
         let area = egui::Area::new(popup_id.with("list"))
             .order(egui::Order::Foreground)
             .fixed_pos(Pos2::new(
@@ -931,11 +937,18 @@ pub fn dropdown(
                                         Vec2::new(width - 8.0, 30.0),
                                         Sense::click(),
                                     );
-                                    if item_resp.hovered() {
+                                    // 悬停底色淡入，不要啪地一下冒出来
+                                    let hover_t = super::anim::to_bool(
+                                        ui.ctx(),
+                                        item_resp.id.with("hov"),
+                                        item_resp.hovered(),
+                                        super::anim::DUR_HOVER,
+                                    );
+                                    if hover_t > 0.001 {
                                         ui.painter().rect_filled(
                                             item_rect,
                                             p.corner_sm(),
-                                            p.surface_alt,
+                                            lerp_color(Color32::TRANSPARENT, p.surface_alt, hover_t),
                                         );
                                     }
                                     if selected {
@@ -960,7 +973,8 @@ pub fn dropdown(
                                         font(13.5),
                                         if selected { p.accent } else { p.text },
                                     );
-                                    if item_resp.clicked() {
+                                    // 收起过程中的点击不算数
+                                    if is_open && item_resp.clicked() {
                                         result = Some(i);
                                         close = true;
                                     }
@@ -1413,14 +1427,25 @@ pub fn toast_layer(
     toasts: &mut Vec<Toast>,
     now: f64,
     bottom_offset: f32,
+    x_shift: f32,
 ) {
     toasts.retain(|t| now - t.created < TOAST_LIFETIME);
     if toasts.is_empty() {
         return;
     }
+    // 横向让位走过渡：下载中心开着时往右挪，别压在面板上
+    let x_shift = super::anim::to_value(
+        ctx,
+        Id::new("htmcl_toast_x"),
+        x_shift,
+        super::anim::DUR_BASE,
+    );
     egui::Area::new(Id::new("htmcl_toasts"))
         .order(egui::Order::Tooltip)
-        .anchor(Align2::CENTER_BOTTOM, Vec2::new(0.0, -(20.0 + bottom_offset)))
+        .anchor(
+            Align2::CENTER_BOTTOM,
+            Vec2::new(x_shift, -(20.0 + bottom_offset)),
+        )
         .interactable(false)
         .show(ctx, |ui| {
             ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
@@ -1540,8 +1565,14 @@ pub fn modal(
     add: impl FnOnce(&mut Ui),
 ) {
     let anim_id = Id::new(("htmcl_modal_anim", title));
-    let progress = enter_progress(ctx, anim_id, *open, 0.16);
-    if !*open {
+    // 展开与收起都走同一条动画：收起时往下沉、变透明，缩完才真正不画
+    let progress = crate::ui::anim::to_value(
+        ctx,
+        anim_id,
+        if *open { 1.0 } else { 0.0 },
+        crate::ui::anim::DUR_BASE,
+    );
+    if progress <= 0.001 {
         return;
     }
     let mut close = false;

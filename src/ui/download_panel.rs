@@ -71,34 +71,32 @@ impl App {
         let mut close = false;
         let mut cancel: Option<u64> = None;
 
-        // 面板从右下角滑入，不要啪地一下出现
+        // 面板从侧栏「下载中心」按钮的位置滑出来：向右一点、从下往上升。
+        // 收起时顺着原路缩回去，不是啪地消失。
         let shift = (1.0 - anim) * 18.0;
-        // 右边停着日志面板的时候，下载中心往左让一让，别叠在一起
-        let dodge = if self.game_log_docked && self.has_game_log() && !self.show_game_log_page {
-            crate::app::DOCK_WIDTH
-        } else {
-            0.0
-        };
         // 用户拖过之后记住新位置
         let mut offset = Vec2::new(
             self.cfg.ui.download_panel_offset[0],
             self.cfg.ui.download_panel_offset[1],
         );
         let screen = ctx.content_rect();
+        // 锚在左下角，往右与往上拖；拖出屏幕的量全部收掉
         let limit = Vec2::new(
-            (screen.width() - 440.0).max(0.0),
+            (screen.width() - 420.0).max(0.0),
             (screen.height() - 160.0).max(0.0),
         );
-        offset = offset.clamp(Vec2::new(-limit.x, -limit.y), Vec2::ZERO);
+        // 左下角锚点：往右与往上拖
+        offset = offset.clamp(Vec2::new(0.0, -limit.y), Vec2::new(limit.x, 0.0));
         let mut dragged = Vec2::ZERO;
+        let sidebar_width = if self.cfg.ui.sidebar_collapsed { 64.0 } else { 186.0 };
 
         egui::Area::new(egui::Id::new("htmcl_download_panel"))
             .order(egui::Order::Foreground)
             .anchor(
-                egui::Align2::RIGHT_BOTTOM,
+                egui::Align2::LEFT_BOTTOM,
                 Vec2::new(
-                    -20.0 - dodge + shift + offset.x,
-                    -20.0 + shift + offset.y,
+                    sidebar_width + 8.0 + offset.x,
+                    -12.0 + shift + offset.y,
                 ),
             )
             .show(ctx, |ui| {
@@ -182,7 +180,7 @@ impl App {
 
         if dragged != Vec2::ZERO {
             offset += dragged;
-            offset = offset.clamp(Vec2::new(-limit.x, -limit.y), Vec2::ZERO);
+            offset = offset.clamp(Vec2::new(0.0, -limit.y), Vec2::new(limit.x, 0.0));
             self.cfg.ui.download_panel_offset = [offset.x, offset.y];
             self.save_config();
         }
@@ -202,21 +200,36 @@ impl App {
             active.iter().map(|t| t.fraction).sum::<f32>() / active.len() as f32
         };
         let mut open = false;
-        // 游戏在跑时右下角挂着悬浮球，胶囊往上让，别叠在一起
-        let lift = if self.game.is_some() { 78.0 } else { 0.0 };
         // 面板被拖走过以后，胶囊跟着待在同一个地方
         let offset = Vec2::new(
             self.cfg.ui.download_panel_offset[0],
             self.cfg.ui.download_panel_offset[1],
         );
+        let sidebar_width = if self.cfg.ui.sidebar_collapsed { 64.0 } else { 186.0 };
+        // 旧配置里的偏移是右下角锚点时代的（负值），这里按新锚点钳回屏幕内
+        let chip_offset = {
+            let screen = ctx.content_rect();
+            Vec2::new(
+                offset.x.clamp(0.0, (screen.width() - 216.0).max(0.0)),
+                offset.y.clamp(-((screen.height() - 80.0).max(0.0)), 0.0),
+            )
+        };
 
         egui::Area::new(egui::Id::new("htmcl_download_chip"))
             .order(egui::Order::Foreground)
             .anchor(
-                egui::Align2::RIGHT_BOTTOM,
-                Vec2::new(-20.0 + offset.x, -20.0 - lift + offset.y),
+                egui::Align2::LEFT_BOTTOM,
+                Vec2::new(sidebar_width + 8.0 + chip_offset.x, -12.0 + chip_offset.y),
             )
             .show(ctx, |ui| {
+                // 胶囊出现时淡入，不要啪地冒出来
+                let appear = widgets::enter_progress(
+                    ctx,
+                    egui::Id::new("htmcl_download_chip_anim"),
+                    true,
+                    ui::anim::DUR_ENTER,
+                );
+                ui.set_opacity(appear);
                 let (rect, response) = ui.allocate_exact_size(Vec2::new(196.0, 48.0), Sense::click());
                 let radius = CornerRadius::same(24);
                 let painter = ui.painter();
