@@ -115,19 +115,6 @@ pub fn paint(
     true
 }
 
-/// 在指定位置画一个居中的图标
-pub fn paint_centered(
-    ctx: &Context,
-    painter: &egui::Painter,
-    name: &str,
-    center: egui::Pos2,
-    size: f32,
-    color: Color32,
-) -> bool {
-    let rect = egui::Rect::from_center_size(center, egui::vec2(size, size));
-    paint(ctx, painter, name, rect, color)
-}
-
 /// 预加载常用图标，避免首帧闪烁
 pub fn warmup(ctx: &Context, color: Color32, size: f32) {
     for name in [

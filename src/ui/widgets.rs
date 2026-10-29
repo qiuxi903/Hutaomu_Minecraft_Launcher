@@ -59,10 +59,6 @@ pub fn strong(ui: &mut Ui, p: &Palette, size: f32, content: &str) -> Response {
     )
 }
 
-pub fn weak(ui: &mut Ui, p: &Palette, size: f32, content: &str) -> Response {
-    ui.label(egui::RichText::new(content).font(font(size)).color(p.text_weak))
-}
-
 pub fn page_title(ui: &mut Ui, p: &Palette, title: &str, subtitle: &str) {
     ui.add_space(2.0);
     ui.label(
@@ -108,49 +104,12 @@ pub fn divider(ui: &mut Ui, p: &Palette) {
     ui.painter().rect_filled(rect, CornerRadius::ZERO, p.border);
 }
 
-pub fn spacer(ui: &mut Ui, height: f32) {
-    ui.add_space(height);
-}
-
 // ---------------------------------------------------------------- 图标
 
 pub fn icon(ui: &mut Ui, name: &str, size: f32, color: Color32) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), Sense::hover());
     if ui.is_rect_visible(rect) {
         icons::paint(ui.ctx(), ui.painter(), name, rect, color);
-    }
-    response
-}
-
-pub fn icon_text(
-    ui: &mut Ui,
-    name: &str,
-    content: &str,
-    size: f32,
-    color: Color32,
-) -> Response {
-    let galley = ui
-        .painter()
-        .layout_no_wrap(content.to_string(), font(size), color);
-    let width = size + 7.0 + galley.size().x;
-    let height = size.max(galley.size().y);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    if ui.is_rect_visible(rect) {
-        icons::paint(
-            ui.ctx(),
-            ui.painter(),
-            name,
-            Rect::from_center_size(
-                Pos2::new(rect.left() + size / 2.0, rect.center().y),
-                Vec2::splat(size),
-            ),
-            color,
-        );
-        ui.painter().galley(
-            Pos2::new(rect.left() + size + 7.0, rect.center().y - galley.size().y / 2.0),
-            galley,
-            color,
-        );
     }
     response
 }
@@ -449,10 +408,6 @@ pub fn primary(ui: &mut Ui, p: &Palette, content: &str) -> Response {
     button(ui, p, ButtonOpts::primary(content))
 }
 
-pub fn primary_icon(ui: &mut Ui, p: &Palette, icon: &str, content: &str) -> Response {
-    button(ui, p, ButtonOpts::primary(content).icon(icon))
-}
-
 pub fn secondary(ui: &mut Ui, p: &Palette, content: &str) -> Response {
     button(ui, p, ButtonOpts::secondary(content))
 }
@@ -629,37 +584,6 @@ fn field_impl(
     let focused = response.has_focus();
     ui.memory_mut(|m| m.data.insert_temp(focus_id, focused));
 
-    let border = if response.has_focus() {
-        Stroke::new(1.5, p.accent)
-    } else {
-        Stroke::new(1.0, p.border)
-    };
-    ui.painter()
-        .rect_stroke(rect, radius, border, StrokeKind::Inside);
-    response
-}
-
-pub fn text_area(
-    ui: &mut Ui,
-    p: &Palette,
-    value: &mut String,
-    hint: &str,
-    width: f32,
-    rows: usize,
-) -> Response {
-    let height = 18.0 * rows as f32 + 20.0;
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
-    let radius = p.corner_sm();
-    ui.painter().rect_filled(rect, radius, p.surface_alt);
-    let edit_rect = rect.shrink2(Vec2::new(10.0, 8.0));
-    let edit = egui::TextEdit::multiline(value)
-        .hint_text(hint)
-        .font(font(13.5))
-        .text_color(p.text)
-        .desired_width(edit_rect.width())
-        .desired_rows(rows)
-        .frame(egui::Frame::NONE);
-    let response = ui.put(edit_rect, edit);
     let border = if response.has_focus() {
         Stroke::new(1.5, p.accent)
     } else {
@@ -1328,18 +1252,6 @@ pub fn setting_row(
         });
     });
     ui.add_space(14.0);
-}
-
-/// 设置项分组标题：一条横线加文字
-pub fn setting_group(ui: &mut Ui, p: &Palette, title: &str) {
-    ui.add_space(8.0);
-    ui.label(
-        egui::RichText::new(title)
-            .font(font(15.0))
-            .color(p.text)
-            .strong(),
-    );
-    ui.add_space(10.0);
 }
 
 pub fn key_value(ui: &mut Ui, p: &Palette, key: &str, value: &str) {

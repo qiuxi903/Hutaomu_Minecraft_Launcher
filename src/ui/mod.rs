@@ -96,9 +96,6 @@ pub fn install_fonts(ctx: &egui::Context) {
 /// 页面之间看着就会参差不齐。
 pub const GAP_CARD: f32 = 12.0;
 
-/// 卡片里相邻两行的间隔
-pub const GAP_ROW: f32 = 8.0;
-
 pub fn install_style(ctx: &egui::Context, p: &Palette, font_scale: f32) {
     set_font_scale(font_scale);
     let mut style = (*ctx.style_of(egui::Theme::Light)).clone();

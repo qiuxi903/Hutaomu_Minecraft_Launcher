@@ -212,10 +212,6 @@ pub fn hex(value: &str) -> egui::Color32 {
     }
 }
 
-pub fn to_hex(color: egui::Color32) -> String {
-    format!("#{:02X}{:02X}{:02X}", color.r(), color.g(), color.b())
-}
-
 fn luminance(color: egui::Color32) -> f32 {
     (0.2126 * color.r() as f32 + 0.7152 * color.g() as f32 + 0.0722 * color.b() as f32) / 255.0
 }
@@ -362,13 +358,6 @@ pub fn all_themes() -> Vec<ThemeDef> {
     let mut list = builtin_themes();
     list.extend(custom_themes());
     list
-}
-
-pub fn find_theme(id: &str) -> ThemeDef {
-    all_themes()
-        .into_iter()
-        .find(|t| t.id == id)
-        .unwrap_or_default()
 }
 
 /// 把主题目录 / 配置里的背景设置解析成实际文件路径

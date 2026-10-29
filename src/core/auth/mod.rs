@@ -160,14 +160,6 @@ impl Account {
         }
     }
 
-    pub fn set_skin_url(&mut self, url: Option<String>) {
-        match self {
-            Self::Offline(_) => {}
-            Self::Microsoft(a) => a.skin_url = url,
-            Self::Authlib(a) => a.skin_url = url,
-        }
-    }
-
     pub fn skin_url(&self) -> Option<&str> {
         match self {
             Self::Offline(_) => None,
@@ -202,15 +194,6 @@ impl Account {
             Self::Authlib(a) => a.expires_at,
         };
         expires != 0 && expires <= chrono::Utc::now().timestamp() + 60
-    }
-
-    pub fn needs_refresh(&self) -> bool {
-        let expires = match self {
-            Self::Offline(_) => return false,
-            Self::Microsoft(a) => a.expires_at,
-            Self::Authlib(a) => a.expires_at,
-        };
-        expires != 0 && expires <= chrono::Utc::now().timestamp() + 3600
     }
 
     pub fn to_identity(&self) -> LaunchIdentity {
@@ -330,15 +313,4 @@ impl AccountStore {
             .or_else(|| self.accounts.first())
     }
 
-    pub fn selected_account_mut(&mut self) -> Option<&mut Account> {
-        let id = self
-            .selected
-            .clone()
-            .or_else(|| self.accounts.first().map(|a| a.id().to_string()))?;
-        self.get_mut(&id)
-    }
-
-    pub fn offline_count(&self) -> usize {
-        self.accounts.iter().filter(|a| a.is_offline()).count()
-    }
 }

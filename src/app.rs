@@ -8,7 +8,6 @@ use egui::{Align, Color32, CornerRadius, Layout, Margin, Pos2, Rect, Sense, Stro
 use crate::core::auth::{Account, SkinModel};
 use crate::core::config::Config;
 use crate::core::content::modrinth::{SearchResponse, Version as ModVersion};
-use crate::core::content::ContentSource;
 use crate::core::download::{DownloadProgress, DownloadSource, Downloader};
 use crate::core::java::JavaInfo;
 use crate::core::minecraft::launch::{GameLog, GameLogLine, GameProcess, LogSource};

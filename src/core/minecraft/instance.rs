@@ -152,18 +152,6 @@ fn copy_dir(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// 删掉一个实例目录
-///
-/// 只删实例自己的目录，不动公共的依赖库与素材。
-pub fn remove_instance(game_dir: &Path, instance_id: &str) -> Result<()> {
-    let dir = crate::core::paths::versions_dir(game_dir).join(instance_id);
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    std::fs::remove_dir_all(&dir)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

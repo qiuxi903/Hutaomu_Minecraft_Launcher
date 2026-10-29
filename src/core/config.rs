@@ -546,10 +546,6 @@ impl Config {
         entry.last_launch = chrono::Utc::now().timestamp();
     }
 
-    pub fn stat_of(&self, version: &str) -> VersionStat {
-        self.version_stats.get(version).cloned().unwrap_or_default()
-    }
-
     /// 某个实例的自定义信息
     pub fn instance_meta(&self, id: &str) -> InstanceMeta {
         self.instance_meta.get(id).cloned().unwrap_or_default()
@@ -562,18 +558,6 @@ impl Config {
 
     pub fn set_game_dir(&mut self, dir: impl Into<PathBuf>) {
         self.game_dir = dir.into();
-    }
-
-    pub fn game_dir_exists(&self) -> bool {
-        self.game_dir.is_dir()
-    }
-
-    pub fn theme_dir(&self) -> PathBuf {
-        paths::themes_dir()
-    }
-
-    pub fn assets_index_dir(&self) -> PathBuf {
-        paths::assets_dir(&self.game_dir).join("indexes")
     }
 
     pub fn libraries_dir(&self) -> PathBuf {
@@ -597,7 +581,4 @@ impl Config {
         self.game_dir.display().to_string()
     }
 
-    pub fn path_is_inside_game_dir(&self, path: &Path) -> bool {
-        path.starts_with(&self.game_dir)
-    }
 }

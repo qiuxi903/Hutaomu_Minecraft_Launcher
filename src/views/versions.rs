@@ -661,7 +661,6 @@ fn detail_page(app: &mut App, ui: &mut Ui) {
         .and_then(|path| app.file_icon_texture(path));
     let mut reinstall: Option<String> = None;
 
-
     ui::card(ui, &p, |ui| {
         ui.horizontal(|ui| {
             let (rect, _) = ui.allocate_exact_size(Vec2::splat(54.0), Sense::hover());

@@ -237,11 +237,6 @@ impl FileTask {
         self
     }
 
-    pub fn with_sha1(mut self, sha1: impl Into<String>) -> Self {
-        self.sha1 = Some(sha1.into());
-        self
-    }
-
     pub fn with_optional_sha1(mut self, sha1: Option<String>) -> Self {
         self.sha1 = sha1;
         self
@@ -502,10 +497,6 @@ impl Downloader {
         })
     }
 
-    pub fn default_client() -> Result<Self> {
-        Self::new(DownloadSource::default(), 60)
-    }
-
     pub fn get_json<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
         let url = self.source.rewrite(url);
         let bytes = self.get_bytes_with_retry(&url)?;
@@ -516,11 +507,6 @@ impl Downloader {
     pub fn get_json_direct<T: DeserializeOwned>(&self, url: &str) -> Result<T> {
         let bytes = self.get_bytes_with_retry(url)?;
         serde_json::from_slice(&bytes).with_context(|| format!("解析 JSON 失败: {url}"))
-    }
-
-    pub fn get_bytes(&self, url: &str) -> Result<Vec<u8>> {
-        let url = self.source.rewrite(url);
-        self.get_bytes_with_retry(&url)
     }
 
     pub fn get_bytes_direct(&self, url: &str) -> Result<Vec<u8>> {
@@ -682,26 +668,6 @@ impl Downloader {
         let mut req = self.client_for(url).post(url).json(body);
         if let Some(key) = &self.curseforge_key {
             req = req.header("x-api-key", key);
-        }
-        let resp = req.send().with_context(|| format!("请求失败: {url}"))?;
-        let status = resp.status();
-        let text = resp.text().unwrap_or_default();
-        if !status.is_success() {
-            return Err(anyhow!("HTTP {status}: {}", truncate(&text, 300)));
-        }
-        serde_json::from_str(&text)
-            .with_context(|| format!("解析响应失败: {}", truncate(&text, 300)))
-    }
-
-    pub fn post_json_with_headers<B: Serialize + ?Sized, T: DeserializeOwned>(
-        &self,
-        url: &str,
-        body: &B,
-        headers: &[(&str, &str)],
-    ) -> Result<T> {
-        let mut req = self.client_for(url).post(url).json(body);
-        for (k, v) in headers {
-            req = req.header(*k, *v);
         }
         let resp = req.send().with_context(|| format!("请求失败: {url}"))?;
         let status = resp.status();

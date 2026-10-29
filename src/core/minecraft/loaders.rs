@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -848,10 +848,6 @@ pub fn supports(kind: LoaderKind, mc_version: &str) -> bool {
         LoaderKind::Forge => minor >= 1,
         LoaderKind::NeoForge => (minor == 20 && patch >= 1) || minor >= 21,
     }
-}
-
-pub fn loader_version_dir(game_dir: &Path, id: &str) -> PathBuf {
-    version::version_dir(game_dir, id)
 }
 
 #[cfg(test)]

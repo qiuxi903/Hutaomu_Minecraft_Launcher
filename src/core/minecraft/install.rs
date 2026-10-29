@@ -93,11 +93,6 @@ pub fn ensure_version_json(
     Ok(json)
 }
 
-/// 写入加载器生成的版本 JSON（带 inheritsFrom）
-pub fn write_loader_json(game_dir: &Path, json: &VersionJson) -> Result<()> {
-    version::write_local_json(game_dir, json)
-}
-
 /// 完整安装一个版本（客户端、依赖库、资源文件、natives）
 pub fn install_version(
     dl: &Downloader,
@@ -474,12 +469,4 @@ pub fn extract_natives(jar: &Path, dest: &Path, exclude: Option<&[String]>) -> R
         std::fs::write(&out, data)?;
     }
     Ok(())
-}
-
-/// 判断版本是否已完整安装（客户端 jar + 版本 json 存在）
-pub fn is_version_ready(game_dir: &Path, id: &str) -> bool {
-    match version::resolve(game_dir, id) {
-        Ok(resolved) => resolved.jar_path.is_file() || resolved.json.inherits_from.is_some(),
-        Err(_) => false,
-    }
 }

@@ -99,18 +99,3 @@ pub fn recent(limit: usize) -> Vec<LogLine> {
         .map(|buf| buf.iter().rev().take(limit).rev().cloned().collect())
         .unwrap_or_default()
 }
-
-pub fn clear_recent() {
-    if let Ok(mut buf) = recent_buf().lock() {
-        buf.clear();
-    }
-}
-
-pub fn level_color(level: log::Level) -> egui::Color32 {
-    match level {
-        log::Level::Error => egui::Color32::from_rgb(0xD0, 0x45, 0x45),
-        log::Level::Warn => egui::Color32::from_rgb(0xC8, 0x85, 0x1E),
-        log::Level::Info => egui::Color32::from_rgb(0x35, 0x7A, 0x4F),
-        log::Level::Debug | log::Level::Trace => egui::Color32::from_rgb(0x7A, 0x82, 0x8C),
-    }
-}

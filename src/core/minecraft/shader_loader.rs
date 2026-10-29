@@ -170,15 +170,6 @@ fn parse_version(stem: &str, keyword: &str) -> String {
     rest[..end].to_string()
 }
 
-/// 卸载当前装着的光影加载器
-pub fn uninstall(installed: &Installed) -> Result<()> {
-    if !installed.file.is_file() {
-        return Err(anyhow!("文件已不存在"));
-    }
-    std::fs::remove_file(&installed.file)?;
-    Ok(())
-}
-
 /// 把加载器名转成 Modrinth 用的写法
 pub fn modrinth_loader(kind: Option<LoaderKind>) -> Option<&'static str> {
     match kind {

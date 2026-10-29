@@ -1165,7 +1165,6 @@ fn game_section(app: &mut App, ui: &mut Ui) {
     });
 }
 
-
 // ------------------------------------------------------------------ Java
 
 fn java_section(app: &mut App, ui: &mut Ui) {
